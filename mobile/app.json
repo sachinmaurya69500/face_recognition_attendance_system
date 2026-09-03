@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "FaceFlow Attendance",
+    "slug": "aura",
+    "version": "1.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "abf7c86e-851f-4383-8db5-3dc631241fa6"
+      }
+    }
+  }
+}

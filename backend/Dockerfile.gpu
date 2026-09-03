@@ -1,0 +1,27 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-dev build-essential libgl1 libglib2.0-0 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3 /usr/local/bin/pip
+
+WORKDIR /workspace
+ENV INSIGHTFACE_ROOT=/workspace
+RUN mkdir -p /workspace/models
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+# InsightFace may pull the CPU-only `onnxruntime` package as a dependency.
+# Remove both variants and install the CUDA wheel last so the imported module
+# is unambiguously onnxruntime-gpu.
+RUN pip uninstall -y onnxruntime onnxruntime-gpu || true \
+    && pip install --no-cache-dir --no-deps "onnxruntime-gpu>=1.16.0" \
+    && python -c "import onnxruntime as ort; providers=ort.get_available_providers(); assert 'CUDAExecutionProvider' in providers, providers; print('ONNX Runtime providers:', providers)"
+COPY . .
+
+RUN python -c "import os; from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', root=os.environ['INSIGHTFACE_ROOT']).prepare(ctx_id=0, det_size=(1600, 1600))"
+
+VOLUME ["/workspace/models"]
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

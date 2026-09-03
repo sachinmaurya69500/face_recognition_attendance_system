@@ -1,0 +1,83 @@
+services:
+  # 1. PostgreSQL Database with Vector Search
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: attendance_pgvector_db
+    restart: always
+    environment:
+      POSTGRES_DB: attendance_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_secure_pass
+    ports:
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d attendance_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. FastAPI AI Inference Service (SCRFD + ArcFace)
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: attendance_fastapi_server
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres_secure_pass
+      MATCH_THRESHOLD: "0.42"
+      MAX_FACES: "500"
+      INSIGHTFACE_MODEL: buffalo_l
+      INSIGHTFACE_ROOT: /workspace
+      # Prefer CUDA when the runtime exposes it; models.py falls back to CPU.
+      INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+    ports:
+      - "${API_HOST_PORT:-8010}:8000"
+    volumes:
+      - ./backend/app:/workspace/app # Live reload for backend code
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # Public entry point for phones, emulators, and browser clients.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: attendance_nginx
+    restart: always
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${NGINX_HOST_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/nginx.conf:ro
+
+  # 3. React Native Metro Bundler & JS Server
+  mobile-bundler:
+    build:
+      context: ./mobile
+      dockerfile: Dockerfile
+    container_name: attendance_rn_bundler
+    restart: always
+    ports:
+      - "${METRO_HOST_PORT:-8082}:8081" # Metro bundler port
+    volumes:
+      - ./mobile:/app
+      - /app/node_modules # Preserve container node_modules
+    environment:
+      - REACT_NATIVE_PACKAGER_HOSTNAME=0.0.0.0
+
+volumes:
+  pgdata:

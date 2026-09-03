@@ -1,0 +1,26 @@
+# Local/generated files
+mobile/node_modules/
+mobile/.expo/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/.gradle/
+mobile/android/app/build/
+mobile/android/app/.cxx/
+backend/app/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Keep the database volume and model weights outside source archives.
+pgdata/
+
+# InsightFace weights are downloaded during the backend image build.
+# Keep the large model files local instead of committing them to Git.
+backend/models/**/*.onnx
+
+# Android debug signing material is generated locally.
+mobile/android/app/debug.keystore
