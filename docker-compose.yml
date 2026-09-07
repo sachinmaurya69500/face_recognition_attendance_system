@@ -64,20 +64,5 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/nginx.conf:ro
 
-  # 3. React Native Metro Bundler & JS Server
-  mobile-bundler:
-    build:
-      context: ./mobile
-      dockerfile: Dockerfile
-    container_name: attendance_rn_bundler
-    restart: always
-    ports:
-      - "${METRO_HOST_PORT:-8082}:8081" # Metro bundler port
-    volumes:
-      - ./mobile:/app
-      - /app/node_modules # Preserve container node_modules
-    environment:
-      - REACT_NATIVE_PACKAGER_HOSTNAME=0.0.0.0
-
 volumes:
   pgdata:
