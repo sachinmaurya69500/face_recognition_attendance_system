@@ -37,11 +37,10 @@ class FaceModel:
                 f"Available providers: {ort.get_available_providers()}"
             )
 
-        # CUDA can be listed by ONNX Runtime while still being unusable (for
-        # example, when the host driver or CUDA libraries are unavailable).
-        # Retry with CPU so the same image remains usable on a CPU-only host.
+        # GPU deployments must never silently downgrade to CPU: that would
+        # hide a broken NVIDIA runtime and make production latency unpredictable.
         attempts = [self._provider_candidates]
-        if "CPUExecutionProvider" in self._provider_candidates:
+        if not self.require_gpu and "CPUExecutionProvider" in self._provider_candidates:
             attempts.append(["CPUExecutionProvider"])
         errors = []
         for providers in attempts:

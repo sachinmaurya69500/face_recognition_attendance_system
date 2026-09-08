@@ -37,13 +37,36 @@ class UserRequest(BaseModel):
     password: str
     role: str
     student_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    date_of_birth: str | None = None
+    program: str | None = None
+
+class ScheduleRequest(BaseModel):
+    subject: str
+    teacher: str
+    room: str
+    starts_at: str
+    ends_at: str
+    day: str
+
+class NotificationRequest(BaseModel):
+    user_id: int
+    category: str
+    title: str
+    body: str
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120000).hex()
     return f"{salt}${digest}"
 
-    salt, digest = stored.split("$", 1)
+def password_ok(password, stored):
+    try:
+        salt, digest = stored.split("$", 1)
+    except (AttributeError, ValueError):
+        return False
     return hmac.compare_digest(password_hash(password, salt).split("$", 1)[1], digest)
 
 def token_for(user):
@@ -74,6 +97,9 @@ def ensure_auth_tables():
     try:
         with conn.cursor() as cur:
             cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
+            cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("SELECT COUNT(*) AS count FROM users")
             if cur.fetchone()["count"] == 0: cur.executemany("INSERT INTO users (username,password_hash,role) VALUES (%s,%s,%s)", [("admin", password_hash("admin123"), "admin"), ("teacher", password_hash("teacher123"), "teacher")])
         conn.commit()
@@ -91,14 +117,75 @@ def login(body: LoginRequest):
 @app.get("/auth/me")
 def me(user=Depends(current_user)): return user
 
-@app.post("/admin/users")
-def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
-    if body.role not in ("admin", "teacher", "student"): raise HTTPException(422, "Invalid role")
-    if len(body.username.strip()) < 3 or len(body.password) < 4: raise HTTPException(422, "ID must be at least 3 characters and password at least 4 characters")
+@app.get("/schedule")
+def schedule(_=Depends(current_user)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            try: cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
+            cur.execute("SELECT id, subject, teacher, room, starts_at, ends_at, day FROM schedules ORDER BY day, starts_at, subject")
+            return {"schedule": cur.fetchall()}
+    finally: conn.close()
+
+@app.post("/admin/schedule")
+def create_schedule(body: ScheduleRequest, _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO schedules (subject, teacher, room, starts_at, ends_at, day) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id, subject, teacher, room, starts_at, ends_at, day", (body.subject.strip(), body.teacher.strip(), body.room.strip(), body.starts_at.strip(), body.ends_at.strip(), body.day.strip()))
+            result = cur.fetchone()
+        conn.commit(); return result
+    finally: conn.close()
+
+@app.delete("/admin/schedule/{schedule_id}")
+def delete_schedule(schedule_id: int, _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur: cur.execute("DELETE FROM schedules WHERE id=%s RETURNING id", (schedule_id,)); result = cur.fetchone()
+        if not result: raise HTTPException(404, "Schedule entry not found")
+        conn.commit(); return {"deleted": schedule_id}
+    finally: conn.close()
+
+@app.get("/notifications")
+def notifications(user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, category, title, body, is_read, created_at FROM notifications WHERE user_id=%s ORDER BY created_at DESC LIMIT 100", (user["sub"],))
+            return {"notifications": cur.fetchall()}
+    finally: conn.close()
+
+@app.post("/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur: cur.execute("UPDATE notifications SET is_read=TRUE WHERE id=%s AND user_id=%s RETURNING id", (notification_id, user["sub"])); result = cur.fetchone()
+        if not result: raise HTTPException(404, "Notification not found")
+        conn.commit(); return {"id": notification_id, "is_read": True}
+    finally: conn.close()
+
+@app.post("/admin/notifications")
+def create_notification(body: NotificationRequest, _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur: cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,%s,%s,%s) RETURNING id, category, title, body, is_read, created_at", (body.user_id, body.category.strip(), body.title.strip(), body.body.strip())); result = cur.fetchone()
+        conn.commit(); return result
+    finally: conn.close()
+
+@app.post("/admin/users")
+def create_user(body: UserRequest, _=Depends(require_roles("admin", "teacher"))):
+    if body.role not in ("admin", "teacher", "student"): raise HTTPException(422, "Invalid role")
+    if body.role == "student":
+        if not body.student_id or not body.name or not body.date_of_birth: raise HTTPException(422, "Student ID, full name, and date of birth are required")
+        body.username = body.student_id.strip()
+        body.password = body.date_of_birth
+    if len(body.username.strip()) < 3 or len(body.password) < 4: raise HTTPException(422, "ID must be at least 3 characters and password must be valid")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                if body.role == "student":
+                    cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth, body.program))
+                cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
             except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
         conn.commit(); return {"user": result}
     finally: conn.close()
@@ -239,7 +326,7 @@ def list_students(_=Depends(require_roles("admin", "teacher"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT student_id, name, created_at FROM students ORDER BY student_id")
+            cur.execute("SELECT student_id, name, email, phone, date_of_birth, program, created_at FROM students ORDER BY student_id")
             return {"students": cur.fetchall()}
     finally: conn.close()
 
@@ -253,7 +340,7 @@ def delete_student(student_id: str, _=Depends(require_roles("admin"))):
     finally: conn.close()
 
 @app.post("/register-student")
-async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), files: list[UploadFile] = File(...), _=Depends(require_roles("admin", "teacher"))):
+async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), files: list[UploadFile] = File(...), _=Depends(require_roles("admin", "teacher"))):
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name: raise HTTPException(422, "student_id and name are required")
     if len(password) < 4: raise HTTPException(422, "Student password must be at least 4 characters")
@@ -272,8 +359,8 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO students (student_id, name) VALUES (%s, %s)
-                ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name""", (student_id, name))
+            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program""", (student_id, name, email or None, phone or None, date_of_birth or None, program or None))
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             # A student's ID is also their login ID. Registration creates or
@@ -318,6 +405,9 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
                 for st in recognized:
                     cur.execute("""INSERT INTO attendance_logs (student_id, session_id, confidence_score) VALUES (%s,%s,%s)
                         ON CONFLICT (student_id, session_id) DO UPDATE SET confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score)""", (st["student_id"], session_id, st["confidence"]))
+                    cur.execute("""INSERT INTO notifications (user_id, category, title, body)
+                        SELECT id, 'attendance', 'Attendance marked', %s FROM users WHERE student_id=%s""",
+                        (f'Attendance recorded for {st["name"]} in session {session_id}.', st["student_id"]))
             conn.commit()
         finally: conn.close()
     ok, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -362,6 +452,18 @@ def own_attendance(user=Depends(require_roles("student"))):
         with conn.cursor() as cur:
             cur.execute("SELECT session_id, confidence_score, timestamp FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],))
             return {"student_id": user["student_id"], "attendance": cur.fetchall()}
+    finally: conn.close()
+
+@app.get("/student/attendance/overview")
+def own_attendance_overview(user=Depends(require_roles("student"))):
+    if not user.get("student_id"): raise HTTPException(422, "Student account is not linked to a student")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT s.student_id, s.name, s.created_at, u.username FROM students s JOIN users u ON u.student_id=s.student_id WHERE s.student_id=%s", (user["student_id"],)); profile = cur.fetchone()
+            cur.execute("SELECT session_id, confidence_score, timestamp FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],)); attendance = cur.fetchall()
+            cur.execute("SELECT DISTINCT subject, teacher, room, starts_at, ends_at, day FROM schedules ORDER BY day, starts_at, subject"); subjects = cur.fetchall()
+            return {"profile": profile, "attendance": attendance, "subjects": subjects, "summary": {"present": len(attendance), "absent": 0, "overall_percentage": 100 if attendance else 0}}
     finally: conn.close()
 
 @app.delete("/admin/attendance/{session_id}")

@@ -3,6 +3,11 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS students (
     student_id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
+    email VARCHAR(160),
+    phone VARCHAR(40),
+    date_of_birth DATE,
+    program VARCHAR(160),
+    profile_photo BYTEA,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -26,3 +31,14 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
     CONSTRAINT one_attendance_per_session UNIQUE (student_id, session_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS attendance_session_student_uidx ON attendance_logs(student_id, session_id);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id SERIAL PRIMARY KEY,
+    subject VARCHAR(120) NOT NULL,
+    teacher VARCHAR(120) NOT NULL,
+    room VARCHAR(80) NOT NULL,
+    starts_at VARCHAR(10) NOT NULL,
+    ends_at VARCHAR(10) NOT NULL,
+    day VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

@@ -6,7 +6,26 @@
     "orientation": "portrait",
     "icon": "./assets/faceattend-logo.png",
     "userInterfaceStyle": "light",
-    "android": { "package": "com.faceattend.mobile", "usesCleartextTraffic": true },
-    "plugins": [["expo-camera", { "cameraPermission": "FaceAttend uses the camera for authorized face registration and attendance." }], "expo-status-bar"]
+    "android": {
+      "package": "com.faceattend.mobile",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "FaceAttend uses the camera for authorized face registration and attendance."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c0660eff-2da5-4047-998f-4994149eee36"
+      }
+    }
   }
 }
