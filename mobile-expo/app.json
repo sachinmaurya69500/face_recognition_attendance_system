@@ -18,8 +18,7 @@
         {
           "cameraPermission": "FaceAttend uses the camera for authorized face registration and attendance."
         }
-      ],
-      "expo-font"
+      ]
     ],
     "extra": {
       "eas": {
