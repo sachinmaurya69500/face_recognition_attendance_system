@@ -4,11 +4,9 @@
     "slug": "faceattend",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/faceattend-logo.png",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.faceattend.mobile",
-      "usesCleartextTraffic": true,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
@@ -20,7 +18,8 @@
         {
           "cameraPermission": "FaceAttend uses the camera for authorized face registration and attendance."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {
