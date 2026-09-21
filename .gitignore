@@ -1,6 +1,9 @@
 # Local/generated files
 mobile/node_modules/
 mobile/.expo/
+mobile-expo/.expo/
+mobile-expo/node_modules/
+mobile-expo/dist/
 mobile/android/.gradle/
 mobile/android/build/
 mobile/android/app/.gradle/

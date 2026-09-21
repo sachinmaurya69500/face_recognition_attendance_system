@@ -8,8 +8,6 @@ services:
       POSTGRES_DB: attendance_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_secure_pass
-    ports:
-      - "${DB_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -36,18 +34,20 @@ services:
       DB_NAME: attendance_db
       DB_USER: postgres
       DB_PASSWORD: postgres_secure_pass
-      MATCH_THRESHOLD: "0.42"
+      MATCH_THRESHOLD: "0.45"
       MAX_FACES: "500"
+      FACE_DET_THRESHOLD: "0.15"
+      FACE_DET_SIZE: "1280"
       INSIGHTFACE_MODEL: buffalo_l
       INSIGHTFACE_ROOT: /workspace
       INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
       REQUIRE_GPU: "1"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - insightface_models:/workspace/models
     ports:
       - "${API_HOST_PORT:-8010}:8000"
-    volumes:
-      - ./backend/app:/workspace/app # Live reload for backend code
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 15s
@@ -69,3 +69,4 @@ services:
 
 volumes:
   pgdata:
+  insightface_models:

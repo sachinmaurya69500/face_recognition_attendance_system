@@ -18,10 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip uninstall -y onnxruntime onnxruntime-gpu || true \
     && pip install --no-cache-dir --no-deps "onnxruntime-gpu>=1.16.0" \
     && python -c "import onnxruntime as ort; providers=ort.get_available_providers(); assert 'CUDAExecutionProvider' in providers, providers; print('ONNX Runtime providers:', providers)"
-COPY . .
-
+# Keep model preloading before application source so code changes do not
+# invalidate this expensive download layer.
 RUN python -c "import os; from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', root=os.environ['INSIGHTFACE_ROOT']).prepare(ctx_id=0, det_size=(1600, 1600))"
 
-VOLUME ["/workspace/models"]
+COPY . .
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

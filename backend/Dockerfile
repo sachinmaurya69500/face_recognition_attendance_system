@@ -14,10 +14,10 @@ RUN mkdir -p /workspace/models
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
-
 # Pre-download SCRFD & ArcFace models inside the image build layer
 RUN python -c "import os; from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', root=os.environ['INSIGHTFACE_ROOT']).prepare(ctx_id=0, det_size=(1600, 1600))"
+
+COPY . .
 
 # Keep model weights in a named runtime volume while retaining the baked-in
 # weights as the image fallback for first startup.

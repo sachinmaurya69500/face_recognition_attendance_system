@@ -18,6 +18,7 @@ class FaceModel:
         self.root = os.getenv("INSIGHTFACE_ROOT", "/workspace")
         self.max_faces = int(os.getenv("MAX_FACES", "500"))
         self.det_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.35"))
+        self.det_size = int(os.getenv("FACE_DET_SIZE", "1600"))
         self.require_gpu = os.getenv("REQUIRE_GPU", "0").lower() in {"1", "true", "yes"}
         requested = [item.strip() for item in os.getenv("INFERENCE_PROVIDERS", "CUDAExecutionProvider,CPUExecutionProvider").split(",") if item.strip()]
         available = ort.get_available_providers()
@@ -46,8 +47,10 @@ class FaceModel:
         for providers in attempts:
             try:
                 model = FaceAnalysis(name=self.name, root=self.root, providers=providers)
-                model.prepare(ctx_id=0, det_size=(1600, 1600))
-                model.det_model.det_thresh = self.det_threshold
+                # Pass the threshold into InsightFace itself so low-quality
+                # proposals are filtered before landmarks/embeddings are
+                # produced. The detector then returns face.kps (five points).
+                model.prepare(ctx_id=0, det_thresh=self.det_threshold, det_size=(self.det_size, self.det_size))
                 active_providers = set()
                 for face_model in model.models.values():
                     active_providers.update(face_model.session.get_providers())

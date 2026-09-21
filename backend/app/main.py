@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.database import get_db_connection
 from app.models import face_model
@@ -27,6 +28,13 @@ async def lifespan(_app: FastAPI):
     yield
 
 app = FastAPI(title="Face Attendance API", version="2.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class LoginRequest(BaseModel):
     username: str
@@ -56,6 +64,11 @@ class NotificationRequest(BaseModel):
     category: str
     title: str
     body: str
+
+class ProfileUpdate(BaseModel):
+    name: str
+    email: str = ""
+    phone: str = ""
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -98,6 +111,7 @@ def ensure_auth_tables():
         with conn.cursor() as cur:
             cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("SELECT COUNT(*) AS count FROM users")
@@ -115,7 +129,57 @@ def login(body: LoginRequest):
     return {"access_token": token_for(user), "user": {k: user[k] for k in ("id", "username", "role", "student_id")}}
 
 @app.get("/auth/me")
-def me(user=Depends(current_user)): return user
+def me(user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT display_name, email, phone FROM users WHERE id=%s", (user["sub"],))
+            profile = cur.fetchone() or {}
+            return {**user, **profile}
+    finally: conn.close()
+
+@app.patch("/auth/profile")
+def update_profile(body: ProfileUpdate, user=Depends(current_user)):
+    name, email, phone = body.name.strip(), body.email.strip(), body.phone.strip()
+    if not name: raise HTTPException(422, "Name is required")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE id=%s RETURNING username,role,student_id,display_name,email,phone", (name, email or None, phone or None, user["sub"]))
+            profile = cur.fetchone()
+            if not profile: raise HTTPException(404, "User not found")
+            if profile.get("student_id"):
+                cur.execute("UPDATE students SET name=%s,email=%s,phone=%s WHERE student_id=%s", (name, email or None, phone or None, profile["student_id"]))
+        conn.commit()
+        return {"profile": profile}
+    finally: conn.close()
+
+@app.get("/auth/profile")
+def get_profile(user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username, role, student_id, display_name, email, phone, encode(profile_photo, 'base64') AS profile_photo_base64 FROM users WHERE id=%s", (user["sub"],))
+            profile = cur.fetchone()
+            if not profile: raise HTTPException(404, "User not found")
+            if profile.get("profile_photo_base64"):
+                profile["profile_photo_base64"] = f"data:image/jpeg;base64,{profile['profile_photo_base64']}"
+            return {"profile": profile}
+    finally: conn.close()
+
+@app.post("/auth/profile/photo")
+async def update_profile_photo(file: UploadFile = File(...), user=Depends(current_user)):
+    data = await file.read()
+    if not data or len(data) > MAX_IMAGE_BYTES: raise HTTPException(413, "Profile photo is empty or too large")
+    try: Image.open(io.BytesIO(data)).verify()
+    except Exception as exc: raise HTTPException(400, "Invalid profile image") from exc
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s RETURNING id", (data, user["sub"]))
+            if not cur.fetchone(): raise HTTPException(404, "User not found")
+        conn.commit(); return {"status":"saved"}
+    finally: conn.close()
 
 @app.get("/schedule")
 def schedule(_=Depends(current_user)):
@@ -213,7 +277,9 @@ def read_image_bytes(data: bytes):
         pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise HTTPException(400, "Invalid image file format") from exc
-    return cv2.cvtColor(np.asarray(pil_image), cv2.COLOR_RGB2BGR)
+    # InsightFace's bundled detector expects RGB arrays for this model build.
+    # Keeping the original channel order is essential for webcam and uploads.
+    return np.asarray(pil_image)
 
 def embedding_array(value):
     """Convert pgvector's Vector result (or a plain list) to a NumPy array."""
@@ -224,7 +290,40 @@ def embedding_array(value):
     return np.asarray(value, dtype=np.float32)
 
 async def detect(image):
-    return await face_model.detect(image)
+    # Always prefer the normal recognition detector and preprocessing.
+    faces = await face_model.detect(image)
+    # Use a sensitive proposal threshold for webcam frames, then remove weak
+    # proposals. This detects real faces without counting background noise.
+    if faces or image.size == 0:
+        return faces
+
+    # Conservative recovery for a genuinely difficult webcam frame. A
+    # fallback is accepted only when it finds exactly one strong face; an
+    # ambiguous fallback is rejected rather than inventing extra faces.
+    # Images are kept in RGB for InsightFace; use the matching conversion for
+    # the low-light recovery path as well.
+    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    l_channel = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l_channel)
+    enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2RGB)
+    recovered = await face_model.detect(enhanced)
+    if len(recovered) == 1 and float(getattr(recovered[0], "det_score", 0.0)) >= 0.60:
+        return recovered
+    return []
+
+def primary_face(image, faces):
+    """Choose the likely real subject for single-person enrollment."""
+    if len(faces) <= 1:
+        return faces
+    height, width = image.shape[:2]
+    def rank(face):
+        x1, y1, x2, y2 = np.asarray(face.bbox, dtype=np.float32)
+        area = max(0.0, x2 - x1) * max(0.0, y2 - y1) / max(width * height, 1)
+        cx, cy = ((x1 + x2) / 2) / width, ((y1 + y2) / 2) / height
+        centrality = max(0.0, 1.0 - ((cx - .5) ** 2 + (cy - .5) ** 2) ** .5 * 2)
+        score = float(getattr(face, "det_score", 0.0))
+        return area * 2.0 + centrality * .5 + score
+    return [max(faces, key=rank)]
 
 def face_quality(image, face, target_pose="any"):
     """Return explainable capture guidance for a registration frame.
@@ -240,9 +339,10 @@ def face_quality(image, face, target_pose="any"):
     face_width, face_height = max(0, x2 - x1), max(0, y2 - y1)
     area_ratio = (face_width * face_height) / max(width * height, 1)
     crop = image[y1:y2, x1:x2]
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.size else np.empty((0, 0))
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.size else np.empty((0, 0))
     brightness = float(gray.mean()) if gray.size else 0.0
     contrast = float(gray.std()) if gray.size else 0.0
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var()) if gray.size else 0.0
     issues = []
 
     if area_ratio < 0.08:
@@ -255,11 +355,16 @@ def face_quality(image, face, target_pose="any"):
         issues.append("Lighting is too bright")
     if contrast < 18:
         issues.append("Use more even lighting with visible facial detail")
+    if face_width < 90 or face_height < 90:
+        issues.append("Move closer so your face is larger")
+    if sharpness < 35:
+        issues.append("Hold still so the face is sharp")
 
     pose_values = np.asarray(getattr(face, "pose", []), dtype=np.float32).reshape(-1)
-    # InsightFace exposes pose as [yaw, pitch, roll] for the 3D landmark model.
-    yaw = float(pose_values[0]) if len(pose_values) > 0 else None
-    pitch = float(pose_values[1]) if len(pose_values) > 1 else None
+    # InsightFace exposes pose as [pitch, yaw, roll] for this 3D landmark
+    # model. Keep the names correct so pose-specific guidance works.
+    pitch = float(pose_values[0]) if len(pose_values) > 0 else None
+    yaw = float(pose_values[1]) if len(pose_values) > 1 else None
     pose_available = yaw is not None and pitch is not None
     if target_pose != "any" and pose_available:
         if target_pose == "center" and abs(yaw) > 12:
@@ -268,12 +373,22 @@ def face_quality(image, face, target_pose="any"):
             issues.append("Turn your face to the left")
         elif target_pose == "right" and yaw < 15:
             issues.append("Turn your face to the right")
-        elif target_pose == "chin_up" and pitch < 10:
-            issues.append("Raise your chin slightly")
-        elif target_pose == "chin_down" and pitch > -10:
-            issues.append("Lower your chin slightly")
+        elif target_pose == "chin_up":
+            if abs(yaw) > 20:
+                issues.append("Face the camera straight, then raise your chin")
+            elif pitch < 10:
+                issues.append("Raise your chin slightly")
+        elif target_pose == "chin_down":
+            if abs(yaw) > 20:
+                issues.append("Face the camera straight, then lower your chin")
+            elif pitch > -2:
+                issues.append("Lower your chin slightly")
     elif target_pose != "any" and not pose_available:
-        issues.append("Head pose could not be measured; use a clearer photo")
+        # Some InsightFace/ONNX builds do not expose pose values consistently.
+        # A single detected face can still be accepted using the quality gate;
+        # pose-specific guidance is applied whenever yaw/pitch are available.
+        if target_pose != "center":
+            issues.append("Head pose could not be measured; use a clearer photo")
 
     return {
         "valid": not issues,
@@ -283,10 +398,20 @@ def face_quality(image, face, target_pose="any"):
         "face_area_ratio": round(area_ratio, 4),
         "brightness": round(brightness, 2),
         "contrast": round(contrast, 2),
+        "sharpness": round(sharpness, 2),
         "yaw": round(yaw, 2) if yaw is not None else None,
         "pitch": round(pitch, 2) if pitch is not None else None,
         "roll": round(float(pose_values[2]), 2) if len(pose_values) > 2 else None,
         "pose_available": pose_available,
+        "required_pose": {
+            "center": "Face straight at camera",
+            "chin_up": "Face straight; raise chin",
+            "chin_down": "Face straight; lower chin",
+            "left": "Turn face left",
+            "right": "Turn face right",
+        }.get(target_pose, "Any face angle"),
+        "current_pose": f"yaw {yaw:.1f}°, pitch {pitch:.1f}°" if pose_available else "pose unavailable",
+        "user_guidance": "Perfect—hold still" if not issues else issues[0],
     }
 
 @app.get("/health")
@@ -314,11 +439,18 @@ async def validate_face(
     if target_pose not in allowed:
         raise HTTPException(422, f"target_pose must be one of: {', '.join(sorted(allowed))}")
     image = read_image_bytes(await file.read())
+    # Temporary diagnostic: preserve the exact frame received from the browser.
+    cv2.imwrite("/tmp/latest_validate_frame.jpg", image)
     faces = await detect(image)
+    candidate_count = len(faces)
+    faces = primary_face(image, faces)
     if len(faces) != 1:
-        return {"valid": False, "issues": [f"Exactly one face is required; found {len(faces)}"], "faces_detected": len(faces), "target_pose": target_pose}
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        return {"valid": False, "issues": [f"No reliable primary face was found (detector candidates: {candidate_count})"], "faces_detected": 0, "target_pose": target_pose, "image_width": image.shape[1], "image_height": image.shape[0], "brightness": round(float(gray.mean()), 2), "contrast": round(float(gray.std()), 2)}
     quality = face_quality(image, faces[0], target_pose)
     quality["faces_detected"] = 1
+    quality["image_width"] = image.shape[1]
+    quality["image_height"] = image.shape[0]
     return quality
 
 @app.get("/students")
@@ -334,9 +466,26 @@ def list_students(_=Depends(require_roles("admin", "teacher"))):
 def delete_student(student_id: str, _=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
-        with conn.cursor() as cur: cur.execute("DELETE FROM students WHERE student_id=%s RETURNING student_id", (student_id,)); deleted = cur.fetchone()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM attendance_logs WHERE student_id=%s", (student_id,))
+            cur.execute("DELETE FROM student_embeddings WHERE student_id=%s", (student_id,))
+            cur.execute("DELETE FROM users WHERE student_id=%s", (student_id,))
+            cur.execute("DELETE FROM students WHERE student_id=%s RETURNING student_id", (student_id,)); deleted = cur.fetchone()
         if not deleted: raise HTTPException(404, "Student not found")
         conn.commit(); return {"deleted": student_id}
+    finally: conn.close()
+
+@app.patch("/admin/students/{student_id}")
+def update_student(student_id: str, name: str = Form(...), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE students SET name=%s,email=%s,phone=%s,date_of_birth=NULLIF(%s,''),program=%s
+                         WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program""",
+                        (name.strip(), email or None, phone or None, date_of_birth, program or None, student_id))
+            row = cur.fetchone()
+            if not row: raise HTTPException(404, "Student not found")
+        conn.commit(); return row
     finally: conn.close()
 
 @app.post("/register-student")
@@ -344,11 +493,16 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name: raise HTTPException(422, "student_id and name are required")
     if len(password) < 4: raise HTTPException(422, "Student password must be at least 4 characters")
-    if len(files) != 7: raise HTTPException(422, "Registration requires exactly 7 photos")
+    if len(files) != 5: raise HTTPException(422, "Registration requires exactly 5 photos")
     embeddings = []
+    required_poses = ("center", "chin_up", "chin_down", "left", "right")
     for position, upload in enumerate(files, 1):
-        faces = await detect(read_image_bytes(await upload.read()))
+        image = read_image_bytes(await upload.read())
+        faces = await detect(image)
         if len(faces) != 1: raise HTTPException(400, f"Photo {position}: exactly one face required; found {len(faces)}")
+        quality = face_quality(image, faces[0], required_poses[position - 1])
+        if not quality["valid"]:
+            raise HTTPException(400, f"Photo {position} ({required_poses[position - 1]}): " + "; ".join(quality["issues"]))
         vector = np.asarray(faces[0].embedding, dtype=np.float32)
         vector /= max(np.linalg.norm(vector), 1e-12)
         embeddings.append(vector)
@@ -369,7 +523,7 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
                 ON CONFLICT (username) DO UPDATE SET password_hash=EXCLUDED.password_hash, role='student', student_id=EXCLUDED.student_id""", (student_id, password_hash(password), student_id))
         conn.commit()
     finally: conn.close()
-    return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with 7 face photos"}
+    return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with 5 face photos"}
 
 @app.post("/process-group-attendance")
 async def process_group_attendance(session_id: str = Form(...), file: UploadFile = File(...), _=Depends(require_roles("admin", "teacher"))):
@@ -377,6 +531,14 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     if not session_id: raise HTTPException(422, "session_id is required")
     image, faces = read_image_bytes(await file.read()), None
     faces = await detect(image)
+    # Group photos often contain background patterns that produce weak
+    # proposals. Attendance must only process face-sized, confident boxes.
+    image_height, image_width = image.shape[:2]
+    faces = [face for face in faces if (
+        float(getattr(face, "det_score", 0.0)) >= 0.15 and
+        (float(face.bbox[2]) - float(face.bbox[0])) >= max(16, image_width * 0.008) and
+        (float(face.bbox[3]) - float(face.bbox[1])) >= max(16, image_height * 0.008)
+    )]
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:

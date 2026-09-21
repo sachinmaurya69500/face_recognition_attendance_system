@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS student_embeddings (
     CONSTRAINT one_embedding_per_student UNIQUE (student_id)
 );
 
-CREATE INDEX IF NOT EXISTS embedding_hnsw_idx 
+CREATE INDEX IF NOT EXISTS embedding_hnsw_idx
 ON student_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE UNIQUE INDEX IF NOT EXISTS student_embeddings_student_id_uidx ON student_embeddings(student_id);
 
