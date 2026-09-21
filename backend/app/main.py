@@ -277,9 +277,9 @@ def read_image_bytes(data: bytes):
         pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     except (UnidentifiedImageError, OSError) as exc:
         raise HTTPException(400, "Invalid image file format") from exc
-    # InsightFace's bundled detector expects RGB arrays for this model build.
-    # Keeping the original channel order is essential for webcam and uploads.
-    return np.asarray(pil_image)
+    # InsightFace/OpenCV inference expects BGR arrays. Mobile uploads arrive
+    # through Pillow as RGB, so convert explicitly before detection.
+    return cv2.cvtColor(np.asarray(pil_image), cv2.COLOR_RGB2BGR)
 
 def embedding_array(value):
     """Convert pgvector's Vector result (or a plain list) to a NumPy array."""
@@ -300,12 +300,10 @@ async def detect(image):
     # Conservative recovery for a genuinely difficult webcam frame. A
     # fallback is accepted only when it finds exactly one strong face; an
     # ambiguous fallback is rejected rather than inventing extra faces.
-    # Images are kept in RGB for InsightFace; use the matching conversion for
-    # the low-light recovery path as well.
-    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
     l_channel = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l_channel)
-    enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2RGB)
+    enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
     recovered = await face_model.detect(enhanced)
     if len(recovered) == 1 and float(getattr(recovered[0], "det_score", 0.0)) >= 0.60:
         return recovered
@@ -339,7 +337,7 @@ def face_quality(image, face, target_pose="any"):
     face_width, face_height = max(0, x2 - x1), max(0, y2 - y1)
     area_ratio = (face_width * face_height) / max(width * height, 1)
     crop = image[y1:y2, x1:x2]
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.size else np.empty((0, 0))
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.size else np.empty((0, 0))
     brightness = float(gray.mean()) if gray.size else 0.0
     contrast = float(gray.std()) if gray.size else 0.0
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var()) if gray.size else 0.0
@@ -445,7 +443,7 @@ async def validate_face(
     candidate_count = len(faces)
     faces = primary_face(image, faces)
     if len(faces) != 1:
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         return {"valid": False, "issues": [f"No reliable primary face was found (detector candidates: {candidate_count})"], "faces_detected": 0, "target_pose": target_pose, "image_width": image.shape[1], "image_height": image.shape[0], "brightness": round(float(gray.mean()), 2), "contrast": round(float(gray.std()), 2)}
     quality = face_quality(image, faces[0], target_pose)
     quality["faces_detected"] = 1

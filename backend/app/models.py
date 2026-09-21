@@ -70,7 +70,14 @@ class FaceModel:
         if self.app is None:
             raise RuntimeError("Face model is not loaded")
         async with self._lock:
-            return await asyncio.to_thread(self.app.get, image, max_num=self.max_faces)
+            faces = await asyncio.to_thread(self.app.get, image, max_num=self.max_faces)
+            if faces:
+                return faces
+            # InsightFace builds differ in whether the detector receives BGR
+            # or RGB arrays. Retry the alternate channel order for camera
+            # uploads so a valid face is not rejected solely by that detail.
+            alternate = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            return await asyncio.to_thread(self.app.get, alternate, max_num=self.max_faces)
 
     @property
     def loaded(self):
