@@ -1,1 +1,20 @@
-{"expo":{"name":"FaceAttend","slug":"faceattend","version":"1.0.0","orientation":"portrait","scheme":"faceattend","plugins":[["expo-camera",{"cameraPermission":"Allow FaceAttend to use the camera for face enrollment and attendance."}],"expo-image-picker"],"android":{"package":"com.faceattend.mobile","permissions":["android.permission.CAMERA","android.permission.READ_MEDIA_IMAGES"]}}}
+{
+  "expo": {
+    "name": "AttendAI",
+    "slug": "attendai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "newArchEnabled": false,
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.attendai.mobile"
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font",
+      "expo-camera",
+      "expo-image-picker",
+      "@react-native-community/datetimepicker"
+    ]
+  }
+}

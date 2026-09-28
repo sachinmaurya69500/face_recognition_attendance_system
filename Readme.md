@@ -1,11 +1,11 @@
 # FaceAttend Project Guide
 
-FaceAttend is a GPU-backed face-recognition attendance system with a FastAPI backend, PostgreSQL/pgvector database, Nginx gateway, and Expo Android frontend.
+FaceAttend is a GPU-backed face-recognition attendance system with a FastAPI backend, PostgreSQL/pgvector database, and Nginx gateway.
 
 ## Architecture
 
 ```text
-Expo Android APK -> Nginx -> FastAPI GPU API -> PostgreSQL/pgvector
+Client application -> Nginx -> FastAPI GPU API -> PostgreSQL/pgvector
                                       |
                                 InsightFace/ONNX CUDA
 ```
@@ -23,9 +23,6 @@ backend/requirements.txt  Python dependencies
 backend/init.sql          Database schema
 nginx/default.conf        Reverse proxy to api:8000
 docker-compose.yml        Database, API, and Nginx services
-mobile-expo/App.js        Expo UI and API client
-mobile-expo/app.json      Expo configuration
-mobile-expo/eas.json      EAS build profiles
 ```
 
 ## Docker ports
@@ -114,49 +111,6 @@ Initial password = Date of birth
 ```
 
 That same Student ID links login, profile, face embedding, and attendance records.
-
-## Expo frontend
-
-The active frontend is `mobile-expo`. Its API URL is read from `EXPO_PUBLIC_API_URL` and embedded during build.
-
-```bash
-cd mobile-expo
-npm install
-npx expo start
-```
-
-Example environment values:
-
-```env
-# Android emulator
-EXPO_PUBLIC_API_URL=http://10.0.2.2:8081
-# Physical phone on same LAN
-EXPO_PUBLIC_API_URL=http://192.168.1.10:8081
-# Public deployment
-EXPO_PUBLIC_API_URL=https://attendance.example.com
-```
-
-After changing the URL, build a new APK.
-
-## EAS APK build
-
-```bash
-cd mobile-expo
-npx expo-doctor
-npx eas-cli@latest build --platform android --profile preview
-```
-
-For cloud builds, save the public backend URL in EAS:
-
-```bash
-npx eas-cli@latest env:create \
---name EXPO_PUBLIC_API_URL \
---value https://attendance.example.com \
---environment preview \
---visibility plaintext
-```
-
-Use `preview` for an installable internal APK and `production` for a store release.
 
 ## Public Nginx access
 

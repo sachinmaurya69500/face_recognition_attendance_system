@@ -50,6 +50,8 @@ class UserRequest(BaseModel):
     phone: str | None = None
     date_of_birth: str | None = None
     program: str | None = None
+    section_id: int | None = None
+    roll_number: str | None = None
 
 class ScheduleRequest(BaseModel):
     subject: str
@@ -83,7 +85,7 @@ def password_ok(password, stored):
     return hmac.compare_digest(password_hash(password, salt).split("$", 1)[1], digest)
 
 def token_for(user):
-    payload = {"sub": user["id"], "username": user["username"], "role": user["role"], "student_id": user.get("student_id"), "exp": int(time.time()) + 86400}
+    payload = {"sub": user["id"], "username": user["username"], "role": user["role"], "student_id": user.get("student_id"), "exp": int(time.time()) + 30 * 86400}
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     encoded = __import__("base64").urlsafe_b64encode(raw).decode().rstrip("=")
     signature = hmac.new(AUTH_SECRET.encode(), raw, hashlib.sha256).hexdigest()
@@ -110,10 +112,15 @@ def ensure_auth_tables():
     try:
         with conn.cursor() as cur:
             cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
+            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
+            cur.execute("CREATE TABLE IF NOT EXISTS teacher_assignments (id SERIAL PRIMARY KEY, teacher_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, section_id INTEGER REFERENCES academic_sections(id) ON DELETE CASCADE, subject VARCHAR(160) NOT NULL, UNIQUE(teacher_user_id, section_id, subject))")
+            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES academic_sections(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS roll_number VARCHAR(50)")
+            cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
+            cur.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action VARCHAR(80) NOT NULL, entity VARCHAR(80) NOT NULL, entity_id VARCHAR(120), previous_value JSONB, new_value JSONB, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("SELECT COUNT(*) AS count FROM users")
             if cur.fetchone()["count"] == 0: cur.executemany("INSERT INTO users (username,password_hash,role) VALUES (%s,%s,%s)", [("admin", password_hash("admin123"), "admin"), ("teacher", password_hash("teacher123"), "teacher")])
         conn.commit()
@@ -159,12 +166,33 @@ def get_profile(user=Depends(current_user)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT username, role, student_id, display_name, email, phone, encode(profile_photo, 'base64') AS profile_photo_base64 FROM users WHERE id=%s", (user["sub"],))
+            cur.execute("""SELECT u.username, u.role, u.student_id, COALESCE(u.display_name,s.name) AS display_name,
+                COALESCE(u.email,s.email) AS email, COALESCE(u.phone,s.phone) AS phone,
+                s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                EXISTS (SELECT 1 FROM student_embeddings e WHERE e.student_id=s.student_id) AS face_registered,
+                encode(u.profile_photo, 'base64') AS profile_photo_base64
+                FROM users u LEFT JOIN students s ON s.student_id=u.student_id WHERE u.id=%s""", (user["sub"],))
             profile = cur.fetchone()
             if not profile: raise HTTPException(404, "User not found")
             if profile.get("profile_photo_base64"):
                 profile["profile_photo_base64"] = f"data:image/jpeg;base64,{profile['profile_photo_base64']}"
             return {"profile": profile}
+    finally: conn.close()
+
+@app.get("/teacher/profile")
+def teacher_profile(user=Depends(require_roles("teacher"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username, role, display_name, email, phone, encode(profile_photo, 'base64') AS profile_photo_base64 FROM users WHERE id=%s", (user["sub"],))
+            profile = cur.fetchone()
+            if not profile: raise HTTPException(404, "Teacher not found")
+            cur.execute("""SELECT ta.subject, sec.program, sec.section, sec.semester, COUNT(s.student_id) AS students
+                FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
+                LEFT JOIN students s ON s.section_id=sec.id
+                WHERE ta.teacher_user_id=%s GROUP BY ta.subject, sec.program, sec.section, sec.semester ORDER BY ta.subject""", (user["sub"],))
+            assignments = cur.fetchall()
+            return {"profile": profile, "assignments": assignments}
     finally: conn.close()
 
 @app.post("/auth/profile/photo")
@@ -227,6 +255,16 @@ def mark_notification_read(notification_id: int, user=Depends(current_user)):
         conn.commit(); return {"id": notification_id, "is_read": True}
     finally: conn.close()
 
+@app.post("/notifications/read-all")
+def mark_all_notifications_read(user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE notifications SET is_read=TRUE WHERE user_id=%s", (user["sub"],))
+            count = cur.rowcount
+        conn.commit(); return {"updated": count}
+    finally: conn.close()
+
 @app.post("/admin/notifications")
 def create_notification(body: NotificationRequest, _=Depends(require_roles("admin"))):
     conn = get_db_connection()
@@ -236,7 +274,7 @@ def create_notification(body: NotificationRequest, _=Depends(require_roles("admi
     finally: conn.close()
 
 @app.post("/admin/users")
-def create_user(body: UserRequest, _=Depends(require_roles("admin", "teacher"))):
+def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
     if body.role not in ("admin", "teacher", "student"): raise HTTPException(422, "Invalid role")
     if body.role == "student":
         if not body.student_id or not body.name or not body.date_of_birth: raise HTTPException(422, "Student ID, full name, and date of birth are required")
@@ -248,7 +286,7 @@ def create_user(body: UserRequest, _=Depends(require_roles("admin", "teacher")))
         with conn.cursor() as cur:
             try:
                 if body.role == "student":
-                    cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth, body.program))
+                    cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program,section_id,roll_number) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program,section_id=EXCLUDED.section_id,roll_number=EXCLUDED.roll_number", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth, body.program, body.section_id, body.roll_number))
                 cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
             except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
         conn.commit(); return {"user": result}
@@ -268,6 +306,17 @@ def delete_user(user_id: int, _=Depends(require_roles("admin"))):
         with conn.cursor() as cur: cur.execute("DELETE FROM users WHERE id=%s RETURNING id", (user_id,)); deleted = cur.fetchone()
         if not deleted: raise HTTPException(404, "User not found")
         conn.commit(); return {"deleted": user_id}
+    finally: conn.close()
+
+@app.patch("/admin/users/{user_id}")
+def update_user(user_id: int, name: str = Form(""), email: str = Form(""), phone: str = Form(""), _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE id=%s RETURNING id,username,role,display_name,email,phone", (name.strip() or None, email.strip() or None, phone.strip() or None, user_id))
+            row = cur.fetchone()
+            if not row: raise HTTPException(404, "User not found")
+        conn.commit(); return row
     finally: conn.close()
 
 def read_image_bytes(data: bytes):
@@ -431,7 +480,7 @@ def model_info():
 async def validate_face(
     file: UploadFile = File(...),
     target_pose: str = Form("any"),
-    _=Depends(require_roles("admin", "teacher")),
+    _=Depends(require_roles("admin")),
 ):
     allowed = {"any", "center", "left", "right", "chin_up", "chin_down"}
     if target_pose not in allowed:
@@ -452,12 +501,63 @@ async def validate_face(
     return quality
 
 @app.get("/students")
-def list_students(_=Depends(require_roles("admin", "teacher"))):
+def list_students(user=Depends(require_roles("admin", "teacher"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT student_id, name, email, phone, date_of_birth, program, created_at FROM students ORDER BY student_id")
+            if user["role"] == "admin":
+                cur.execute("SELECT student_id, name, email, phone, date_of_birth, program, roll_number, section_id, created_at FROM students ORDER BY student_id")
+            else:
+                cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth, s.program, s.roll_number, s.section_id, s.created_at
+                    FROM students s JOIN academic_sections sec ON sec.id=s.section_id
+                    JOIN teacher_assignments ta ON ta.section_id=sec.id AND ta.teacher_user_id=%s
+                    ORDER BY s.student_id""", (user["sub"],))
             return {"students": cur.fetchall()}
+    finally: conn.close()
+
+class AcademicSectionRequest(BaseModel):
+    school: str
+    faculty: str
+    department: str
+    program: str
+    semester: str
+    section: str
+
+class TeacherAssignmentRequest(BaseModel):
+    teacher_user_id: int
+    section_id: int
+    subject: str
+
+@app.post("/admin/academic/sections")
+def create_academic_section(body: AcademicSectionRequest, _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO academic_sections (school,faculty,department,program,semester,section) VALUES (%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (school,faculty,department,program,semester,section) DO UPDATE SET school=EXCLUDED.school RETURNING *""", tuple(value.strip() for value in body.dict().values()))
+            row = cur.fetchone()
+        conn.commit(); return row
+    finally: conn.close()
+
+@app.get("/academic/sections")
+def list_academic_sections(_=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM academic_sections ORDER BY school, faculty, department, program, semester, section")
+            return {"sections": cur.fetchall()}
+    finally: conn.close()
+
+@app.post("/admin/teacher-assignments")
+def assign_teacher(body: TeacherAssignmentRequest, user=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO teacher_assignments (teacher_user_id,section_id,subject) VALUES (%s,%s,%s) ON CONFLICT (teacher_user_id,section_id,subject) DO NOTHING RETURNING id", (body.teacher_user_id, body.section_id, body.subject.strip()))
+            row = cur.fetchone()
+            if not row: raise HTTPException(409, "This teacher is already assigned to that class.")
+            cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value) VALUES (%s,'TEACHER_ASSIGNED','teacher_assignment',%s,%s)", (user["sub"], str(row["id"]), json.dumps(body.dict())))
+        conn.commit(); return {"id": row["id"], "status": "assigned"}
     finally: conn.close()
 
 @app.delete("/admin/students/{student_id}")
@@ -487,7 +587,7 @@ def update_student(student_id: str, name: str = Form(...), email: str = Form("")
     finally: conn.close()
 
 @app.post("/register-student")
-async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), files: list[UploadFile] = File(...), _=Depends(require_roles("admin", "teacher"))):
+async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), files: list[UploadFile] = File(...), _=Depends(require_roles("admin"))):
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name: raise HTTPException(422, "student_id and name are required")
     if len(password) < 4: raise HTTPException(422, "Student password must be at least 4 characters")
@@ -524,7 +624,7 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with 5 face photos"}
 
 @app.post("/process-group-attendance")
-async def process_group_attendance(session_id: str = Form(...), file: UploadFile = File(...), _=Depends(require_roles("admin", "teacher"))):
+async def process_group_attendance(session_id: str = Form(...), file: UploadFile = File(...), user=Depends(require_roles("teacher"))):
     session_id = session_id.strip()
     if not session_id: raise HTTPException(422, "session_id is required")
     image, faces = read_image_bytes(await file.read()), None
@@ -563,16 +663,50 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
         try:
             with conn.cursor() as cur:
                 for st in recognized:
-                    cur.execute("""INSERT INTO attendance_logs (student_id, session_id, confidence_score) VALUES (%s,%s,%s)
-                        ON CONFLICT (student_id, session_id) DO UPDATE SET confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score)""", (st["student_id"], session_id, st["confidence"]))
+                    cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method)
+                        VALUES (%s,%s,%s,%s,'RECOGNIZED','PRESENT','PRESENT','FACE_RECOGNITION')
+                        ON CONFLICT (student_id, session_id) DO UPDATE SET confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score), teacher_id=EXCLUDED.teacher_id, recognition_status='RECOGNIZED', initial_attendance_status='PRESENT', final_attendance_status=COALESCE(attendance_logs.final_attendance_status,'PRESENT')""", (st["student_id"], user["sub"], session_id, st["confidence"]))
                     cur.execute("""INSERT INTO notifications (user_id, category, title, body)
                         SELECT id, 'attendance', 'Attendance marked', %s FROM users WHERE student_id=%s""",
                         (f'Attendance recorded for {st["name"]} in session {session_id}.', st["student_id"]))
+                cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your attendance submission for session {session_id} was processed successfully.'))
             conn.commit()
         finally: conn.close()
     ok, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
     encoded = base64.b64encode(buffer).decode() if ok else None
     return {"session_id": session_id, "total_faces_detected": len(faces), "recognized_count": len(recognized), "students": recognized, "annotated_image_base64": f"data:image/jpeg;base64,{encoded}" if encoded else None}
+
+class FinalAttendanceRequest(BaseModel):
+    session_id: str
+    records: list[dict]
+
+@app.post("/teacher/attendance/finalize")
+def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles("teacher"))):
+    if not body.records or any(row.get("status") not in ("PRESENT", "ABSENT") for row in body.records):
+        raise HTTPException(422, "Please mark Present or Absent for every student.")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            for row in body.records:
+                student_id, status = row.get("student_id"), row.get("status")
+                cur.execute("SELECT initial_attendance_status, recognition_status, confidence_score FROM attendance_logs WHERE student_id=%s AND session_id=%s", (student_id, body.session_id))
+                existing = cur.fetchone()
+                initial = existing["initial_attendance_status"] if existing else "ABSENT"
+                recognition = existing["recognition_status"] if existing else "NOT_RECOGNIZED"
+                confidence = existing["confidence_score"] if existing else 0
+                override = initial != status
+                cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method, is_manual_override, updated_by, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+                    ON CONFLICT (student_id, session_id) DO UPDATE SET final_attendance_status=EXCLUDED.final_attendance_status, attendance_method=EXCLUDED.attendance_method, is_manual_override=EXCLUDED.is_manual_override, updated_by=EXCLUDED.updated_by, updated_at=CURRENT_TIMESTAMP""", (student_id, user["sub"], body.session_id, confidence, recognition, initial, status, "MANUAL_OVERRIDE" if override else "FACE_RECOGNITION", override, user["sub"]))
+                if override:
+                    cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, previous_value, new_value) VALUES (%s,'ATTENDANCE_MANUALLY_CHANGED','attendance',%s,%s,%s)", (user["sub"], f"{student_id}:{body.session_id}", json.dumps({"status": initial}), json.dumps({"status": status})))
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your submission for {body.session_id} was verified successfully.'))
+        conn.commit()
+        return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
+    finally:
+        conn.close()
 
 @app.get("/attendance/{session_id}")
 def session_attendance(session_id: str, _=Depends(require_roles("admin", "teacher"))):
@@ -610,7 +744,7 @@ def own_attendance(user=Depends(require_roles("student"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT session_id, confidence_score, timestamp FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],))
+            cur.execute("SELECT session_id, confidence_score, timestamp, COALESCE(final_attendance_status, initial_attendance_status) AS status FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],))
             return {"student_id": user["student_id"], "attendance": cur.fetchall()}
     finally: conn.close()
 
