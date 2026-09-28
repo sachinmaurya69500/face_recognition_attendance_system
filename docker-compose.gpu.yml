@@ -5,10 +5,8 @@ services:
     image: pgvector/pgvector:pg16
     container_name: attendance_pgvector_db
     restart: always
-    environment:
-      POSTGRES_DB: attendance_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_secure_pass
+    env_file:
+      - ./backend/.env
     ports:
       - "${DB_HOST_PORT:-5433}:5432"
     volumes:
@@ -28,20 +26,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      - ./backend/.env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: attendance_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres_secure_pass
-      MATCH_THRESHOLD: "0.42"
-      MAX_FACES: "500"
-      FACE_DET_THRESHOLD: "0.15"
-      FACE_DET_SIZE: "640"
-      INSIGHTFACE_MODEL: buffalo_l
-      INSIGHTFACE_ROOT: /workspace
-      INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
-      REQUIRE_GPU: "1"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:

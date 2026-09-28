@@ -49,6 +49,14 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-s
 
 ## Start backend
 
+Create the backend environment file once before starting the stack:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Set a unique `AUTH_SECRET` in `backend/.env` for any shared or production deployment.
+
 ```bash
 cd ~/Face_recognition_attendance_system
 docker compose down --remove-orphans
