@@ -13,6 +13,10 @@ RUN mkdir -p /workspace/models
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# The shared requirements file keeps the model stack identical; use the CPU
+# runtime in the non-GPU image.
+RUN pip uninstall -y onnxruntime-gpu || true \
+    && pip install --no-cache-dir --no-deps "onnxruntime>=1.16.0"
 
 # Pre-download SCRFD & ArcFace models inside the image build layer
 RUN python -c "import os; from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', root=os.environ['INSIGHTFACE_ROOT']).prepare(ctx_id=0, det_size=(1600, 1600))"
@@ -25,4 +29,4 @@ VOLUME ["/workspace/models"]
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/bin/sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-1} --threads ${GUNICORN_THREADS:-1} --timeout ${GUNICORN_TIMEOUT:-300} --graceful-timeout ${GUNICORN_GRACEFUL_TIMEOUT:-30} --access-logfile - --error-logfile -"]

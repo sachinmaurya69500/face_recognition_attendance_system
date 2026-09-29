@@ -16,6 +16,7 @@ backend/app/__pycache__/
 # Local environment and logs
 .env
 .env.*
+!.env.example
 *.log
 
 # Keep the database volume and model weights outside source archives.

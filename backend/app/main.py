@@ -20,6 +20,7 @@ from app.models import face_model
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
+CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -30,7 +31,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Face Attendance API", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,6 +61,21 @@ class ScheduleRequest(BaseModel):
     starts_at: str
     ends_at: str
     day: str
+
+class AttendanceSessionRequest(BaseModel):
+    title: str
+    course: str
+    school: str
+    faculty: str
+    department: str
+    program: str
+    semester: str
+    section_id: int
+    room: str = ""
+    event_date: str
+    starts_at: str
+    ends_at: str
+    notes: str = ""
 
 class NotificationRequest(BaseModel):
     user_id: int
@@ -115,6 +131,14 @@ def ensure_auth_tables():
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS attendance_sessions (
+                session_id VARCHAR(50) PRIMARY KEY, teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                title VARCHAR(160) NOT NULL, course VARCHAR(160) NOT NULL, school VARCHAR(160) NOT NULL,
+                faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL,
+                semester VARCHAR(80) NOT NULL, section_id INTEGER, room VARCHAR(80), event_date DATE NOT NULL,
+                starts_at TIME NOT NULL, ends_at TIME NOT NULL, notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""")
+            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS section_id INTEGER")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
             cur.execute("CREATE TABLE IF NOT EXISTS teacher_assignments (id SERIAL PRIMARY KEY, teacher_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, section_id INTEGER REFERENCES academic_sections(id) ON DELETE CASCADE, subject VARCHAR(160) NOT NULL, UNIQUE(teacher_user_id, section_id, subject))")
@@ -548,6 +572,62 @@ def list_academic_sections(_=Depends(current_user)):
             return {"sections": cur.fetchall()}
     finally: conn.close()
 
+@app.post("/teacher/attendance-sessions")
+def create_attendance_session(body: AttendanceSessionRequest, user=Depends(require_roles("teacher"))):
+    values = [body.title, body.course, body.school, body.faculty, body.department, body.program, body.semester,
+              body.room, body.event_date, body.starts_at, body.ends_at, body.notes]
+    if any(not str(value).strip() for value in values[:7]) or not body.section_id:
+        raise HTTPException(422, "Title, course, academic hierarchy, and section are required")
+    session_id = f"ATT-{secrets.token_hex(6).upper()}"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT 1 FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
+                WHERE ta.teacher_user_id=%s AND ta.section_id=%s AND sec.school=%s AND sec.faculty=%s
+                AND sec.department=%s AND sec.program=%s AND sec.semester=%s""",
+                (user["sub"], body.section_id, body.school.strip(), body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip()))
+            if not cur.fetchone():
+                raise HTTPException(403, "You are not assigned to this academic section")
+            cur.execute("""INSERT INTO attendance_sessions
+                (session_id,teacher_id,title,course,school,faculty,department,program,semester,section_id,room,event_date,starts_at,ends_at,notes)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING *""", (session_id, user["sub"], body.title.strip(), body.course.strip(), body.school.strip(),
+                body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip(), body.section_id,
+                body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip()))
+            result = cur.fetchone()
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+@app.get("/teacher/attendance-sessions")
+def teacher_attendance_sessions(user=Depends(require_roles("teacher"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM attendance_sessions WHERE teacher_id=%s ORDER BY event_date DESC, starts_at DESC", (user["sub"],))
+            return {"sessions": cur.fetchall()}
+    finally:
+        conn.close()
+
+@app.get("/student/attendance-sessions")
+def student_attendance_sessions(user=Depends(require_roles("student"))):
+    student_id = user.get("student_id")
+    if not student_id: raise HTTPException(422, "Student account is not linked to a student")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT s.session_id, s.title, s.course, s.school, s.faculty, s.department,
+                s.program, s.semester, s.room, s.event_date, s.starts_at, s.ends_at, s.notes,
+                COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+                a.timestamp AS marked_at
+                FROM attendance_sessions s JOIN students st ON st.section_id=s.section_id
+                LEFT JOIN attendance_logs a ON a.session_id=s.session_id AND a.student_id=%s
+                WHERE st.student_id=%s ORDER BY s.event_date DESC, s.starts_at DESC""", (student_id, student_id))
+            return {"sessions": cur.fetchall()}
+    finally:
+        conn.close()
+
 @app.post("/admin/teacher-assignments")
 def assign_teacher(body: TeacherAssignmentRequest, user=Depends(require_roles("admin"))):
     conn = get_db_connection()
@@ -627,6 +707,16 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
 async def process_group_attendance(session_id: str = Form(...), file: UploadFile = File(...), user=Depends(require_roles("teacher"))):
     session_id = session_id.strip()
     if not session_id: raise HTTPException(422, "session_id is required")
+    conn = get_db_connection()
+    session_section_id = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT section_id FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+            session = cur.fetchone()
+            if not session: raise HTTPException(404, "Attendance session not found or not owned by this teacher")
+            session_section_id = session["section_id"]
+    finally:
+        conn.close()
     image, faces = read_image_bytes(await file.read()), None
     faces = await detect(image)
     # Group photos often contain background patterns that produce weak
@@ -640,7 +730,7 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id)")
+            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id) WHERE s.section_id=%s", (session_section_id,))
             rows = cur.fetchall()
     finally: conn.close()
     known = np.asarray([embedding_array(r["embedding"]) for r in rows], dtype=np.float32) if rows else np.empty((0, 512), dtype=np.float32)
@@ -755,9 +845,16 @@ def own_attendance_overview(user=Depends(require_roles("student"))):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT s.student_id, s.name, s.created_at, u.username FROM students s JOIN users u ON u.student_id=s.student_id WHERE s.student_id=%s", (user["student_id"],)); profile = cur.fetchone()
-            cur.execute("SELECT session_id, confidence_score, timestamp FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],)); attendance = cur.fetchall()
-            cur.execute("SELECT DISTINCT subject, teacher, room, starts_at, ends_at, day FROM schedules ORDER BY day, starts_at, subject"); subjects = cur.fetchall()
-            return {"profile": profile, "attendance": attendance, "subjects": subjects, "summary": {"present": len(attendance), "absent": 0, "overall_percentage": 100 if attendance else 0}}
+            cur.execute("""SELECT s.session_id, s.title, s.course, s.school, s.faculty, s.department,
+                s.program, s.semester, s.room, s.event_date, s.starts_at, s.ends_at, s.notes,
+                COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+                a.timestamp AS marked_at
+                FROM attendance_sessions s JOIN students st ON st.section_id=s.section_id
+                LEFT JOIN attendance_logs a ON a.session_id=s.session_id AND a.student_id=%s
+                WHERE st.student_id=%s ORDER BY s.event_date DESC, s.starts_at DESC""", (user["student_id"], user["student_id"]))
+            attendance = cur.fetchall()
+            present = sum(1 for row in attendance if str(row["status"]).upper() == "PRESENT")
+            return {"profile": profile, "attendance": attendance, "subjects": attendance, "summary": {"present": present, "absent": len(attendance) - present, "overall_percentage": round(present / len(attendance) * 100, 1) if attendance else 0}}
     finally: conn.close()
 
 @app.delete("/admin/attendance/{session_id}")
@@ -773,6 +870,11 @@ def all_attendance(_=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT a.id, a.session_id, a.student_id, s.name, a.confidence_score, a.timestamp FROM attendance_logs a JOIN students s USING (student_id) ORDER BY a.timestamp DESC")
+            cur.execute("""SELECT a.id, sess.session_id, st.student_id, st.name, a.confidence_score,
+                a.timestamp, sess.title, sess.course, sess.event_date, sess.starts_at, sess.ends_at,
+                COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status
+                FROM attendance_sessions sess JOIN students st ON st.section_id=sess.section_id
+                LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
+                ORDER BY sess.event_date DESC, sess.starts_at DESC, st.name""")
             return {"attendance": cur.fetchall()}
     finally: conn.close()

@@ -32,6 +32,25 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS attendance_session_student_uidx ON attendance_logs(student_id, session_id);
 
+CREATE TABLE IF NOT EXISTS attendance_sessions (
+    session_id VARCHAR(50) PRIMARY KEY,
+    teacher_id INTEGER,
+    title VARCHAR(160) NOT NULL,
+    course VARCHAR(160) NOT NULL,
+    school VARCHAR(160) NOT NULL,
+    faculty VARCHAR(160) NOT NULL,
+    department VARCHAR(160) NOT NULL,
+    program VARCHAR(160) NOT NULL,
+    semester VARCHAR(80) NOT NULL,
+    section_id INTEGER,
+    room VARCHAR(80),
+    event_date DATE NOT NULL,
+    starts_at TIME NOT NULL,
+    ends_at TIME NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id SERIAL PRIMARY KEY,
     subject VARCHAR(120) NOT NULL,
