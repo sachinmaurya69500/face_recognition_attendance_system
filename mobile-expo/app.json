@@ -21,8 +21,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "1ba67005-8a98-4a5a-b522-f41407bc88db"
+        "projectId": "edfdd91f-e367-41a0-9b84-30034051d7a0"
       }
-    }
+    },
+    "owner": "sachinmaurya6520"
   }
 }

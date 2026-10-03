@@ -22,6 +22,7 @@
     "expo-font": "~13.0.4",
     "expo-image-picker": "~16.0.6",
     "expo-status-bar": "~2.0.1",
+    "expo-system-ui": "~4.0.9",
     "metro": "^0.81.0",
     "metro-resolver": "^0.84.6",
     "react": "18.3.1",

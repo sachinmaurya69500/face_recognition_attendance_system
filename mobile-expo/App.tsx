@@ -22,7 +22,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 const MaterialCommunityIcons = ((props:any)=><MaterialCommunityIconsBase {...props} name={props.name==='folder-school-outline'?'folder-outline':props.name==='school-search-outline'?'book-search-outline':props.name}/>) as any;
 
 type Role = "admin" | "teacher" | "student";
-const API = process.env.EXPO_PUBLIC_API_URL || "https://need-associated-pants-examined.trycloudflare.com";
+const API = process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
 const http = axios.create({ baseURL: API });
 const colors = {
   navy: "#244578",

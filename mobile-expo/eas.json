@@ -1,4 +1,7 @@
 {
+  "cli": {
+    "appVersionSource": "remote"
+  },
   "build": {
     "preview": {
       "distribution": "internal",
@@ -6,7 +9,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://need-associated-pants-examined.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://anotherearth.taila10c0b.ts.net"
       }
     },
     "production": {
@@ -14,7 +17,7 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://need-associated-pants-examined.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://anotherearth.taila10c0b.ts.net"
       }
     }
   }
