@@ -1,20 +1,28 @@
 {
   "expo": {
-    "name": "AttendAI",
+    "name": "Pratyaksh",
     "slug": "attendai",
     "version": "1.0.0",
     "orientation": "portrait",
     "newArchEnabled": false,
     "userInterfaceStyle": "light",
     "android": {
-      "package": "com.attendai.mobile"
+      "package": "com.attendai.mobile",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-asset",
       "expo-font",
       "expo-camera",
-      "expo-image-picker",
-      "@react-native-community/datetimepicker"
-    ]
+      "expo-image-picker"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "1ba67005-8a98-4a5a-b522-f41407bc88db"
+      }
+    }
   }
 }

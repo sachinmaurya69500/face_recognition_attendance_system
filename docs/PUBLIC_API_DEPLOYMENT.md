@@ -23,8 +23,7 @@ The token is a secret. Do not commit it or place it in tracked files.
 From the project root, export the token and deploy:
 
 ```sh
-export CLOUDFLARE_TUNNEL_TOKEN='paste-your-token-here'
-./scripts/deploy.sh
+./scripts/start-quick-tunnel.sh
 ```
 
 The default deployment is GPU. The script builds `backend/Dockerfile.gpu`, starts PostgreSQL, API, Nginx, and cloudflared, and verifies the Compose configuration. It does not open inbound ports.

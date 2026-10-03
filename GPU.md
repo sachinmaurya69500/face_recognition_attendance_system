@@ -1,30 +1,28 @@
 # GPU runtime
 
-FaceAttend now runs the face model on NVIDIA CUDA by default. The API service
-uses `backend/Dockerfile.gpu`, requests all GPUs through Compose, and requires
-the ONNX Runtime `CUDAExecutionProvider`; it will fail startup instead of
-silently falling back to CPU.
+Pratyaksh uses NVIDIA CUDA for face recognition. The default deployment uses
+`backend/Dockerfile.gpu`, requests all GPUs through Compose, and requires the
+ONNX Runtime CUDA provider.
 
-Verify the host first:
+Verify the host:
 
 ```bash
 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-smi
 ```
 
-Start FaceAttend:
+Deploy through Cloudflare Tunnel:
 
 ```bash
-docker compose down --remove-orphans
-DB_HOST_PORT=5434 docker compose up --build
+./scripts/start-quick-tunnel.sh
 ```
 
-Verify the active provider:
+Verify the GPU provider and public API:
 
 ```bash
-curl http://localhost:8080/model
+docker compose -f docker-compose.gpu.yml exec -T api \
+  python -c 'import onnxruntime as ort; print(ort.get_available_providers())'
+curl https://attendai.sachinmaurya.me/health
 ```
 
-The response must contain `CUDAExecutionProvider` in `providers`. If the host
-does not have an NVIDIA GPU, NVIDIA Container Toolkit, or a compatible driver,
-the API is intentionally prevented from starting.
+The provider list must include `CUDAExecutionProvider`.

@@ -28,7 +28,7 @@ async def lifespan(_app: FastAPI):
     ensure_auth_tables()
     yield
 
-app = FastAPI(title="Face Attendance API", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Pratyaksh Attendance API", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

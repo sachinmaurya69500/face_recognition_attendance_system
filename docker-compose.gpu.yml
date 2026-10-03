@@ -49,14 +49,8 @@ services:
         condition: service_healthy
     volumes:
       - ./nginx/default.conf:/etc/nginx/nginx.conf:ro
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    restart: unless-stopped
-    depends_on:
-      nginx:
-        condition: service_started
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    ports:
+      - "127.0.0.1:8080:80"
 
 volumes:
   pgdata:

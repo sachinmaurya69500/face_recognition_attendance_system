@@ -22,8 +22,7 @@ No router port forwarding is required. Nginx, the API, PostgreSQL, and model fil
 From the repository root, export the token only in the current shell or place it in an ignored local `.env` file:
 
 ```sh
-export CLOUDFLARE_TUNNEL_TOKEN='PASTE_YOUR_CLOUDFLARE_TUNNEL_TOKEN'
-./scripts/deploy.sh
+./scripts/start-quick-tunnel.sh
 ```
 
 The script defaults to `docker-compose.gpu.yml`. It validates Compose, builds the GPU image, and starts PostgreSQL, the GPU API, Nginx, and cloudflared. For CPU deployment, use `COMPOSE_FILE=docker-compose.yml ./scripts/deploy.sh`.
@@ -78,7 +77,7 @@ Do not configure router port forwarding, DMZ, UPnP, or public application ports.
 
 ## Troubleshooting
 
-- `cloudflared` exits immediately: verify `CLOUDFLARE_TUNNEL_TOKEN` and inspect `docker compose -f docker-compose.gpu.yml logs cloudflared`.
+- `cloudflared` exits immediately: inspect `docker compose -f docker-compose.gpu.yml logs cloudflared` and verify that outbound TCP/UDP port 7844 is allowed.
 - Cloudflare returns 502: verify the tunnel service is `http://nginx:80`, the service is on the same Compose network, and Nginx can reach `api:8000`.
 - API health reports database failure: inspect `docker compose -f docker-compose.gpu.yml logs db api`; do not delete volumes.
 - Never publish 5432, 8000, 8010, or any model/vector service port.

@@ -1,6 +1,6 @@
-# FaceAttend Project Guide
+# Pratyaksh Project Guide
 
-FaceAttend is a GPU-backed face-recognition attendance system with a FastAPI backend, PostgreSQL/pgvector database, and Nginx gateway.
+Pratyaksh is a GPU-backed face-recognition attendance system with a FastAPI backend, PostgreSQL/pgvector database, and Nginx gateway.
 
 ## Architecture
 
@@ -25,13 +25,11 @@ nginx/default.conf        Reverse proxy to api:8000
 docker-compose.yml        Database, API, and Nginx services
 ```
 
-## Docker ports
+## Runtime exposure
 
-| Service | Container port | Typical host port |
-|---|---:|---:|
-| PostgreSQL | 5432 | 5436 |
-| FastAPI | 8000 | 8011 |
-| Nginx | 80 | 8081 |
+PostgreSQL, FastAPI, and Nginx are private Docker services. No host ports are
+published. Public HTTPS is provided by Cloudflare Tunnel at
+`https://attendai.sachinmaurya.me`.
 
 PostgreSQL data is stored in the `pgdata` Docker volume.
 
@@ -49,32 +47,21 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-s
 
 ## Start backend
 
-Create the backend environment file once before starting the stack:
+Create `backend/.env` from your secret-managed environment template and set a
+unique `AUTH_SECRET`, database password, and production settings. Never commit
+that file.
+
+For the supported GPU deployment:
 
 ```bash
-cp backend/.env.example backend/.env
+./scripts/start-quick-tunnel.sh
+docker compose -f docker-compose.gpu.yml ps
+docker compose -f docker-compose.gpu.yml logs --tail=100 api nginx cloudflared
+curl https://attendai.sachinmaurya.me/health
 ```
 
-Set a unique `AUTH_SECRET` in `backend/.env` for any shared or production deployment.
-
-```bash
-cd ~/Face_recognition_attendance_system
-docker compose down --remove-orphans
-DB_HOST_PORT=5436 \
-API_HOST_PORT=8011 \
-NGINX_HOST_PORT=8081 \
-docker compose up --build -d
-```
-
-Check it:
-
-```bash
-docker compose ps
-curl http://localhost:8081/health
-docker compose logs -f api
-```
-
-The API must report CUDA/ONNX providers and `/health` must respond.
+The API must report CUDA/ONNX providers and the public health endpoint must
+respond with HTTP 200.
 
 ## Database and face flow
 
@@ -120,33 +107,19 @@ Initial password = Date of birth
 
 That same Student ID links login, profile, face embedding, and attendance records.
 
-## Public Nginx access
-
-Nginx is enough if it has a public IP/domain and HTTPS. A local address is not globally reachable.
-
-Temporary ngrok testing:
-
-```bash
-ngrok http 8081
-```
-
-Copy the generated HTTPS URL into `.env` and EAS, then rebuild. Free tunnel URLs can change when ngrok restarts.
+## Public access
 
 Production is:
 
 ```text
-VPS + domain + HTTPS -> Nginx -> FastAPI -> PostgreSQL
+APK -> Cloudflare HTTPS -> Cloudflare Tunnel -> Nginx -> FastAPI -> PostgreSQL
 ```
+
+See `docs/CLOUDFLARE_TUNNEL_DEPLOYMENT.md` for tunnel creation and APK
+configuration. Do not configure router port forwarding or expose database/API
+ports.
 
 ## Troubleshooting
-
-Port conflicts:
-
-```bash
-sudo lsof -i :5436
-sudo lsof -i :8011
-sudo lsof -i :8081
-```
 
 GPU failure:
 
@@ -158,8 +131,8 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-s
 API failure:
 
 ```bash
-curl http://localhost:8081/health
-docker compose logs --tail=100 api
+docker compose -f docker-compose.gpu.yml logs --tail=100 api nginx cloudflared
+curl https://attendai.sachinmaurya.me/health
 ```
 
 APK crash logs:
@@ -184,8 +157,8 @@ Install Git, Docker, NVIDIA driver/toolkit, and Node. Then:
 git clone YOUR_REPOSITORY_URL
 cd Face_recognition_attendance_system
 nvidia-smi
-DB_HOST_PORT=5436 API_HOST_PORT=8011 NGINX_HOST_PORT=8081 docker compose up --build -d
-curl http://localhost:8081/health
+./scripts/start-quick-tunnel.sh
+curl https://attendai.sachinmaurya.me/health
 ```
 
 No host Python virtual environment is required; the GPU Dockerfile installs backend dependencies and downloads the model during image build.
