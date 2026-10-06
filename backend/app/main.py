@@ -18,7 +18,7 @@ from app.database import get_db_connection
 from app.models import face_model
 
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
-MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
+MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.65"))
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 
@@ -53,6 +53,7 @@ class UserRequest(BaseModel):
     program: str | None = None
     section_id: int | None = None
     roll_number: str | None = None
+    academic_section_ids: list[int] = []
 
 class ScheduleRequest(BaseModel):
     subject: str
@@ -70,12 +71,14 @@ class AttendanceSessionRequest(BaseModel):
     department: str
     program: str
     semester: str
-    section_id: int
+    section_id: int | None = None
     room: str = ""
     event_date: str
     starts_at: str
     ends_at: str
     notes: str = ""
+    academic_scope: dict[str, list[str]] = {}
+    academic_scope: dict[str, list[str]] = {}
 
 class NotificationRequest(BaseModel):
     user_id: int
@@ -139,8 +142,66 @@ def ensure_auth_tables():
                 starts_at TIME NOT NULL, ends_at TIME NOT NULL, notes TEXT,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""")
             cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS section_id INTEGER")
+            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS academic_scope JSONB")
+            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS academic_scope JSONB")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
+            cur.execute("SELECT COUNT(*) AS count FROM academic_sections")
+            if True:
+                catalog = [
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "B.Sc. Information Technology (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "Bachelor of Computer Application (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "Master of Computer Application (Data Science)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "Ph. D. Computer Science"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Mathematics", "B.Sc. Mathematics (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Tourism Management", "B.B.A Tourism & Travel Management (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Tourism Management", "B.A. Tourism & Travel Management (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Tourism Management", "M.B.A. Tourism & Travel Management"),
+                    ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Tourism Management", "Ph. D. Tourism Management"),
+                    ("School of Technology, Communication and Management", "Faculty of Communication", "Department of Journalism & Mass Communication", "B.A. Journalism and Mass Communication (Honors)"),
+                    ("School of Technology, Communication and Management", "Faculty of Communication", "Department of Journalism & Mass Communication", "M.A. Journalism and Mass Communication"),
+                    ("School of Technology, Communication and Management", "Faculty of Communication", "Department of Journalism & Mass Communication", "Ph. D. Journalism and Mass Communication"),
+                    ("School of Technology, Communication and Management", "Faculty of Communication", "Department of Animation and Visual Effects", "B.Voc. (Bachelor of Vocation) in 3D Animation and VFX (Honors)"),
+                    ("School of Biological Sciences and Sustainability", "Faculty of Rural Studies and Sustainability", "Department of Rural Studies and Sustainability", "Bachelor of Rural Studies (Honors)"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of English", "B.A. English (Honors)"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Education", "B.Ed. (Bachelor of Education)"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Education", "M.A. Education"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Education", "Ph. D. Education"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Psychology", "B.A. Psychology (Honors)"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Psychology", "M.A. Clinical Psychology"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Psychology", "M.Sc. Clinical Psychology"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Psychology", "P.G. Diploma Guidance & Counseling"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Humanities and Social Sciences", "Department of Psychology", "Ph. D. Psychology"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Foundation Courses", "Department of Life Management", "Life Management - Compulsory Subject for PG and UG"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Foundation Courses", "Department of Scientific Spirituality", "Scientific Spirituality - Foundation Course"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Foundation Courses", "Department of Oriental Studies, Religious Studies and Philosophy", "P.G. Diploma Theology & Psychological Counseling"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Foundation Courses", "Department of Oriental Studies, Religious Studies and Philosophy", "M.A. Hindu Studies"),
+                    ("School of Humanities, Social Sciences and Foundation Courses", "Faculty of Foundation Courses", "Department of Oriental Studies, Religious Studies and Philosophy", "M.A. Philosophy"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "B.Sc. Yogic Science (Honors)"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "M.Sc. Yoga Therapy"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "M.A. Human Consciousness & Yogic Science"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "M.Sc. Human Consciousness & Yogic Science"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "Ph. D. Human Consciousness & Yogic Science"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "Ph. D. Oriental Studies"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "Certificate in Yoga and Alternative Therapy"),
+                    ("School of Indology", "Faculty of Yoga & Health", "Department of Yoga and Alternative Therapy", "P.G. Diploma Human Consciousness, Yoga & Alternative Therapy"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Vedic Studies and Sanskrit", "B.A. Sanskrit (Honors)"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Vedic Studies and Sanskrit", "M.A. Sanskrit"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Vedic Studies and Sanskrit", "Ph.D. Sanskrit"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Hindi", "B.A. Hindi (Honors)"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Hindi", "M.A. Hindi"),
+                    ("School of Indology", "Faculty of Indian Languages", "Department of Hindi", "Ph.D. Hindi"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of Indian Classical Music", "B.A. Music (Vocal) (Honors)"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of Indian Classical Music", "M.A. Music (Vocal)"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of Indian Classical Music", "B.A. Music Instrumental Mridang/Tabla (Honors)"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of Indian Classical Music", "M.A. Music (Tabla, Pakhaawaj)"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of Indian Classical Music", "Ph. D. Indian Classical Music"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of History and Indian Culture", "B.A. History (Honors)"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of History and Indian Culture", "M.A. History and Indian Culture"),
+                    ("School of Indology", "Faculty of Music & Indian Culture", "Department of History and Indian Culture", "Ph. D. History"),
+                ]
+                rows = [(school, faculty, department, program, semester, "Section A") for school, faculty, department, program in catalog for semester in (f"Semester {number}" for number in range(1, 9))]
+                cur.executemany("INSERT INTO academic_sections (school,faculty,department,program,semester,section) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", rows)
             cur.execute("CREATE TABLE IF NOT EXISTS teacher_assignments (id SERIAL PRIMARY KEY, teacher_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, section_id INTEGER REFERENCES academic_sections(id) ON DELETE CASCADE, subject VARCHAR(160) NOT NULL, UNIQUE(teacher_user_id, section_id, subject))")
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES academic_sections(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS roll_number VARCHAR(50)")
             cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
@@ -312,6 +373,8 @@ def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
                 if body.role == "student":
                     cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program,section_id,roll_number) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program,section_id=EXCLUDED.section_id,roll_number=EXCLUDED.roll_number", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth, body.program, body.section_id, body.roll_number))
                 cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
+                if body.role == "teacher" and body.academic_section_ids:
+                    cur.executemany("INSERT INTO teacher_assignments (teacher_user_id,section_id,subject) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", [(result["id"], section_id, "Assigned academic course") for section_id in body.academic_section_ids])
             except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
         conn.commit(); return {"user": result}
     finally: conn.close()
@@ -378,7 +441,7 @@ async def detect(image):
     l_channel = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l_channel)
     enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
     recovered = await face_model.detect(enhanced)
-    if len(recovered) == 1 and float(getattr(recovered[0], "det_score", 0.0)) >= 0.60:
+    if len(recovered) == 1 and float(getattr(recovered[0], "det_score", 0.0)) >= 0.50:
         return recovered
     return []
 
@@ -576,24 +639,26 @@ def list_academic_sections(_=Depends(current_user)):
 def create_attendance_session(body: AttendanceSessionRequest, user=Depends(require_roles("teacher"))):
     values = [body.title, body.course, body.school, body.faculty, body.department, body.program, body.semester,
               body.room, body.event_date, body.starts_at, body.ends_at, body.notes]
-    if any(not str(value).strip() for value in values[:7]) or not body.section_id:
-        raise HTTPException(422, "Title, course, academic hierarchy, and section are required")
+    if not body.title.strip() or not body.course.strip() or not body.school.strip():
+        raise HTTPException(422, "Title, course, and school are required")
     session_id = f"ATT-{secrets.token_hex(6).upper()}"
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT 1 FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
-                WHERE ta.teacher_user_id=%s AND ta.section_id=%s AND sec.school=%s AND sec.faculty=%s
-                AND sec.department=%s AND sec.program=%s AND sec.semester=%s""",
-                (user["sub"], body.section_id, body.school.strip(), body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip()))
-            if not cur.fetchone():
-                raise HTTPException(403, "You are not assigned to this academic section")
+            cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
+                WHERE ta.teacher_user_id=%s AND sec.school=%s
+                AND (%s='' OR sec.faculty=%s) AND (%s='' OR sec.department=%s)
+                AND (%s='' OR sec.program=%s) AND (%s='' OR sec.semester=%s) LIMIT 1""",
+                (user["sub"], body.school.strip(), body.faculty.strip(), body.faculty.strip(), body.department.strip(), body.department.strip(), body.program.strip(), body.program.strip(), body.semester.strip(), body.semester.strip()))
+            assigned = cur.fetchone()
+            if not assigned: raise HTTPException(403, "You are not assigned to the selected academic scope")
+            section_id = body.section_id or assigned["id"]
             cur.execute("""INSERT INTO attendance_sessions
-                (session_id,teacher_id,title,course,school,faculty,department,program,semester,section_id,room,event_date,starts_at,ends_at,notes)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                (session_id,teacher_id,title,course,school,faculty,department,program,semester,section_id,room,event_date,starts_at,ends_at,notes,academic_scope)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *""", (session_id, user["sub"], body.title.strip(), body.course.strip(), body.school.strip(),
-                body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip(), body.section_id,
-                body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip()))
+                body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip(), section_id,
+                body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip(), json.dumps(body.academic_scope)))
             result = cur.fetchone()
         conn.commit()
         return result
@@ -708,13 +773,13 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     session_id = session_id.strip()
     if not session_id: raise HTTPException(422, "session_id is required")
     conn = get_db_connection()
-    session_section_id = None
+    session_scope = None
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT section_id FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+            cur.execute("SELECT school, faculty, department, program, semester, academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
             session = cur.fetchone()
             if not session: raise HTTPException(404, "Attendance session not found or not owned by this teacher")
-            session_section_id = session["section_id"]
+            session_scope = session
     finally:
         conn.close()
     image, faces = read_image_bytes(await file.read()), None
@@ -730,7 +795,14 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id) WHERE s.section_id=%s", (session_section_id,))
+            cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
+                FROM students s
+                JOIN student_embeddings e USING (student_id)
+                JOIN academic_sections sec ON sec.id=s.section_id
+                WHERE sec.school = ANY(%s) AND sec.faculty = ANY(%s)
+                  AND sec.department = ANY(%s) AND sec.program = ANY(%s)
+                  AND sec.semester = ANY(%s)""",
+                tuple([((session_scope["academic_scope"] or {}).get(k) or [session_scope[k]]) for k in ("school", "faculty", "department", "program", "semester")]))
             rows = cur.fetchall()
     finally: conn.close()
     known = np.asarray([embedding_array(r["embedding"]) for r in rows], dtype=np.float32) if rows else np.empty((0, 512), dtype=np.float32)

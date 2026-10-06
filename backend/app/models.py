@@ -16,8 +16,8 @@ class FaceModel:
     def __init__(self):
         self.name = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
         self.root = os.getenv("INSIGHTFACE_ROOT", "/workspace")
-        self.max_faces = int(os.getenv("MAX_FACES", "500"))
-        self.det_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.35"))
+        self.max_faces = int(os.getenv("MAX_FACES", "300"))
+        self.det_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.50"))
         self.det_size = int(os.getenv("FACE_DET_SIZE", "1600"))
         self.require_gpu = os.getenv("REQUIRE_GPU", "0").lower() in {"1", "true", "yes"}
         requested = [item.strip() for item in os.getenv("INFERENCE_PROVIDERS", "CUDAExecutionProvider,CPUExecutionProvider").split(",") if item.strip()]

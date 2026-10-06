@@ -6,6 +6,12 @@
     "orientation": "portrait",
     "newArchEnabled": false,
     "userInterfaceStyle": "light",
+    "icon": "./assets/pratyaksha-logo.jpg",
+    "splash": {
+      "image": "./assets/pratyaksha-logo.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#F8FBFC"
+    },
     "android": {
       "package": "com.attendai.mobile",
       "permissions": [
