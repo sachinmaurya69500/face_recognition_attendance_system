@@ -3,7 +3,9 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from pgvector.psycopg2 import register_vector
 
-DB_HOST = os.getenv("DB_HOST", "db")
+# Docker Compose supplies DB_HOST=db through backend/.env. Native runs default
+# to the PostgreSQL service on this computer.
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "attendance_db")
 DB_USER = os.getenv("DB_USER", "postgres")

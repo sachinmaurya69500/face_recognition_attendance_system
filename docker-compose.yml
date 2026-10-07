@@ -19,17 +19,18 @@ services:
   api:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu
     container_name: attendance_fastapi_server
     restart: always
+    gpus: all
     depends_on:
       db:
         condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
-      REQUIRE_GPU: "0"
-      INFERENCE_PROVIDERS: CPUExecutionProvider
+      REQUIRE_GPU: "1"
+      INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
     volumes:
       - insightface_models:/workspace/models
     healthcheck:
@@ -49,7 +50,9 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "127.0.0.1:8080:80"
+      # Loopback by default. Set NGINX_BIND_ADDRESS=0.0.0.0 only for an
+      # intentional LAN test with a phone; PostgreSQL and FastAPI stay private.
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:${NGINX_PORT:-8080}:80"
 
 volumes:
   pgdata:

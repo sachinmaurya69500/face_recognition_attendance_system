@@ -29,19 +29,10 @@ fi
 
 echo "Temporary API URL: $url"
 
-python3 - "$url" mobile-expo/.env mobile-expo/eas.json mobile-expo/App.tsx <<'PY'
-import pathlib
-import re
-import sys
+umask 077
+printf 'EXPO_PUBLIC_API_URL=%s\n' "$url" > mobile-expo/.env.local
 
-url, *files = sys.argv[1:]
-pattern = re.compile(r'https://[A-Za-z0-9.-]+\.trycloudflare\.com')
-for name in files:
-    path = pathlib.Path(name)
-    if path.exists():
-        path.write_text(pattern.sub(url, path.read_text()))
-PY
-
-echo 'Mobile API configuration updated.'
+echo 'Mobile API configuration written to mobile-expo/.env.local.'
+echo 'Restart Expo after running this command so it reads the new URL.'
 echo 'Keep the tunnel running while testing the APK.'
 echo "Logs: docker compose -f $compose_file logs -f cloudflared"

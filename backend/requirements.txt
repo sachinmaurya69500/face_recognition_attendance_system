@@ -1,11 +1,22 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-gunicorn>=22.0.0
+```txt
+# Web API
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.28.0,<1.0.0
+gunicorn>=22.0.0,<24.0.0
 python-multipart>=0.0.9
+
+# Numerical / Image Processing
 numpy>=1.24.0,<2.0.0
 opencv-python-headless>=4.8.0
 Pillow>=10.0.0
-onnxruntime-gpu>=1.16.0
+
+# GPU Inference - NVIDIA CUDA
+onnxruntime-gpu==1.23.2
+
+# Face Recognition
 insightface>=0.7.3
+
+# Database
 psycopg2-binary>=2.9.9
 pgvector>=0.2.5
+```

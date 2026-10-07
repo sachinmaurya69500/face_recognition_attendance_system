@@ -3,15 +3,19 @@ import io
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 import os
+import uuid
+from datetime import date
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.database import get_db_connection
@@ -21,14 +25,36 @@ MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.65"))
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
+logger = logging.getLogger("pratyaksh.api")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logger.info("starting API")
     face_model.load()
     ensure_auth_tables()
+    logger.info("API ready: model=%s providers=%s", face_model.name, face_model.providers)
     yield
+    logger.info("stopping API")
 
 app = FastAPI(title="Pratyaksh Attendance API", version="2.0.0", lifespan=lifespan)
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    """Emit useful operational logs without recording biometric or auth data."""
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("request_failed id=%s method=%s path=%s", request_id, request.method, request.url.path)
+        raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request id=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id, request.method, request.url.path, response.status_code, elapsed_ms,
+    )
+    return response
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -77,7 +103,6 @@ class AttendanceSessionRequest(BaseModel):
     starts_at: str
     ends_at: str
     notes: str = ""
-    academic_scope: dict[str, list[str]] = {}
     academic_scope: dict[str, list[str]] = {}
 
 class NotificationRequest(BaseModel):
@@ -130,6 +155,11 @@ def ensure_auth_tables():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            # Docker's PostgreSQL entrypoint runs init.sql automatically. A
+            # native PostgreSQL instance does not, so apply the same
+            # idempotent base schema before adding the application tables.
+            schema_path = Path(__file__).resolve().parents[1] / "init.sql"
+            cur.execute(schema_path.read_text(encoding="utf-8"))
             cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
@@ -142,7 +172,6 @@ def ensure_auth_tables():
                 starts_at TIME NOT NULL, ends_at TIME NOT NULL, notes TEXT,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""")
             cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS section_id INTEGER")
-            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS academic_scope JSONB")
             cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS academic_scope JSONB")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
@@ -567,14 +596,12 @@ def model_info():
 async def validate_face(
     file: UploadFile = File(...),
     target_pose: str = Form("any"),
-    _=Depends(require_roles("admin")),
+    _=Depends(require_roles("admin", "teacher")),
 ):
     allowed = {"any", "center", "left", "right", "chin_up", "chin_down"}
     if target_pose not in allowed:
         raise HTTPException(422, f"target_pose must be one of: {', '.join(sorted(allowed))}")
     image = read_image_bytes(await file.read())
-    # Temporary diagnostic: preserve the exact frame received from the browser.
-    cv2.imwrite("/tmp/latest_validate_frame.jpg", image)
     faces = await detect(image)
     candidate_count = len(faces)
     faces = primary_face(image, faces)
@@ -585,6 +612,10 @@ async def validate_face(
     quality["faces_detected"] = 1
     quality["image_width"] = image.shape[1]
     quality["image_height"] = image.shape[0]
+    logger.info(
+        "face_validation pose=%s valid=%s candidates=%s image=%sx%s",
+        target_pose, quality["valid"], candidate_count, image.shape[1], image.shape[0],
+    )
     return quality
 
 @app.get("/students")
@@ -732,11 +763,16 @@ def update_student(student_id: str, name: str = Form(...), email: str = Form("")
     finally: conn.close()
 
 @app.post("/register-student")
-async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), files: list[UploadFile] = File(...), _=Depends(require_roles("admin"))):
+async def register_student(student_id: str = Form(...), name: str = Form(...), password: str = Form("welcome123"), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), section_id: int | None = Form(None), files: list[UploadFile] = File(...), user=Depends(require_roles("admin", "teacher"))):
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name: raise HTTPException(422, "student_id and name are required")
     if len(password) < 4: raise HTTPException(422, "Student password must be at least 4 characters")
     if len(files) != 5: raise HTTPException(422, "Registration requires exactly 5 photos")
+    if date_of_birth:
+        try:
+            date.fromisoformat(date_of_birth)
+        except ValueError as exc:
+            raise HTTPException(422, "date_of_birth must use YYYY-MM-DD") from exc
     embeddings = []
     required_poses = ("center", "chin_up", "chin_down", "left", "right")
     for position, upload in enumerate(files, 1):
@@ -747,6 +783,9 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
         if not quality["valid"]:
             raise HTTPException(400, f"Photo {position} ({required_poses[position - 1]}): " + "; ".join(quality["issues"]))
         vector = np.asarray(faces[0].embedding, dtype=np.float32)
+        if vector.shape != (512,) or not np.isfinite(vector).all():
+            logger.error("invalid_embedding student_id=%s photo=%s shape=%s", student_id, position, vector.shape)
+            raise HTTPException(500, "Face model returned an invalid embedding; please retry the capture")
         vector /= max(np.linalg.norm(vector), 1e-12)
         embeddings.append(vector)
     # Average normalized embeddings so small changes in pose/expression are
@@ -756,16 +795,29 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program) VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program""", (student_id, name, email or None, phone or None, date_of_birth or None, program or None))
+            if section_id is not None:
+                if user["role"] == "teacher":
+                    cur.execute("SELECT 1 FROM teacher_assignments WHERE teacher_user_id=%s AND section_id=%s", (user["sub"], section_id))
+                else:
+                    cur.execute("SELECT 1 FROM academic_sections WHERE id=%s", (section_id,))
+                if not cur.fetchone():
+                    raise HTTPException(403, "You are not allowed to register a student in this academic section")
+            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, section_id) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program,section_id=EXCLUDED.section_id""", (student_id, name, email or None, phone or None, date_of_birth or None, program or None, section_id))
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             # A student's ID is also their login ID. Registration creates or
             # refreshes the corresponding student account automatically.
             cur.execute("""INSERT INTO users (username, password_hash, role, student_id) VALUES (%s, %s, 'student', %s)
                 ON CONFLICT (username) DO UPDATE SET password_hash=EXCLUDED.password_hash, role='student', student_id=EXCLUDED.student_id""", (student_id, password_hash(password), student_id))
+            cur.execute(
+                """INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value)
+                   VALUES (%s, 'STUDENT_FACE_REGISTERED', 'student', %s, %s)""",
+                (user["sub"], student_id, json.dumps({"photos_used": len(embeddings), "embedding_dimensions": int(embedding.size)})),
+            )
         conn.commit()
     finally: conn.close()
+    logger.info("student_face_registered student_id=%s photos=%s actor_id=%s", student_id, len(embeddings), user["sub"])
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with 5 face photos"}
 
 @app.post("/process-group-attendance")

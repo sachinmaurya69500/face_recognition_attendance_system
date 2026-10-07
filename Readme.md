@@ -45,11 +45,67 @@ docker context use default
 docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-smi
 ```
 
-## Start backend
+## Run locally (without the API in Docker)
 
-Create `backend/.env` from your secret-managed environment template and set a
-unique `AUTH_SECRET`, database password, and production settings. Never commit
-that file.
+This is the quickest edit/debug loop: PostgreSQL stays in Docker, while
+FastAPI and Expo run on the host. It requires CUDA inference by default.
+
+```bash
+cd /home/keplerearth/Pratyaksha
+test -f backend/.env || cp backend/.env.example backend/.env
+test -f backend/.env.local || cp backend/.env.local.example backend/.env.local
+test -f mobile-expo/.env || cp mobile-expo/.env.example mobile-expo/.env
+
+# Start only PostgreSQL and publish it to this computer, not the network.
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
+
+# One-time Python setup, then start the API at http://127.0.0.1:8000.
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r backend/requirements.txt
+./scripts/run-backend-local.sh
+```
+
+In a second terminal, start the mobile client:
+
+```bash
+cd /home/keplerearth/Pratyaksha/mobile-expo
+npm install
+npx expo start --lan
+```
+
+`mobile-expo/.env.example` targets the Android emulator (`10.0.2.2`). For a
+physical phone, change `EXPO_PUBLIC_API_URL` to your computer's LAN address,
+for example `http://192.168.1.25:8000`, then restart Expo. Your firewall must
+allow the selected development port on the LAN.
+
+## Run entirely with Docker
+
+Create `backend/.env` from `backend/.env.example`, set a unique `AUTH_SECRET`,
+then start the GPU stack:
+
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8080/health
+docker compose logs -f api nginx db
+```
+
+The Docker gateway is bound to the host only at `127.0.0.1:8080`. To make only
+Nginx reachable on your LAN for a phone test, start it explicitly as follows
+and set the mobile URL to `http://YOUR_LAN_IP:8080`:
+
+```bash
+NGINX_BIND_ADDRESS=0.0.0.0 docker compose up -d --build
+```
+
+Do not expose PostgreSQL or FastAPI directly. For anything beyond a local test,
+use the HTTPS tunnel/proxy deployment described below.
+
+The standard Compose file uses the GPU image. It requires a working NVIDIA
+driver and NVIDIA Container Toolkit; use `docker-compose.gpu.yml` only when a
+separate GPU-specific Compose file is needed.
+
+## Production backend
 
 For the supported GPU deployment:
 
@@ -72,6 +128,22 @@ Camera image -> quality validation -> InsightFace detection
 -> ArcFace embedding -> cosine match -> identity/confidence
 -> attendance validation -> attendance_logs
 ```
+
+## How the mobile app and backend communicate
+
+`mobile-expo/App.tsx` creates one Axios client using
+`EXPO_PUBLIC_API_URL`. It sends JSON requests such as `POST /auth/login` and
+stores the returned signed bearer token in AsyncStorage. Every later protected
+request adds `Authorization: Bearer <token>`. Camera/profile images are sent as
+multipart uploads to FastAPI routes such as `/validate-face` and
+`/process-group-attendance`.
+
+For native development the client calls FastAPI directly on port `8000`. In
+Docker and production it calls Nginx on port `8080` (or the public HTTPS
+hostname); Nginx proxies every path to `api:8000`. FastAPI authenticates the
+token, reads/writes PostgreSQL through `app/database.py`, and uses InsightFace
+in `app/models.py` to create and compare face embeddings. PostgreSQL is never
+contacted by the mobile application.
 
 The backend requires CUDA when `REQUIRE_GPU=1`; it intentionally fails instead of silently switching to CPU.
 

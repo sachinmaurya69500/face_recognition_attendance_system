@@ -12,8 +12,8 @@ import {
   Text,
   TextInput,
   View,
-  Dimensions,
   Platform,
+  StatusBar as NativeStatusBar,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -22,8 +22,6 @@ import * as ImagePicker from "expo-image-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 // ---------------------------------------------------------------------------
 // DESIGN SYSTEM & THEME
@@ -75,8 +73,8 @@ export const theme = {
 
 type Role = "admin" | "teacher" | "student";
 
-const API =
-  process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
+//const API = process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
+const API = process.env.EXPO_PUBLIC_API_URL || "http://10.0.2.2:8000";
 const http = axios.create({ baseURL: API });
 
 // ---------------------------------------------------------------------------
@@ -429,14 +427,14 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
               resizeMode="contain"
             />
           </View>
-          <View>
+          <View style={styles.topBarIdentity}>
             <View style={styles.topBrandRow}>
               <Text style={styles.topBrandName}>Pratyaksh</Text>
               <View style={styles.roleTag}>
                 <Text style={styles.roleTagText}>{role.toUpperCase()}</Text>
               </View>
             </View>
-            <Text style={styles.topGreeting}>
+            <Text style={styles.topGreeting} numberOfLines={1}>
               {getGreeting()}, {displayName.split(" ")[0]}
             </Text>
           </View>
@@ -1454,6 +1452,7 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
 function AddStudent({ go }: { go: (x: string) => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [sectionId, setSectionId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [registeredPhotos, setRegisteredPhotos] = useState<string[]>([]);
 
@@ -1461,16 +1460,26 @@ function AddStudent({ go }: { go: (x: string) => void }) {
     AsyncStorage.getItem("face_registration_photos").then((val) => {
       if (val) {
         try {
-          const arr = JSON.parse(val);
-          if (Array.isArray(arr)) setRegisteredPhotos(arr);
+          const draft = JSON.parse(val);
+          // Captures are biometric data, so do not reuse an old enrollment
+          // draft for a different student or keep it indefinitely.
+          if (
+            Array.isArray(draft?.photos) &&
+            draft.photos.length === 5 &&
+            Date.now() - Number(draft.createdAt) < 15 * 60 * 1000
+          ) {
+            setRegisteredPhotos(draft.photos);
+          } else {
+            AsyncStorage.removeItem("face_registration_photos");
+          }
         } catch {}
       }
     });
   }, []);
 
   const saveStudent = async () => {
-    if (!name.trim() || !email.trim()) {
-      Alert.alert("Missing Fields", "Please enter the student's full name and email.");
+    if (!name.trim() || !email.trim() || !sectionId) {
+      Alert.alert("Missing Fields", "Enter the student's name, email, and academic placement.");
       return;
     }
     if (registeredPhotos.length !== 5) {
@@ -1487,6 +1496,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("student_id", studentId);
       data.append("name", name.trim());
       data.append("email", email.trim());
+      data.append("section_id", String(sectionId));
       data.append("password", "ChangeMe123!");
       registeredPhotos.forEach((uri: string, i: number) => {
         data.append("files", {
@@ -1496,9 +1506,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         } as any);
       });
 
-      await http.post("/register-student", data, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await http.post("/register-student", data);
 
       await AsyncStorage.removeItem("face_registration_photos");
       Alert.alert(
@@ -1519,7 +1527,13 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   return (
     <View style={styles.screenWrapper}>
       <View style={styles.formHeader}>
-        <Pressable onPress={() => go("Students")} style={styles.backButtonCircle}>
+        <Pressable
+          onPress={async () => {
+            await AsyncStorage.removeItem("face_registration_photos");
+            go("Students");
+          }}
+          style={styles.backButtonCircle}
+        >
           <MaterialCommunityIcons name="arrow-left" size={20} color={theme.text} />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
@@ -1562,7 +1576,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           </View>
         </View>
 
-        <AcademicCascade />
+        <AcademicCascade onSectionChange={setSectionId} />
 
         <Text style={[styles.formCardTitle, { marginTop: 20 }]}>BIOMETRIC VERIFICATION</Text>
         <Pressable
@@ -1600,7 +1614,13 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         </Pressable>
 
         <View style={styles.formButtonsRow}>
-          <Pressable style={styles.cancelButton} onPress={() => go("Students")}>
+          <Pressable
+            style={styles.cancelButton}
+            onPress={async () => {
+              await AsyncStorage.removeItem("face_registration_photos");
+              go("Students");
+            }}
+          >
             <Text style={styles.cancelButtonText}>Cancel</Text>
           </Pressable>
           <Pressable
@@ -1765,6 +1785,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const [faceDetected, setFaceDetected] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [completed, setCompleted] = useState(false);
 
   const steps = [
     { short: "Center", title: "Center View", guide: "Position face directly inside the oval guide." },
@@ -1779,21 +1800,16 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
     if (!permission.granted) requestPermission();
   }, [permission?.granted]);
 
-  // Automated trigger timer when face is aligned
-  useEffect(() => {
-    if (!cameraReady || !camera || busy) return;
-    const timer = setTimeout(() => capturePhoto(), 2200);
-    return () => clearTimeout(timer);
-  }, [cameraReady, camera, step, busy]);
-
-  const capturePhoto = async () => {
-    if (!camera || busy) return;
+  const capturePhoto = async (automatic = false) => {
+    if (!camera || busy || completed) return;
     setBusy(true);
     setFaceDetected(false);
     try {
       const photo = await camera.takePictureAsync({
         quality: 0.85,
-        skipProcessing: true,
+        // Process orientation metadata before upload. This keeps the server's
+        // face detector and pose checks consistent across Android devices.
+        skipProcessing: false,
       });
       if (!photo?.uri) throw new Error("No photo captured");
 
@@ -1817,9 +1833,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 
       data.append("target_pose", poseKey);
 
-      const res = await http.post("/validate-face", data, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const res = await http.post("/validate-face", data);
 
       if (!res.data?.valid) {
         throw new Error(
@@ -1836,7 +1850,11 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       if (step < 4) {
         setStep(step + 1);
       } else {
-        await AsyncStorage.setItem("face_registration_photos", JSON.stringify(nextPhotos));
+        setCompleted(true);
+        await AsyncStorage.setItem(
+          "face_registration_photos",
+          JSON.stringify({ createdAt: Date.now(), photos: nextPhotos })
+        );
         Alert.alert(
           "Biometrics Validated",
           "All 5 face angles were successfully scanned and validated.",
@@ -1844,17 +1862,30 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         );
       }
     } catch (e: any) {
-      Alert.alert(
-        "Pose Guidance",
-        e?.response?.data?.user_guidance ||
-          e?.response?.data?.detail ||
-          e?.message ||
-          "Please realign your face with the guide."
-      );
+      // The idle scanner deliberately stays quiet for empty/invalid frames.
+      // A person only sees guidance after choosing the manual capture button.
+      if (!automatic) {
+        Alert.alert(
+          "Pose Guidance",
+          e?.response?.data?.user_guidance ||
+            e?.response?.data?.detail ||
+            e?.message ||
+            "Please realign your face with the guide."
+        );
+      }
     } finally {
       setBusy(false);
     }
   };
+
+  // Expo Camera does not expose a native face-detector callback in this SDK.
+  // Sample a frame at a restrained cadence instead: the API validates that
+  // exactly one usable face is present and only then accepts the capture.
+  useEffect(() => {
+    if (!cameraReady || !camera || busy || completed) return;
+    const timer = setTimeout(() => capturePhoto(true), 1200);
+    return () => clearTimeout(timer);
+  }, [cameraReady, camera, busy, completed, step, captured]);
 
   if (!permission || !permission.granted) {
     return (
@@ -1948,8 +1979,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
               <Text style={styles.hudStatusTagText}>
                 {busy
                   ? "ANALYZING POSE..."
-                  : cameraReady
-                    ? "ALIGN FACE INSIDE OVAL"
+                  : faceDetected
+                    ? "FACE VERIFIED"
+                    : cameraReady
+                    ? "WAITING FOR FACE..."
                     : "WARMING UP..."}
               </Text>
             </View>
@@ -1966,7 +1999,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 
         <Pressable
           style={[styles.hudManualCaptureBtn, busy && { opacity: 0.7 }]}
-          onPress={capturePhoto}
+          onPress={() => capturePhoto(false)}
           disabled={busy}
         >
           {busy ? (
@@ -2065,9 +2098,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         type: "image/jpeg",
       } as any);
 
-      await http.post("/process-group-attendance", data, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await http.post("/process-group-attendance", data);
 
       go("Recognition Results");
     } catch (e: any) {
@@ -3376,9 +3407,7 @@ function ProfileHeroCard({
       type: asset.mimeType || "image/jpeg",
     } as any);
     try {
-      await http.post("/auth/profile/photo", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await http.post("/auth/profile/photo", form);
       setProfile({ ...profile, profile_photo_base64: asset.uri });
       Alert.alert("Success", "Profile photo updated successfully.");
     } catch {
@@ -3548,8 +3577,10 @@ function EmptyState({
 // ---------------------------------------------------------------------------
 function AcademicCascade({
   onApply,
+  onSectionChange,
 }: {
   onApply?: (selection: any) => void;
+  onSectionChange?: (sectionId: number | null) => void;
 }) {
   const [sections, setSections] = useState<any[]>([]);
   const [selection, setSelection] = useState<any>({});
@@ -3625,13 +3656,15 @@ function AcademicCascade({
                           ...prev,
                           [fieldKey]: opt,
                           ...(fieldKey === "school"
-                            ? { faculty: "", department: "", program: "", semester: "" }
+                            ? { faculty: "", department: "", program: "", semester: "", section: "" }
                             : fieldKey === "faculty"
-                              ? { department: "", program: "", semester: "" }
+                              ? { department: "", program: "", semester: "", section: "" }
                               : fieldKey === "department"
-                                ? { program: "", semester: "" }
+                                ? { program: "", semester: "", section: "" }
                                 : fieldKey === "program"
-                                  ? { semester: "" }
+                                  ? { semester: "", section: "" }
+                                  : fieldKey === "semester"
+                                    ? { section: "" }
                                   : {}),
                         }));
                         setModalOpen(null);
@@ -3653,6 +3686,19 @@ function AcademicCascade({
   };
 
   const has = !!selection.school;
+
+  useEffect(() => {
+    const match = sections.find(
+      (section) =>
+        section.school === selection.school &&
+        section.faculty === selection.faculty &&
+        section.department === selection.department &&
+        section.program === selection.program &&
+        section.semester === selection.semester &&
+        section.section === selection.section
+    );
+    onSectionChange?.(match?.id ?? null);
+  }, [sections, selection, onSectionChange]);
 
   return (
     <View style={{ marginTop: 12 }}>
@@ -3690,6 +3736,18 @@ function AcademicCascade({
           program: selection.program,
         }),
         !selection.program
+      )}
+      {renderSelect(
+        "Section",
+        "section",
+        getOptions("section", {
+          school: selection.school,
+          faculty: selection.faculty,
+          department: selection.department,
+          program: selection.program,
+          semester: selection.semester,
+        }),
+        !selection.semester
       )}
 
       {onApply && (
@@ -3846,6 +3904,9 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: theme.bg,
+    // Android's SafeAreaView does not apply insets. Keep controls out of a
+    // status bar when Android edge-to-edge is enabled.
+    paddingTop: Platform.OS === "android" ? NativeStatusBar.currentHeight || 0 : 0,
   },
   loadingContainer: {
     flex: 1,
@@ -4133,9 +4194,15 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.border,
   },
   topBarLeft: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+  },
+  topBarIdentity: {
+    flex: 1,
+    minWidth: 0,
   },
   brandMiniBadge: {
     width: 40,
@@ -4232,15 +4299,17 @@ const styles = StyleSheet.create({
 
   // MAIN CONTENT & BOTTOM NAV
   mainContent: {
+    flexGrow: 1,
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: 28,
   },
   bottomNav: {
     flexDirection: "row",
     backgroundColor: theme.surface,
     borderTopWidth: 1,
     borderTopColor: theme.border,
-    paddingVertical: 8,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === "android" ? 12 : 8,
     paddingHorizontal: 8,
     justifyContent: "space-around",
     shadowColor: theme.primaryDark,
@@ -4431,7 +4500,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   metricCard: {
-    width: (SCREEN_WIDTH - 44) / 2,
+    flexBasis: "48%",
+    flexGrow: 1,
+    minWidth: 0,
     backgroundColor: theme.surface,
     borderRadius: 18,
     padding: 16,
@@ -4476,7 +4547,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   quickActionCard: {
-    width: (SCREEN_WIDTH - 42) / 2,
+    flexBasis: "48%",
+    flexGrow: 1,
+    minWidth: 0,
     backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 14,
@@ -4969,7 +5042,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   resultItemCard: {
-    width: (SCREEN_WIDTH - 42) / 2,
+    flexBasis: "48%",
+    flexGrow: 1,
+    minWidth: 0,
     backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 14,

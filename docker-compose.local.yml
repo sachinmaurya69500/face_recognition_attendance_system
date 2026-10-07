@@ -1,0 +1,7 @@
+# Development-only overlay. It exposes PostgreSQL to the same computer, so a
+# host-native FastAPI process can use backend/.env.local. Do not use this file
+# in production or bind this port beyond localhost.
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

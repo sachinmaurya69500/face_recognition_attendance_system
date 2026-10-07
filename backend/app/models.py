@@ -6,6 +6,7 @@ routes should use FaceModel.detect() instead of accessing model internals.
 
 import asyncio
 import os
+from pathlib import Path
 
 import cv2
 from insightface.app import FaceAnalysis
@@ -15,11 +16,17 @@ import onnxruntime as ort
 class FaceModel:
     def __init__(self):
         self.name = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
-        self.root = os.getenv("INSIGHTFACE_ROOT", "/workspace")
+        # Docker explicitly sets /workspace.  When started directly with
+        # `uvicorn app.main:app`, keep downloaded weights under backend/models
+        # instead of attempting to create the Docker-only /workspace path.
+        native_root = str(Path(__file__).resolve().parents[1])
+        self.root = os.getenv("INSIGHTFACE_ROOT", native_root)
         self.max_faces = int(os.getenv("MAX_FACES", "300"))
         self.det_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.50"))
         self.det_size = int(os.getenv("FACE_DET_SIZE", "1600"))
-        self.require_gpu = os.getenv("REQUIRE_GPU", "0").lower() in {"1", "true", "yes"}
+        # Face recognition is GPU-only by default. Set REQUIRE_GPU=0 only for
+        # an explicit CPU troubleshooting/development override.
+        self.require_gpu = os.getenv("REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
         requested = [item.strip() for item in os.getenv("INFERENCE_PROVIDERS", "CUDAExecutionProvider,CPUExecutionProvider").split(",") if item.strip()]
         available = ort.get_available_providers()
         self._provider_candidates = [item for item in requested if item in available]
