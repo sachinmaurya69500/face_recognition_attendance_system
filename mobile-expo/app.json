@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Pratyaksh",
-    "slug": "attendai",
+    "slug": "userprime",
     "version": "1.0.0",
     "orientation": "portrait",
     "newArchEnabled": false,
@@ -27,9 +27,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "26ab6477-9cc1-4f60-b8e1-abcc1061f641"
+        "projectId": "61bf3d52-4d0f-47cb-bd10-719a569075ee"
       }
     },
-    "owner": "sachinmaurya6950s-team"
+    "owner": "pyaman003s-team"
   }
 }

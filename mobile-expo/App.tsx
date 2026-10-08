@@ -33,6 +33,7 @@ import * as ImagePicker from "expo-image-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import Constants from "expo-constants";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
@@ -127,9 +128,67 @@ export const useAppTheme = () => useContext(ThemeContext);
 
 type Role = "admin" | "teacher" | "student";
 
-const API =
-  process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
-const http = axios.create({ baseURL: API });
+export function resolveApiBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+
+  // On Web browser, 10.0.2.2 cannot be resolved; use localhost
+  if (Platform.OS === "web") {
+    if (envUrl && !envUrl.includes("10.0.2.2")) return envUrl;
+    if (typeof window !== "undefined" && window.location?.hostname) {
+      return `http://${window.location.hostname}:8000`;
+    }
+    return "http://localhost:8000";
+  }
+
+  // Detect Metro packager host for physical devices running on LAN Wi-Fi
+  const hostUri =
+    Constants.expoConfig?.hostUri ||
+    (Constants as any).manifest2?.extra?.expoGo?.debuggerHost ||
+    (Constants as any).manifest?.debuggerHost ||
+    "";
+  const metroHost = hostUri ? hostUri.split(":")[0] : "";
+
+  if (metroHost && metroHost !== "localhost" && metroHost !== "127.0.0.1") {
+    if (
+      envUrl &&
+      !envUrl.includes("10.0.2.2") &&
+      !envUrl.includes("localhost") &&
+      !envUrl.includes("127.0.0.1")
+    ) {
+      return envUrl;
+    }
+    return `http://${metroHost}:8000`;
+  }
+
+  if (envUrl) return envUrl;
+
+  // On Android emulator
+  if (Platform.OS === "android") {
+    return "http://10.0.2.2:8000";
+  }
+
+  return "http://localhost:8000";
+}
+
+let API = resolveApiBaseUrl();
+const http = axios.create({ baseURL: API, timeout: 25000 });
+
+export function updateApiBaseUrl(newUrl: string) {
+  API = newUrl.trim();
+  http.defaults.baseURL = API;
+  academicSectionsCache = null;
+  AsyncStorage.setItem("custom_api_url", API).catch(() => {});
+}
+
+// Load custom API URL if previously saved
+AsyncStorage.getItem("custom_api_url")
+  .then((stored) => {
+    if (stored && stored.trim()) {
+      API = stored.trim();
+      http.defaults.baseURL = API;
+    }
+  })
+  .catch(() => {});
 
 // The hierarchy is shared by several screens. Fetch it once per app session
 // instead of making a full network request each time a selector mounts.
@@ -259,6 +318,23 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [currentApi, setCurrentApi] = useState(API);
+  const [showServerModal, setShowServerModal] = useState(false);
+  const [testStatus, setTestStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [customInput, setCustomInput] = useState(API);
+  const [testingCustom, setTestingCustom] = useState(false);
+
+  useEffect(() => {
+    setCurrentApi(http.defaults.baseURL || API);
+    setCustomInput(http.defaults.baseURL || API);
+    http
+      .get("/health", { timeout: 4000 })
+      .then((res) => {
+        if (res.data?.status === "ok") setTestStatus("online");
+        else setTestStatus("offline");
+      })
+      .catch(() => setTestStatus("offline"));
+  }, []);
 
   const handleRoleSelect = (selectedRole: Role) => {
     setRole(selectedRole);
@@ -291,10 +367,16 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
       http.defaults.headers.common.Authorization = `Bearer ${userData.token}`;
       onLogin(userData);
     } catch (e: any) {
-      setError(
-        e?.response?.data?.detail ||
-          "Authentication failed. Please verify your credentials."
-      );
+      if (!e?.response) {
+        setError(
+          `Cannot reach backend server at:\n${http.defaults.baseURL}\n\nError: ${e?.message || "Network Error"}.\nTap the server pill below to verify or change the API URL.`
+        );
+      } else {
+        setError(
+          e?.response?.data?.detail ||
+            "Authentication failed. Please verify your credentials."
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -595,12 +677,201 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             )}
           </Pressable>
 
+          {/* Server Connection Indicator & Quick Switch */}
+          <Pressable
+            style={[
+              styles.serverPillBtn,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border },
+            ]}
+            onPress={() => setShowServerModal(true)}
+          >
+            <View
+              style={[
+                styles.serverStatusDot,
+                {
+                  backgroundColor:
+                    testStatus === "online"
+                      ? theme.emerald
+                      : testStatus === "offline"
+                        ? theme.rose
+                        : theme.amber,
+                },
+              ]}
+            />
+            <Text style={[styles.serverPillText, { color: theme.textSecondary }]} numberOfLines={1}>
+              API: {currentApi}
+            </Text>
+            <MaterialCommunityIcons name="cog-outline" size={16} color={theme.cyan} />
+          </Pressable>
         </View>
 
         <Text style={[styles.loginFootnote, { color: theme.muted }]}>
           Secure · Verified · Encrypted
         </Text>
       </ScrollView>
+
+      {/* Backend Server Configuration Modal */}
+      <Modal
+        visible={showServerModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowServerModal(false)}
+      >
+        <Pressable
+          style={styles.modalBackdropOverlay}
+          onPress={() => setShowServerModal(false)}
+        >
+          <Pressable
+            style={[
+              styles.modalSheetCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.modalSheetHeader}>
+              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+                Server Connection (Docker)
+              </Text>
+              <Pressable onPress={() => setShowServerModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+              </Pressable>
+            </View>
+
+            <Text style={[styles.fieldLabelText, { color: theme.muted, marginTop: 10 }]}>
+              API ADDRESS (HOST OR LAN IP)
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.borderAccent },
+              ]}
+            >
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={customInput}
+                onChangeText={setCustomInput}
+                placeholder="http://10.153.209.171:8000"
+                placeholderTextColor={theme.muted}
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.cyan, paddingVertical: 12 },
+                ]}
+                onPress={async () => {
+                  setTestingCustom(true);
+                  try {
+                    const cleaned = customInput.trim().replace(/\/+$/, "");
+                    const res = await axios.get(`${cleaned}/health`, {
+                      timeout: 5000,
+                    });
+                    if (res.data?.status === "ok") {
+                      Alert.alert(
+                        "Connection Success ✓",
+                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`
+                      );
+                    }
+                  } catch (err: any) {
+                    Alert.alert(
+                      "Connection Failed ✗",
+                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`
+                    );
+                  } finally {
+                    setTestingCustom(false);
+                  }
+                }}
+                disabled={testingCustom}
+              >
+                {testingCustom ? (
+                  <ActivityIndicator size="small" color={theme.cyan} />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="lan-connect" size={16} color={theme.cyan} />
+                    <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>
+                      TEST PING
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  { flex: 1, backgroundColor: theme.cyan, borderColor: theme.cyan, paddingVertical: 12 },
+                ]}
+                onPress={() => {
+                  const cleaned = customInput.trim().replace(/\/+$/, "");
+                  updateApiBaseUrl(cleaned);
+                  setCurrentApi(cleaned);
+                  setShowServerModal(false);
+                  axios
+                    .get(`${cleaned}/health`, { timeout: 4000 })
+                    .then(() => setTestStatus("online"))
+                    .catch(() => setTestStatus("offline"));
+                  Alert.alert("Server Configured", `API URL updated to:\n${cleaned}`);
+                }}
+              >
+                <MaterialCommunityIcons name="content-save-outline" size={16} color="#000" />
+                <Text style={[styles.smallActionBtnText, { color: "#000", fontWeight: "700" }]}>
+                  SAVE & USE
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={[styles.fieldLabelText, { color: theme.muted, marginTop: 18 }]}>
+              QUICK PRESETS
+            </Text>
+
+            <View style={{ gap: 8, marginTop: 6 }}>
+              {[
+                { label: "Host Wi-Fi LAN (Port 8000)", url: "http://10.153.209.171:8000" },
+                { label: "Host Wi-Fi LAN (Nginx 8080)", url: "http://10.153.209.171:8080" },
+                { label: "Localhost (Port 8000)", url: "http://localhost:8000" },
+                { label: "Localhost (Nginx 8080)", url: "http://localhost:8080" },
+                { label: "Android Emulator (Port 8000)", url: "http://10.0.2.2:8000" },
+              ].map((preset) => (
+                <Pressable
+                  key={preset.url}
+                  style={[
+                    styles.rosterItemCard,
+                    {
+                      paddingVertical: 10,
+                      backgroundColor: theme.bgElevated,
+                      borderColor: currentApi === preset.url ? theme.cyan : theme.border,
+                    },
+                  ]}
+                  onPress={() => {
+                    setCustomInput(preset.url);
+                    updateApiBaseUrl(preset.url);
+                    setCurrentApi(preset.url);
+                    setShowServerModal(false);
+                    axios
+                      .get(`${preset.url}/health`, { timeout: 4000 })
+                      .then(() => setTestStatus("online"))
+                      .catch(() => setTestStatus("offline"));
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}>
+                      {preset.label}
+                    </Text>
+                    <Text style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}>
+                      {preset.url}
+                    </Text>
+                  </View>
+                  {currentApi === preset.url && (
+                    <MaterialCommunityIcons name="check-circle" size={18} color={theme.cyan} />
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1594,6 +1865,33 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
       .finally(() => setBusy(false));
   }, []);
 
+  const handleDeleteStudent = (studentId: string, studentName: string) => {
+    Alert.alert(
+      "Confirm Deletion",
+      `Are you sure you want to delete student "${studentName}" (${studentId})? This will also remove associated biometrics and attendance records.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await http.delete(`/admin/students/${studentId}`);
+              setStudents((prev) => prev.filter((s) => s.student_id !== studentId));
+              setSelectedStudent(null);
+              Alert.alert("Student Removed", `Record for ${studentName} was successfully deleted.`);
+            } catch (e: any) {
+              Alert.alert(
+                "Delete Failed",
+                e?.response?.data?.detail || "Could not delete student record."
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const visible = students.filter((st) => {
     const raw = JSON.stringify(st).toLowerCase();
     const query = search.toLowerCase();
@@ -1791,19 +2089,37 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                 <HoloDetailRow label="Face Verification" value="Active & Profile Registered" />
               </View>
 
-              <Pressable
-                style={[styles.modalDismissBtn, { backgroundColor: theme.cyan }]}
-                onPress={() => setSelectedStudent(null)}
-              >
-                <Text
+              <View style={styles.modalFooterTwoBtnsRow}>
+                <Pressable
                   style={[
-                    styles.modalDismissBtnText,
-                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                    styles.modalDangerBtn,
+                    { borderColor: theme.rose, backgroundColor: theme.roseGlow },
                   ]}
+                  onPress={() =>
+                    handleDeleteStudent(
+                      selectedStudent.student_id,
+                      selectedStudent.name || "Student"
+                    )
+                  }
                 >
-                  DONE
-                </Text>
-              </Pressable>
+                  <MaterialCommunityIcons name="trash-can-outline" size={17} color={theme.rose} />
+                  <Text style={[styles.modalDangerBtnText, { color: theme.rose }]}>DELETE</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyan }]}
+                  onPress={() => setSelectedStudent(null)}
+                >
+                  <Text
+                    style={[
+                      styles.modalDismissBtnText,
+                      { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                    ]}
+                  >
+                    CLOSE
+                  </Text>
+                </Pressable>
+              </View>
             </Pressable>
           </Pressable>
         </Modal>
@@ -2127,53 +2443,443 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// BIOMETRIC CAMERA MODAL (MANUAL PHOTO CAPTURE PIPELINE)
+// ---------------------------------------------------------------------------
+interface BiometricCameraModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onCaptureSuccess: (photoUri: string, validationData?: any) => void;
+  title?: string;
+  subtitle?: string;
+}
+
+function BiometricCameraModal({
+  visible,
+  onClose,
+  onCaptureSuccess,
+  title = "Biometric Face Capture",
+  subtitle = "Align face in guide and tap shutter",
+}: BiometricCameraModalProps) {
+  const { theme } = useAppTheme();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [facing, setFacing] = useState<"front" | "back">("front");
+  const [camera, setCamera] = useState<any>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
+  const [validationInfo, setValidationInfo] = useState<any>(null);
+  const [statusMessage, setStatusMessage] = useState("");
+
+  // Animated Laser Scanner Bar
+  const scanAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!visible) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanAnim, {
+          toValue: 1,
+          duration: 1800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanAnim, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [visible]);
+
+  const laserTranslateY = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-110, 110],
+  });
+
+  const handleCapture = async () => {
+    if (!camera || busy) return;
+    setBusy(true);
+    setStatusMessage("Capturing frame & detecting face...");
+    try {
+      const photo = await camera.takePictureAsync({
+        quality: 0.85,
+        skipProcessing: false,
+      });
+      if (!photo?.uri) throw new Error("No photo captured from camera");
+
+      setCapturedPhoto(photo.uri);
+
+      // Run detection & embedding pipeline check
+      const data = new FormData();
+      data.append("file", {
+        uri: photo.uri,
+        name: "capture.jpg",
+        type: "image/jpeg",
+      } as any);
+      data.append("target_pose", "any");
+
+      setStatusMessage("Extracting facial features & verifying...");
+      const res = await http.post("/validate-face", data, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      if (res.data?.valid) {
+        setValidationInfo(res.data);
+        setStatusMessage("Face detected and verified! Ready to register.");
+      } else {
+        setValidationInfo(null);
+        setStatusMessage(
+          res.data?.user_guidance ||
+            res.data?.issues?.[0] ||
+            "No clear face detected. Please ensure good lighting and face camera."
+        );
+      }
+    } catch (e: any) {
+      setStatusMessage(
+        e?.response?.data?.detail ||
+          e?.message ||
+          "Could not detect face in frame. Please retake photo."
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleConfirm = () => {
+    if (!capturedPhoto) return;
+    onCaptureSuccess(capturedPhoto, validationInfo);
+    handleReset();
+    onClose();
+  };
+
+  const handleRetake = () => {
+    setCapturedPhoto(null);
+    setValidationInfo(null);
+    setStatusMessage("");
+  };
+
+  const handleReset = () => {
+    setCapturedPhoto(null);
+    setValidationInfo(null);
+    setStatusMessage("");
+    setBusy(false);
+  };
+
+  const pickFromGallery = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.85,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri) {
+        const uri = res.assets[0].uri;
+        setCapturedPhoto(uri);
+        setBusy(true);
+        setStatusMessage("Validating selected photo...");
+        const data = new FormData();
+        data.append("file", {
+          uri,
+          name: "gallery.jpg",
+          type: "image/jpeg",
+        } as any);
+        data.append("target_pose", "any");
+        const vRes = await http.post("/validate-face", data, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (vRes.data?.valid) {
+          setValidationInfo(vRes.data);
+          setStatusMessage("Face verified! Ready to register.");
+        } else {
+          setValidationInfo(null);
+          setStatusMessage(vRes.data?.issues?.[0] || "No clear face found in image.");
+        }
+      }
+    } catch (e: any) {
+      setStatusMessage("Validation error: " + (e?.message || "Please choose another image"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
+      <SafeAreaView style={[styles.biometricModalContainer, { backgroundColor: theme.bg }]}>
+        {/* Header Bar */}
+        <View style={[styles.biometricModalHeader, { borderBottomColor: theme.border }]}>
+          <Pressable
+            onPress={() => {
+              handleReset();
+              onClose();
+            }}
+            style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+          >
+            <MaterialCommunityIcons name="close" size={20} color={theme.text} />
+          </Pressable>
+          <View style={{ flex: 1, paddingHorizontal: 12 }}>
+            <Text style={[styles.biometricHeaderTitle, { color: theme.text }]} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={[styles.biometricHeaderSub, { color: theme.muted }]} numberOfLines={1}>
+              {subtitle}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => setFacing((prev) => (prev === "front" ? "back" : "front"))}
+            style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+          >
+            <MaterialCommunityIcons name="camera-flip" size={20} color={theme.cyan} />
+          </Pressable>
+        </View>
+
+        {/* Viewfinder Content */}
+        {!permission?.granted ? (
+          <View style={styles.biometricPermWrap}>
+            <MaterialCommunityIcons name="camera-off" size={48} color={theme.cyan} />
+            <Text style={[styles.permTitleHolo, { color: theme.text }]}>Camera Access Required</Text>
+            <Text style={[styles.permDescHolo, { color: theme.muted }]}>
+              Please grant camera permission to capture and register facial biometrics.
+            </Text>
+            <Pressable
+              style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
+              onPress={requestPermission}
+            >
+              <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                GRANT CAMERA ACCESS
+              </Text>
+            </Pressable>
+          </View>
+        ) : capturedPhoto ? (
+          /* Preview Mode with Confirmation */
+          <View style={styles.biometricPreviewContainer}>
+            <View style={[styles.biometricPreviewCard, { borderColor: validationInfo?.valid ? theme.emerald : theme.amber }]}>
+              <Image source={{ uri: capturedPhoto }} style={styles.biometricPreviewImg} resizeMode="cover" />
+              {validationInfo?.valid && (
+                <View style={[styles.biometricVerifiedBadge, { backgroundColor: theme.emeraldGlow, borderColor: theme.emerald }]}>
+                  <MaterialCommunityIcons name="check-circle" size={18} color={theme.emerald} />
+                  <Text style={[styles.biometricVerifiedText, { color: theme.emerald }]}>
+                    FACE DETECTED & VERIFIED
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Status Message */}
+            {!!statusMessage && (
+              <View
+                style={[
+                  styles.biometricStatusBox,
+                  {
+                    backgroundColor: validationInfo?.valid ? theme.emeraldGlow : theme.amberGlow,
+                    borderColor: validationInfo?.valid ? theme.emerald : theme.amber,
+                  },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={validationInfo?.valid ? "check-circle-outline" : "alert-circle-outline"}
+                  size={18}
+                  color={validationInfo?.valid ? theme.emerald : theme.amber}
+                />
+                <Text
+                  style={[
+                    styles.biometricStatusBoxText,
+                    { color: validationInfo?.valid ? theme.emerald : theme.amber },
+                  ]}
+                >
+                  {statusMessage}
+                </Text>
+              </View>
+            )}
+
+            {/* Actions: Confirm or Retake */}
+            <View style={styles.biometricActionsRow}>
+              <Pressable
+                style={[styles.biometricRetakeBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+                onPress={handleRetake}
+              >
+                <MaterialCommunityIcons name="camera-retake-outline" size={18} color={theme.text} />
+                <Text style={[styles.biometricRetakeBtnText, { color: theme.text }]}>Retake Photo</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.biometricConfirmBtn,
+                  { backgroundColor: theme.cyan, shadowColor: theme.cyan },
+                ]}
+                onPress={handleConfirm}
+              >
+                <MaterialCommunityIcons name="check-bold" size={18} color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+                <Text style={[styles.biometricConfirmBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                  USE THIS PHOTO
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          /* Live Camera Viewfinder (NO AUTO CAPTURE - User taps shutter) */
+          <View style={styles.biometricCameraViewport}>
+            <CameraView
+              ref={setCamera}
+              style={StyleSheet.absoluteFillObject}
+              facing={facing}
+              onCameraReady={() => setCameraReady(true)}
+              onMountError={() => setCameraError("Camera unavailable")}
+            />
+
+            {/* Target Reticles */}
+            <View style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]} />
+
+            {/* Oval Face Guide */}
+            <View style={[styles.hudBiometricEllipse, { borderColor: busy ? theme.amber : theme.cyan }]}>
+              <Animated.View
+                style={[
+                  styles.animatedLaserLine,
+                  {
+                    backgroundColor: busy ? theme.amber : theme.cyan,
+                    transform: [{ translateY: laserTranslateY }],
+                  },
+                ]}
+              />
+            </View>
+
+            {/* Telemetry Status Bar */}
+            <View style={[styles.hudLiveTelemetryBar, { borderColor: theme.borderAccent }]}>
+              <View
+                style={[
+                  styles.hudTelemetryDot,
+                  { backgroundColor: busy ? theme.amber : cameraReady ? theme.emerald : theme.cyan },
+                ]}
+              />
+              <Text style={styles.hudTelemetryLabel}>
+                {busy
+                  ? "PROCESSING BIOMETRICS..."
+                  : cameraReady
+                    ? "CENTER FACE & TAP SHUTTER"
+                    : "STARTING CAMERA..."}
+              </Text>
+            </View>
+
+            {/* Bottom Controls Bar: Gallery + Tactile Shutter */}
+            <View style={styles.biometricBottomControlBar}>
+              <Pressable
+                onPress={pickFromGallery}
+                style={[styles.galleryIconBtn, { backgroundColor: theme.cardGlass, borderColor: theme.border }]}
+              >
+                <MaterialCommunityIcons name="image-multiple-outline" size={22} color={theme.text} />
+              </Pressable>
+
+              {/* Shutter Button (Manual Photo Capture) */}
+              <Pressable
+                onPress={handleCapture}
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.shutterOuterRing,
+                  { borderColor: theme.cyan },
+                  pressed && { transform: [{ scale: 0.94 }] },
+                  busy && { opacity: 0.6 },
+                ]}
+              >
+                {busy ? (
+                  <ActivityIndicator color={theme.cyan} />
+                ) : (
+                  <View style={[styles.shutterInnerCircle, { backgroundColor: theme.cyan }]} />
+                )}
+              </Pressable>
+
+              <Pressable
+                onPress={() => setFacing((prev) => (prev === "front" ? "back" : "front"))}
+                style={[styles.galleryIconBtn, { backgroundColor: theme.cardGlass, borderColor: theme.border }]}
+              >
+                <MaterialCommunityIcons name="camera-flip-outline" size={22} color={theme.text} />
+              </Pressable>
+            </View>
+          </View>
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ADD STUDENT & BIOMETRIC ENROLLMENT INTEGRATION
 // ---------------------------------------------------------------------------
 function AddStudent({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
+  const [studentId, setStudentId] = useState(`STU-${Date.now().toString().slice(-6)}`);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [dateOfBirth, setDateOfBirth] = useState("2000-01-01");
+  const [program, setProgram] = useState("");
+  const [sectionId, setSectionId] = useState<number | null>(null);
+  const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [registeredPhotos, setRegisteredPhotos] = useState<string[]>([]);
 
   useEffect(() => {
+    // Check if previously captured photos exist
     AsyncStorage.getItem("face_registration_photos").then((val) => {
       if (val) {
         try {
           const arr = JSON.parse(val);
-          if (Array.isArray(arr)) setRegisteredPhotos(arr);
+          if (Array.isArray(arr) && arr.length > 0) setCapturedPhoto(arr[0]);
         } catch {}
       }
     });
   }, []);
 
+  const pickFromGallery = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.85,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri) {
+        setCapturedPhoto(res.assets[0].uri);
+      }
+    } catch {}
+  };
+
   const saveStudent = async () => {
-    if (!name.trim() || !email.trim()) {
-      Alert.alert("Missing Fields", "Please enter the student's legal name and email.");
+    if (!name.trim()) {
+      Alert.alert("Missing Name", "Please enter the student's legal full name.");
       return;
     }
-    if (registeredPhotos.length !== 5) {
+    if (!capturedPhoto) {
       Alert.alert(
-        "Face Capture Required",
-        "Please complete and validate all 5 face angles before saving the student."
+        "Face Photo Required",
+        "Please take or upload a face photo to generate biometric embeddings for attendance."
       );
       return;
     }
     setBusy(true);
     try {
-      const studentId = `STU-${Date.now().toString().slice(-6)}`;
+      const sid = studentId.trim() || `STU-${Date.now().toString().slice(-6)}`;
       const data = new FormData();
-      data.append("student_id", studentId);
+      data.append("student_id", sid);
       data.append("name", name.trim());
       data.append("email", email.trim());
-      data.append("password", "ChangeMe123!");
-      registeredPhotos.forEach((uri: string, i: number) => {
-        data.append("files", {
-          uri,
-          name: `face-${i}.jpg`,
-          type: "image/jpeg",
-        } as any);
-      });
+      data.append("phone", phone.trim());
+      data.append("date_of_birth", dateOfBirth.trim() || "2000-01-01");
+      data.append("password", dateOfBirth.trim() || "welcome123");
+      data.append("program", program.trim() || "Undergraduate Program");
+      if (sectionId) {
+        data.append("section_id", String(sectionId));
+      }
+      data.append("files", {
+        uri: capturedPhoto,
+        name: "face-0.jpg",
+        type: "image/jpeg",
+      } as any);
 
       await http.post("/register-student", data, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -2182,13 +2888,13 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       await AsyncStorage.removeItem("face_registration_photos");
       Alert.alert(
         "Student Enrolled",
-        `Student ${name} successfully enrolled with validated biometric profile.`,
+        `Student ${name.trim()} (${sid}) was successfully registered with biometric face profile!`,
         [{ text: "View Students", onPress: () => go("Students") }]
       );
     } catch (e: any) {
       Alert.alert(
         "Enrollment Failed",
-        e?.response?.data?.detail || "Could not register student. Please check input."
+        e?.response?.data?.detail || "Could not register student. Please check inputs and retry."
       );
     } finally {
       setBusy(false);
@@ -2197,6 +2903,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
 
   return (
     <View style={styles.screenLayout}>
+      {/* Top Header */}
       <View style={styles.formTopHeaderRow}>
         <Pressable
           onPress={() => go("Students")}
@@ -2207,7 +2914,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         <View style={{ flex: 1, paddingLeft: 12 }}>
           <Text style={[styles.screenMainTitle, { color: theme.text }]}>Enroll Student</Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Register credentials & face profile
+            Credentials & facial biometric registration
           </Text>
         </View>
       </View>
@@ -2218,9 +2925,35 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>PERSONAL DETAILS</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>STUDENT CREDENTIALS</Text>
+
+        {/* Student ID */}
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>STUDENT IDENTIFIER</Text>
+          <View style={styles.twoColumnGridRow}>
+            <TextInput
+              style={[
+                styles.textInputHoloPlain,
+                { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              ]}
+              value={studentId}
+              onChangeText={setStudentId}
+              placeholder="e.g. STU-2026-001"
+              placeholderTextColor={theme.muted}
+            />
+            <Pressable
+              style={[styles.generateIdBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+              onPress={() => setStudentId(`STU-${Date.now().toString().slice(-6)}`)}
+            >
+              <MaterialCommunityIcons name="refresh" size={18} color={theme.cyan} />
+              <Text style={[styles.generateIdBtnText, { color: theme.cyan }]}>New ID</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Full Name */}
+        <View style={styles.formGroup}>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME *</Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
@@ -2233,6 +2966,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           />
         </View>
 
+        {/* University Email */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>UNIVERSITY EMAIL</Text>
           <TextInput
@@ -2249,56 +2983,132 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        <AcademicCascade />
+        {/* Date of Birth and Phone */}
+        <View style={styles.twoColumnGridRow}>
+          <View style={{ flex: 1, marginRight: 8 }}>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>DATE OF BIRTH (YYYY-MM-DD)</Text>
+            <TextInput
+              style={[
+                styles.textInputHoloPlain,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              ]}
+              value={dateOfBirth}
+              onChangeText={setDateOfBirth}
+              placeholder="2000-01-01"
+              placeholderTextColor={theme.muted}
+            />
+          </View>
+          <View style={{ flex: 1, marginLeft: 8 }}>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PHONE NUMBER</Text>
+            <TextInput
+              style={[
+                styles.textInputHoloPlain,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              ]}
+              value={phone}
+              onChangeText={setPhone}
+              placeholder="+1 555-0199"
+              placeholderTextColor={theme.muted}
+            />
+          </View>
+        </View>
 
+        {/* Academic Placement */}
+        <AcademicCascade
+          onChange={(sel, match) => {
+            if (sel.program) setProgram(sel.program);
+            if (match?.id) setSectionId(match.id);
+          }}
+        />
+
+        {/* BIOMETRIC FACE PROFILE SECTION */}
         <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 22 }]}>
           BIOMETRIC FACE PROFILE
         </Text>
-        <Pressable
-          style={[
-            styles.biometricPromptCardHolo,
-            { backgroundColor: theme.bgElevated, borderColor: theme.cyanGlow },
-            registeredPhotos.length === 5 && {
-              borderColor: theme.emerald,
-              backgroundColor: theme.emeraldGlow,
-            },
-          ]}
-          onPress={() => go("Face Registration")}
-        >
+
+        {capturedPhoto ? (
+          /* Face Photo Captured Card */
           <View
             style={[
-              styles.biometricIconBadge,
-              { backgroundColor: theme.card },
-              registeredPhotos.length === 5 && { backgroundColor: theme.emeraldGlow },
+              styles.photoVerifiedCard,
+              { backgroundColor: theme.bgElevated, borderColor: theme.emerald },
             ]}
           >
-            <MaterialCommunityIcons
-              name={registeredPhotos.length === 5 ? "check-circle" : "face-recognition"}
-              size={30}
-              color={registeredPhotos.length === 5 ? theme.emerald : theme.cyan}
-            />
+            <Image source={{ uri: capturedPhoto }} style={styles.photoVerifiedThumb} resizeMode="cover" />
+            <View style={{ flex: 1, paddingLeft: 14 }}>
+              <View style={styles.verifiedRow}>
+                <MaterialCommunityIcons name="check-circle" size={18} color={theme.emerald} />
+                <Text style={[styles.verifiedTitle, { color: theme.emerald }]}>Face Photo Ready</Text>
+              </View>
+              <Text style={[styles.verifiedSub, { color: theme.muted }]}>
+                Face detected. Biometric embeddings will be extracted and saved to database.
+              </Text>
+              <View style={styles.retakeActionsRow}>
+                <Pressable
+                  style={[styles.smallActionBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                  onPress={() => setIsCameraOpen(true)}
+                >
+                  <MaterialCommunityIcons name="camera" size={14} color={theme.cyan} />
+                  <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>Retake</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.smallActionBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                  onPress={pickFromGallery}
+                >
+                  <MaterialCommunityIcons name="image" size={14} color={theme.text} />
+                  <Text style={[styles.smallActionBtnText, { color: theme.text }]}>Gallery</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
-          <View style={{ flex: 1, paddingLeft: 14 }}>
-            <Text style={[styles.biometricCardTitle, { color: theme.text }]}>
-              {registeredPhotos.length === 5
-                ? "5 Face Angles Verified"
-                : "Capture 5 Face Angles"}
-            </Text>
-            <Text style={[styles.biometricCardSub, { color: theme.muted }]}>
-              {registeredPhotos.length === 5
-                ? "Face profile captured and ready to enroll."
-                : "Center, chin up/down, and left/right views"}
-            </Text>
-          </View>
-          <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
-        </Pressable>
+        ) : (
+          /* Biometric Prompt Card */
+          <View
+            style={[
+              styles.biometricPromptCardEnhanced,
+              { backgroundColor: theme.bgElevated, borderColor: theme.cyanGlow },
+            ]}
+          >
+            <View style={styles.biometricPromptInfoRow}>
+              <View style={[styles.biometricIconBadge, { backgroundColor: theme.card }]}>
+                <MaterialCommunityIcons name="face-recognition" size={28} color={theme.cyan} />
+              </View>
+              <View style={{ flex: 1, paddingLeft: 12 }}>
+                <Text style={[styles.biometricCardTitle, { color: theme.text }]}>
+                  Biometric Face Capture
+                </Text>
+                <Text style={[styles.biometricCardSub, { color: theme.muted }]}>
+                  Click photo with camera to generate student face embeddings
+                </Text>
+              </View>
+            </View>
 
+            <View style={styles.biometricButtonsRow}>
+              <Pressable
+                style={[styles.openCameraBtnPrimary, { backgroundColor: theme.cyan }]}
+                onPress={() => setIsCameraOpen(true)}
+              >
+                <MaterialCommunityIcons name="camera" size={19} color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+                <Text style={[styles.openCameraBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                  TAKE FACE PHOTO
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.chooseGalleryBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                onPress={pickFromGallery}
+              >
+                <MaterialCommunityIcons name="image-plus" size={18} color={theme.text} />
+                <Text style={[styles.chooseGalleryBtnText, { color: theme.text }]}>Gallery</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {/* Submit Actions */}
         <View style={styles.formActionButtonsRow}>
           <Pressable
-            style={[
-              styles.formCancelBtn,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border },
-            ]}
+            style={[styles.formCancelBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
             onPress={() => go("Students")}
           >
             <Text style={[styles.formCancelBtnText, { color: theme.textSecondary }]}>Cancel</Text>
@@ -2315,18 +3125,24 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             {busy ? (
               <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
             ) : (
-              <Text
-                style={[
-                  styles.formSubmitBtnText,
-                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
-                ]}
-              >
+              <Text style={[styles.formSubmitBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
                 ENROLL STUDENT
               </Text>
             )}
           </Pressable>
         </View>
       </View>
+
+      {/* Biometric Camera Modal */}
+      <BiometricCameraModal
+        visible={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onCaptureSuccess={(uri) => {
+          setCapturedPhoto(uri);
+        }}
+        title="Student Face Capture"
+        subtitle="Align student face in oval and click shutter"
+      />
     </View>
   );
 }
@@ -2511,11 +3327,13 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const [captured, setCaptured] = useState<string[]>([]);
   const [camera, setCamera] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [facing, setFacing] = useState<"front" | "back">("front");
   const [faceDetected, setFaceDetected] = useState(false);
   const [faceBox, setFaceBox] = useState<[number, number, number, number] | null>(null);
   const [frameSize, setFrameSize] = useState({ width: 1, height: 1 });
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [statusMsg, setStatusMsg] = useState("");
 
   // Animated Laser Scanner Bar
   const scanAnim = useRef(new Animated.Value(0)).current;
@@ -2547,11 +3365,11 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   });
 
   const steps = [
-    { short: "Center", title: "Center View", guide: "Position face directly inside the oval guide." },
-    { short: "Chin Up", title: "Tilt Chin Up", guide: "Gently tilt your chin upward toward the camera." },
-    { short: "Chin Down", title: "Tilt Chin Down", guide: "Gently tilt your chin downward toward the camera." },
-    { short: "Left", title: "Turn Left", guide: "Turn your face slightly toward the left indicator." },
-    { short: "Right", title: "Turn Right", guide: "Turn your face slightly toward the right indicator." },
+    { short: "Center", title: "Center View", guide: "Position face directly inside the oval guide and click photo." },
+    { short: "Chin Up", title: "Tilt Chin Up", guide: "Gently tilt chin upward toward camera and click photo." },
+    { short: "Chin Down", title: "Tilt Chin Down", guide: "Gently tilt chin downward toward camera and click photo." },
+    { short: "Left", title: "Turn Left", guide: "Turn face slightly left and click photo." },
+    { short: "Right", title: "Turn Right", guide: "Turn face slightly right and click photo." },
   ];
 
   useEffect(() => {
@@ -2559,43 +3377,20 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
     if (!permission.granted) requestPermission();
   }, [permission?.granted]);
 
-  useEffect(() => {
-    if (!cameraReady || !camera || busy) return;
-    const timer = setTimeout(() => capturePhoto(), 2200);
-    return () => clearTimeout(timer);
-  }, [cameraReady, camera, step, busy]);
-
-  const capturePhoto = async () => {
-    if (!camera || busy) return;
+  // Manual capture pipeline: User clicks photo -> backend detects face & computes embeddings -> saves
+  const validateAndAddPhoto = async (photoUri: string) => {
     setBusy(true);
+    setStatusMsg("Analyzing face from frame...");
     setFaceDetected(false);
     setFaceBox(null);
     try {
-      const photo = await camera.takePictureAsync({
-        quality: 0.85,
-        skipProcessing: true,
-      });
-      if (!photo?.uri) throw new Error("No photo captured");
-
       const data = new FormData();
       data.append("file", {
-        uri: photo.uri,
+        uri: photoUri,
         name: `face-${step}.jpg`,
         type: "image/jpeg",
       } as any);
-
-      const poseKey =
-        step === 0
-          ? "center"
-          : step === 1
-            ? "chin_up"
-            : step === 2
-              ? "chin_down"
-              : step === 3
-                ? "left"
-                : "right";
-
-      data.append("target_pose", poseKey);
+      data.append("target_pose", "any");
 
       const res = await http.post("/validate-face", data, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -2609,16 +3404,15 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         setFrameSize({ width: imageWidth, height: imageHeight });
       }
 
-      if (!res.data?.valid) {
-        throw new Error(
-          res.data?.user_guidance ||
-            res.data?.issues?.[0] ||
-            "Pose not recognized. Please follow on-screen guidance."
-        );
+      if (res.data?.face_detected === false) {
+        setStatusMsg("No face detected. Please ensure your face is well-lit and centered.");
+        Alert.alert("Face Not Detected", "No clear face found in frame. Please reposition and click again.");
+        return;
       }
 
       setFaceDetected(true);
-      const nextPhotos = [...captured, photo.uri];
+      setStatusMsg("✓ Face verified successfully!");
+      const nextPhotos = [...captured, photoUri];
       setCaptured(nextPhotos);
 
       if (step < 4) {
@@ -2626,22 +3420,59 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       } else {
         await AsyncStorage.setItem("face_registration_photos", JSON.stringify(nextPhotos));
         Alert.alert(
-          "Face Profile Validated",
-          "All 5 face angles were successfully scanned and validated.",
-          [{ text: "Return to Enroll Student", onPress: () => go("Add Student") }]
+          "Biometric Scanning Complete",
+          "All 5 face angles were recorded and validated.",
+          [{ text: "Continue Enrollment", onPress: () => go("Add Student") }]
         );
       }
     } catch (e: any) {
-      Alert.alert(
-        "Pose Guidance",
+      const msg =
         e?.response?.data?.user_guidance ||
-          e?.response?.data?.detail ||
-          e?.message ||
-          "Please realign your face with the guide."
-      );
+        e?.response?.data?.detail ||
+        e?.message ||
+        "Face could not be verified. Please retry.";
+      setStatusMsg(msg);
+      Alert.alert("Biometric Notice", msg);
     } finally {
       setBusy(false);
     }
+  };
+
+  const capturePhoto = async () => {
+    if (!camera || busy) return;
+    try {
+      const photo = await camera.takePictureAsync({
+        quality: 0.88,
+        skipProcessing: true,
+      });
+      if (!photo?.uri) throw new Error("No photo captured");
+      await validateAndAddPhoto(photo.uri);
+    } catch (e: any) {
+      Alert.alert("Camera Error", e?.message || "Failed to capture photo from sensor.");
+    }
+  };
+
+  const pickFromGallery = async () => {
+    if (busy) return;
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.88,
+    });
+    if (res.canceled || !res.assets?.[0]?.uri) return;
+    await validateAndAddPhoto(res.assets[0].uri);
+  };
+
+  const saveAndFinishEarly = async () => {
+    if (captured.length === 0) {
+      Alert.alert("No Photos Captured", "Please capture at least one face photo before saving.");
+      return;
+    }
+    await AsyncStorage.setItem("face_registration_photos", JSON.stringify(captured));
+    Alert.alert(
+      "Biometrics Saved",
+      `${captured.length} photo${captured.length > 1 ? "s" : ""} saved for enrollment.`,
+      [{ text: "Continue Enrollment", onPress: () => go("Add Student") }]
+    );
   };
 
   if (!permission || !permission.granted) {
@@ -2658,7 +3489,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
             Camera Permission Required
           </Text>
           <Text style={[styles.permDescHolo, { color: theme.muted }]}>
-            Pratyaksh requires front camera access to record facial verification angles.
+            Camera access is needed to capture student face biometrics.
           </Text>
           <Pressable
             style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
@@ -2729,7 +3560,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         ))}
       </View>
 
-      {/* Viewfinder with Animated Laser Beam */}
+      {/* Viewfinder with Animated Laser Beam & Camera Switch */}
       <View style={[styles.hudCameraViewport, { borderColor: theme.borderAccent }]}>
         {cameraError ? (
           <View style={styles.hudCameraErrorWrap}>
@@ -2740,10 +3571,18 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
             <CameraView
               ref={setCamera}
               style={StyleSheet.absoluteFillObject}
-              facing="front"
+              facing={facing}
               onCameraReady={() => setCameraReady(true)}
               onMountError={() => setCameraError("Camera error")}
             />
+
+            {/* Camera Flip Overlay Button */}
+            <Pressable
+              style={[styles.cameraFlipBtn, { backgroundColor: "rgba(0,0,0,0.6)", borderColor: theme.borderAccent }]}
+              onPress={() => setFacing((f) => (f === "front" ? "back" : "front"))}
+            >
+              <MaterialCommunityIcons name="camera-flip" size={20} color="#FFFFFF" />
+            </Pressable>
 
             {faceDetected && faceBox && (
               <View
@@ -2797,22 +3636,34 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
               <View
                 style={[
                   styles.hudTelemetryDot,
-                  { backgroundColor: busy ? theme.amber : theme.cyan },
+                  { backgroundColor: busy ? theme.amber : faceDetected ? theme.emerald : theme.cyan },
                 ]}
               />
-              <Text style={styles.hudTelemetryLabel}>
-                {busy
-                  ? "VALIDATING FACE ANGLE..."
-                  : cameraReady
-                    ? "ALIGN FACE WITHIN GUIDE"
-                    : "STARTING SENSOR..."}
+              <Text style={styles.hudTelemetryLabel} numberOfLines={1}>
+                {statusMsg ||
+                  (busy
+                    ? "ANALYZING FACE BIOMETRICS..."
+                    : cameraReady
+                      ? "CLICK PHOTO BUTTON TO CAPTURE"
+                      : "STARTING SENSOR...")}
               </Text>
             </View>
           </View>
         )}
       </View>
 
-      {/* Pose Instruction Card */}
+      {/* Captured Thumbnails Strip */}
+      {captured.length > 0 && (
+        <View style={styles.capturedThumbsRow}>
+          {captured.map((uri, i) => (
+            <View key={i} style={[styles.capturedThumbWrap, { borderColor: theme.emerald }]}>
+              <Image source={{ uri }} style={styles.capturedThumbImg} />
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Pose Instruction & Manual Action Card */}
       <View
         style={[
           styles.hudInstructionCard,
@@ -2826,6 +3677,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
           {current.guide}
         </Text>
 
+        {/* Primary Manual Capture Button */}
         <Pressable
           style={[
             styles.hudForceCaptureBtn,
@@ -2841,7 +3693,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
             <View style={styles.submitRow}>
               <MaterialCommunityIcons
                 name="camera"
-                size={18}
+                size={20}
                 color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
               />
               <Text
@@ -2850,10 +3702,57 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
                   { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
                 ]}
               >
-                CAPTURE ANGLE ({step + 1}/5)
+                CLICK TO CAPTURE PHOTO ({step + 1}/5)
               </Text>
             </View>
           )}
+        </Pressable>
+
+        {/* Early Save Biometrics Button */}
+        {captured.length > 0 && (
+          <Pressable
+            style={[
+              styles.primaryNeonButton,
+              { backgroundColor: theme.emerald, marginTop: 10 },
+              busy && { opacity: 0.7 },
+            ]}
+            onPress={saveAndFinishEarly}
+            disabled={busy}
+          >
+            <View style={styles.submitRow}>
+              <MaterialCommunityIcons
+                name="check-circle"
+                size={18}
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
+              <Text
+                style={[
+                  styles.primaryNeonButtonText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
+                SAVE & FINISH ({captured.length} PHOTO{captured.length > 1 ? "S" : ""})
+              </Text>
+            </View>
+          </Pressable>
+        )}
+
+        {/* Gallery Option */}
+        <Pressable
+          style={[
+            styles.secondaryHoloButton,
+            { borderColor: theme.border, marginTop: 10 },
+            busy && { opacity: 0.7 },
+          ]}
+          onPress={pickFromGallery}
+          disabled={busy}
+        >
+          <View style={styles.submitRow}>
+            <MaterialCommunityIcons name="image-multiple" size={17} color={theme.text} />
+            <Text style={[styles.secondaryHoloButtonText, { color: theme.text }]}>
+              CHOOSE FROM GALLERY
+            </Text>
+          </View>
         </Pressable>
       </View>
     </View>
@@ -2939,9 +3838,14 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         type: "image/jpeg",
       } as any);
 
-      await http.post("/process-group-attendance", data, {
+      const res = await http.post("/process-group-attendance", data, {
         headers: { "Content-Type": "multipart/form-data" },
       });
+
+      if (res.data) {
+        await AsyncStorage.setItem("latest_recognition_result", JSON.stringify(res.data));
+        await AsyncStorage.setItem("active_attendance_session_id", scope.session_id);
+      }
 
       go("Recognition Results");
     } catch (e: any) {
@@ -3200,15 +4104,29 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 // ---------------------------------------------------------------------------
 function RecognitionResultsView({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
+  const [result, setResult] = useState<any>(null);
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
 
   useEffect(() => {
-    http
-      .get("/teacher/attendance/report")
-      .then((r) => setItems(r.data?.records || []))
-      .catch(() => setItems([]))
-      .finally(() => setBusy(false));
+    const loadData = async () => {
+      try {
+        const stored = await AsyncStorage.getItem("latest_recognition_result");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setResult(parsed);
+          setItems(parsed.students || []);
+        } else {
+          const r = await http.get("/teacher/attendance/report");
+          setItems(r.data?.records || []);
+        }
+      } catch {
+        setItems([]);
+      } finally {
+        setBusy(false);
+      }
+    };
+    loadData();
   }, []);
 
   if (busy) {
@@ -3222,6 +4140,12 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
     );
   }
 
+  const detectedCount = result?.total_faces_detected ?? items.length;
+  const recognizedCount =
+    result?.recognized_count ??
+    items.filter((x: any) => String(x.status || "").toLowerCase().includes("present")).length;
+  const unrecognizedCount = Math.max(0, detectedCount - recognizedCount);
+
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
@@ -3230,7 +4154,7 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
             Recognition Results
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            {items.length} students detected and matched
+            {detectedCount} face{detectedCount === 1 ? "" : "s"} detected • {recognizedCount} matched
           </Text>
         </View>
         <Pressable
@@ -3253,6 +4177,66 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
         </Pressable>
       </View>
 
+      {/* Annotated AI detection image preview */}
+      {result?.annotated_image_base64 && (
+        <View
+          style={[
+            styles.annotatedPreviewCard,
+            { borderColor: theme.borderAccent, backgroundColor: "#000" },
+          ]}
+        >
+          <Image
+            source={{ uri: result.annotated_image_base64 }}
+            style={styles.annotatedPreviewImg}
+            resizeMode="contain"
+          />
+          <View style={[styles.annotatedOverlayBadge, { backgroundColor: "rgba(0,0,0,0.7)" }]}>
+            <MaterialCommunityIcons name="face-recognition" size={16} color={theme.emerald} />
+            <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "700", marginLeft: 6 }}>
+              {recognizedCount} MATCHED • {unrecognizedCount} UNKNOWN
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* Metric Stat Cards */}
+      <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+        <View
+          style={[
+            styles.metricCardHolo,
+            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>DETECTED</Text>
+          <Text style={[styles.metricCardValue, { color: theme.cyan }]}>{detectedCount}</Text>
+        </View>
+        <View
+          style={[
+            styles.metricCardHolo,
+            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>RECOGNIZED</Text>
+          <Text style={[styles.metricCardValue, { color: theme.emerald }]}>{recognizedCount}</Text>
+        </View>
+        <View
+          style={[
+            styles.metricCardHolo,
+            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>UNIDENTIFIED</Text>
+          <Text
+            style={[
+              styles.metricCardValue,
+              { color: unrecognizedCount > 0 ? theme.amber : theme.muted },
+            ]}
+          >
+            {unrecognizedCount}
+          </Text>
+        </View>
+      </View>
+
       <View
         style={[
           styles.resultsNoticeBox,
@@ -3261,7 +4245,7 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
       >
         <MaterialCommunityIcons name="information" size={18} color={theme.cyan} />
         <Text style={[styles.resultsNoticeText, { color: theme.cyan }]}>
-          Review initial classifications. You can adjust student status on the verification checklist.
+          Review initial face detections below. You can toggle Present / Absent status in the verification checklist.
         </Text>
       </View>
 
@@ -3276,7 +4260,10 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
       ) : (
         <View style={styles.resultsCardsGrid}>
           {items.map((rec, i) => {
-            const isPresent = String(rec.status || "").toLowerCase().includes("present");
+            const isPresent =
+              rec.confidence !== undefined ||
+              String(rec.status || "").toLowerCase().includes("present");
+            const confPercent = rec.confidence ? Math.round(rec.confidence * 100) : null;
             return (
               <View
                 key={rec.student_id || i}
@@ -3292,7 +4279,7 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
                   ]}
                 >
                   <MaterialCommunityIcons
-                    name="account"
+                    name="account-check"
                     size={26}
                     color={isPresent ? theme.emerald : theme.rose}
                   />
@@ -3300,9 +4287,15 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
                 <Text style={[styles.resultItemNameText, { color: theme.text }]} numberOfLines={1}>
                   {rec.name || rec.student_id || "Student"}
                 </Text>
-                <Text style={[styles.resultItemIdText, { color: theme.muted }]}>{rec.student_id}</Text>
+                <Text style={[styles.resultItemIdText, { color: theme.muted }]}>
+                  {rec.student_id}
+                </Text>
                 <HoloStatusPill
-                  label={rec.status || (isPresent ? "Present" : "Absent")}
+                  label={
+                    confPercent !== null
+                      ? `${confPercent}% Match`
+                      : rec.status || (isPresent ? "Present" : "Absent")
+                  }
                   tone={isPresent ? "success" : "danger"}
                 />
               </View>
@@ -3311,29 +4304,27 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
         </View>
       )}
 
-      {items.length > 0 && (
-        <Pressable
+      <Pressable
+        style={[
+          styles.primaryNeonButton,
+          { backgroundColor: theme.cyan, marginTop: 20 },
+        ]}
+        onPress={() => go("Verify Attendance")}
+      >
+        <MaterialCommunityIcons
+          name="account-check"
+          size={19}
+          color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+        />
+        <Text
           style={[
-            styles.primaryNeonButton,
-            { backgroundColor: theme.cyan, marginTop: 24 },
+            styles.primaryNeonButtonText,
+            { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
           ]}
-          onPress={() => go("Verify Attendance")}
         >
-          <MaterialCommunityIcons
-            name="account-check"
-            size={19}
-            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
-          />
-          <Text
-            style={[
-              styles.primaryNeonButtonText,
-              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
-            ]}
-          >
-            PROCEED TO VERIFICATION CHECKLIST
-          </Text>
-        </Pressable>
-      )}
+          PROCEED TO VERIFICATION CHECKLIST
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -3351,23 +4342,68 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    http
-      .get("/teacher/attendance/report")
-      .then((r) => {
-        const records = r.data?.records || [];
-        setItems(records);
-        if (records.length > 0 && records[0].session_id) {
-          setSessionId(records[0].session_id);
+    const loadData = async () => {
+      try {
+        const storedSession = await AsyncStorage.getItem("active_attendance_session_id");
+        const storedResult = await AsyncStorage.getItem("latest_recognition_result");
+        let activeId = storedSession || "";
+        let recognizedStudents: any[] = [];
+
+        if (storedResult) {
+          const parsed = JSON.parse(storedResult);
+          recognizedStudents = parsed.students || [];
+          if (!activeId && parsed.session_id) activeId = parsed.session_id;
         }
+
+        if (activeId) setSessionId(activeId);
+
+        // Fetch roster from /students
+        let roster: any[] = [];
+        try {
+          const res = await http.get("/students");
+          roster = res.data?.students || [];
+        } catch {}
+
+        if (roster.length === 0 && recognizedStudents.length > 0) {
+          roster = recognizedStudents;
+        }
+
+        // Also check attendance report or session attendance if available
+        let reportRecords: any[] = [];
+        try {
+          const rep = await http.get("/teacher/attendance/report");
+          reportRecords = rep.data?.records || [];
+          if (!activeId && reportRecords.length > 0 && reportRecords[0].session_id) {
+            setSessionId(reportRecords[0].session_id);
+          }
+        } catch {}
+
+        if (roster.length === 0) {
+          roster = reportRecords;
+        }
+
+        const recognizedIds = new Set(recognizedStudents.map((s) => s.student_id));
+        reportRecords.forEach((r) => {
+          if (String(r.status || "").toUpperCase() === "PRESENT") recognizedIds.add(r.student_id);
+        });
+
         const initialMap: Record<string, "PRESENT" | "ABSENT"> = {};
-        records.forEach((row: any) => {
-          const isPres = String(row.status || "").toUpperCase() === "PRESENT";
+        roster.forEach((row: any) => {
+          const isPres =
+            recognizedIds.has(row.student_id) ||
+            String(row.status || "").toUpperCase() === "PRESENT";
           initialMap[row.student_id] = isPres ? "PRESENT" : "ABSENT";
         });
+
+        setItems(roster);
         setStatusMap(initialMap);
-      })
-      .catch(() => setItems([]))
-      .finally(() => setBusy(false));
+      } catch {
+        setItems([]);
+      } finally {
+        setBusy(false);
+      }
+    };
+    loadData();
   }, []);
 
   const toggleStatus = (studentId: string) => {
@@ -3384,8 +4420,15 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   };
 
   const finalizeAttendance = async () => {
-    if (!sessionId) {
-      Alert.alert("Missing Session", "Session identifier not found.");
+    let currentSession = sessionId;
+    if (!currentSession) {
+      currentSession = (await AsyncStorage.getItem("active_attendance_session_id")) || "";
+    }
+    if (!currentSession) {
+      Alert.alert(
+        "Missing Session",
+        "Session identifier not found. Please create an attendance session first."
+      );
       return;
     }
     setSubmitting(true);
@@ -3396,7 +4439,7 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       }));
 
       await http.post("/teacher/attendance/finalize", {
-        session_id: sessionId,
+        session_id: currentSession,
         records,
       });
 
@@ -4608,6 +5651,8 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
 function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
   const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [registering, setRegistering] = useState(false);
 
   useEffect(() => {
     http
@@ -4615,6 +5660,36 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
       .then((r) => setProfile(r.data?.profile || user))
       .catch(() => {});
   }, []);
+
+  const handleFaceCaptured = async (uri: string) => {
+    setCameraOpen(false);
+    setRegistering(true);
+    try {
+      const data = new FormData();
+      data.append("file", {
+        uri,
+        name: "student-face.jpg",
+        type: "image/jpeg",
+      } as any);
+
+      const res = await http.post("/student/register-face", data, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      Alert.alert(
+        "Biometrics Registered",
+        res.data?.message || "Your biometric face profile was successfully registered and activated."
+      );
+      setProfile((p: any) => ({ ...p, face_registered: true }));
+    } catch (e: any) {
+      Alert.alert(
+        "Registration Failed",
+        e?.response?.data?.detail || "Could not register face biometrics. Please ensure proper lighting and retry."
+      );
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   return (
     <View style={styles.screenLayout}>
@@ -4633,10 +5708,50 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
         <HoloDetailRow label="Semester" value={profile.semester || "Semester 4"} />
         <HoloDetailRow label="Current GPA" value={String(profile.gpa || "3.85")} />
         <HoloDetailRow
-          label="Face Profile"
-          value={profile.face_registered ? "Active & Verified" : "Active (Profile Registered)"}
+          label="Face Biometrics"
+          value={profile.face_registered ? "Active & Verified" : "Not Registered"}
         />
       </View>
+
+      {/* Face Biometrics Registration / Update Button */}
+      <Pressable
+        style={[
+          styles.primaryNeonButton,
+          {
+            backgroundColor: profile.face_registered ? theme.emerald : theme.cyan,
+            marginBottom: 16,
+          },
+          registering && { opacity: 0.7 },
+        ]}
+        onPress={() => setCameraOpen(true)}
+        disabled={registering}
+      >
+        {registering ? (
+          <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+        ) : (
+          <View style={styles.submitRow}>
+            <MaterialCommunityIcons
+              name="face-recognition"
+              size={20}
+              color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+            />
+            <Text
+              style={[
+                styles.primaryNeonButtonText,
+                { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+              ]}
+            >
+              {profile.face_registered ? "UPDATE FACE BIOMETRICS" : "REGISTER FACE BIOMETRICS"}
+            </Text>
+          </View>
+        )}
+      </Pressable>
+
+      <BiometricCameraModal
+        visible={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onCapture={handleFaceCaptured}
+      />
 
       <Pressable
         style={[
@@ -4902,7 +6017,13 @@ function HoloEmptyState({
 // ---------------------------------------------------------------------------
 // ACADEMIC CASCADE COMPONENT
 // ---------------------------------------------------------------------------
-function AcademicCascade({ onApply }: { onApply?: (selection: any) => void }) {
+function AcademicCascade({
+  onApply,
+  onChange,
+}: {
+  onApply?: (selection: any) => void;
+  onChange?: (selection: any, matchedSection?: any) => void;
+}) {
   const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
   const [selection, setSelection] = useState<any>({});
@@ -4983,19 +6104,30 @@ function AcademicCascade({ onApply }: { onApply?: (selection: any) => void }) {
                       key={opt}
                       style={[styles.dropdownOptionHolo, { borderBottomColor: theme.border }]}
                       onPress={() => {
-                        setSelection((prev: any) => ({
-                          ...prev,
-                          [fieldKey]: opt,
-                          ...(fieldKey === "school"
-                            ? { faculty: "", department: "", program: "", semester: "" }
-                            : fieldKey === "faculty"
-                              ? { department: "", program: "", semester: "" }
-                              : fieldKey === "department"
-                                ? { program: "", semester: "" }
-                                : fieldKey === "program"
-                                  ? { semester: "" }
-                                  : {}),
-                        }));
+                        setSelection((prev: any) => {
+                          const next = {
+                            ...prev,
+                            [fieldKey]: opt,
+                            ...(fieldKey === "school"
+                              ? { faculty: "", department: "", program: "", semester: "" }
+                              : fieldKey === "faculty"
+                                ? { department: "", program: "", semester: "" }
+                                : fieldKey === "department"
+                                  ? { program: "", semester: "" }
+                                  : fieldKey === "program"
+                                    ? { semester: "" }
+                                    : {}),
+                          };
+                          const matched = sections.find((s) =>
+                            (!next.school || s.school === next.school) &&
+                            (!next.faculty || s.faculty === next.faculty) &&
+                            (!next.department || s.department === next.department) &&
+                            (!next.program || s.program === next.program) &&
+                            (!next.semester || s.semester === next.semester)
+                          );
+                          if (onChange) onChange(next, matched);
+                          return next;
+                        });
                         setModalOpen(null);
                       }}
                     >
@@ -7166,5 +8298,368 @@ const styles = StyleSheet.create({
   emptySubText: {
     fontSize: 12,
     paddingVertical: 10,
+  },
+  biometricModalContainer: {
+    flex: 1,
+  },
+  biometricModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+  },
+  biometricHeaderTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  biometricHeaderSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  biometricPermWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  biometricCameraViewport: {
+    flex: 1,
+    position: "relative",
+    backgroundColor: "#000",
+  },
+  biometricBottomControlBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    paddingVertical: 24,
+    paddingHorizontal: 20,
+    backgroundColor: "#050811",
+  },
+  cameraFlipBtn: {
+    position: "absolute",
+    top: 16,
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    zIndex: 10,
+  },
+  galleryIconBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  shutterOuterRing: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 3,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  shutterInnerCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+  },
+  biometricPreviewContainer: {
+    flex: 1,
+    padding: 20,
+    justifyContent: "center",
+  },
+  biometricPreviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: "hidden",
+    position: "relative",
+    aspectRatio: 3 / 4,
+    maxHeight: 440,
+    alignSelf: "center",
+    width: "100%",
+  },
+  biometricPreviewImg: {
+    width: "100%",
+    height: "100%",
+  },
+  biometricVerifiedBadge: {
+    position: "absolute",
+    top: 14,
+    left: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  biometricVerifiedText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  biometricStatusBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 14,
+  },
+  biometricStatusBoxText: {
+    fontSize: 13,
+    fontWeight: "500",
+    flex: 1,
+  },
+  biometricActionsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+  },
+  biometricRetakeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  biometricRetakeBtnText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  biometricConfirmBtn: {
+    flex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  biometricConfirmBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  photoVerifiedCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  photoVerifiedThumb: {
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+  },
+  verifiedRow: {
+    flex: 1,
+  },
+  verifiedTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  verifiedSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  retakeActionsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+  },
+  smallActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  smallActionBtnText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  biometricPromptCardEnhanced: {
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  biometricPromptInfoRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 14,
+  },
+  biometricButtonsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  openCameraBtnPrimary: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  openCameraBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  chooseGalleryBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  chooseGalleryBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  generateIdBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  generateIdBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  annotatedPreviewCard: {
+    width: "100%",
+    height: 240,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+    position: "relative",
+    marginBottom: 16,
+  },
+  annotatedPreviewImg: {
+    width: "100%",
+    height: "100%",
+  },
+  annotatedOverlayBadge: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  modalFooterTwoBtnsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+  },
+  modalDangerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  modalDangerBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  modalDismissBtnFlex: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  capturedThumbsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 4,
+  },
+  capturedThumbWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+  },
+  capturedThumbImg: {
+    width: "100%",
+    height: "100%",
+  },
+  secondaryHoloButton: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryHoloButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  metricCardHolo: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  metricCardLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  metricCardValue: {
+    fontSize: 20,
+    fontWeight: "900",
+  },
+  serverPillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 14,
+    gap: 8,
+  },
+  serverStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  serverPillText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "600",
   },
 });
