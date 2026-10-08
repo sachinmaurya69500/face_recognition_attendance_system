@@ -1,19 +1,30 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, {
+  useEffect,
+  useState,
+  useMemo,
+  useRef,
+  useContext,
+  createContext,
+  useCallback,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Dimensions,
+  Easing,
   Image,
-  Linking,
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  StatusBar as RNStatusBar,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
-  Platform,
-  StatusBar as NativeStatusBar,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -23,68 +34,140 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
+const STATUS_BAR_HEIGHT = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
+
 // ---------------------------------------------------------------------------
-// DESIGN SYSTEM & THEME
+// DUAL-ENGINE THEME PALETTES (MIDNIGHT COSMOS DARK  +  CLOUD ATLAS LIGHT)
 // ---------------------------------------------------------------------------
-export const theme = {
-  // Brand Core
-  primary: "#1E3A8A", // Deep royal navy
-  primaryDark: "#0F172A", // Midnight slate
-  primaryLight: "#2563EB", // Vibrant cobalt
-  primaryPale: "#EEF4FF", // Soft royal wash
-  accent: "#F59E0B", // High-end warm amber
-  accentLight: "#FEF3C7", // Soft amber wash
-  accentDark: "#D97706",
-
-  // Backgrounds & Canvas
-  bg: "#F8FAFC", // Clean slate canvas
-  surface: "#FFFFFF", // Elevated card white
-  surfaceAlt: "#F1F5F9", // Slate surface
-  surfaceHover: "#E2E8F0",
-
-  // Borders & Dividers
-  border: "#E2E8F0", // Slate-200 border
-  borderSubtle: "#EDF2F7",
-  borderActive: "#2563EB",
-
-  // Typography
-  text: "#0F172A", // High contrast slate-900
-  textSecondary: "#475569", // Slate-600
-  muted: "#94A3B8", // Slate-400
-  textOnPrimary: "#FFFFFF",
-
-  // Semantic
-  success: "#10B981", // Emerald
-  successPale: "#ECFDF5",
-  successBorder: "#A7F3D0",
-
-  danger: "#EF4444", // Crimson
-  dangerPale: "#FEF2F2",
-  dangerBorder: "#FECACA",
-
-  warning: "#F59E0B",
-  warningPale: "#FFFBEB",
-  warningBorder: "#FDE68A",
-
-  info: "#0EA5E9",
-  infoPale: "#F0F9FF",
-  infoBorder: "#BAE6FD",
+export const darkTheme = {
+  mode: "dark" as const,
+  bg: "#070B13",
+  bgElevated: "#0C1422",
+  card: "#101E35",
+  cardGlass: "rgba(14, 24, 48, 0.92)",
+  cardSubtle: "#090F1E",
+  cardHover: "#152240",
+  divider: "rgba(255,255,255,0.06)",
+  border: "rgba(255, 255, 255, 0.07)",
+  borderBright: "rgba(255, 255, 255, 0.14)",
+  borderAccent: "rgba(99, 179, 237, 0.38)",
+  cyan: "#63B3ED",
+  cyanGlow: "rgba(99, 179, 237, 0.18)",
+  cyanStrong: "#90CDF4",
+  blue: "#4C9BE8",
+  blueDark: "#1A365D",
+  blueGlow: "rgba(76, 155, 232, 0.18)",
+  amber: "#F6AD55",
+  amberGlow: "rgba(246, 173, 85, 0.18)",
+  emerald: "#48BB78",
+  emeraldGlow: "rgba(72, 187, 120, 0.18)",
+  rose: "#FC8181",
+  roseGlow: "rgba(252, 129, 129, 0.18)",
+  purple: "#B794F4",
+  purpleGlow: "rgba(183, 148, 244, 0.18)",
+  gold: "#ECC94B",
+  goldGlow: "rgba(236, 201, 75, 0.16)",
+  text: "#EDF2F7",
+  textSecondary: "#A0AEC0",
+  muted: "#4A5568",
+  navBg: "rgba(7, 11, 19, 0.97)",
+  statusBarStyle: "light" as const,
 };
+
+export const lightTheme = {
+  mode: "light" as const,
+  bg: "#F0F4F8",
+  bgElevated: "#FFFFFF",
+  card: "#FFFFFF",
+  cardGlass: "rgba(255, 255, 255, 0.96)",
+  cardSubtle: "#EBF4FF",
+  cardHover: "#DBEAFE",
+  divider: "rgba(0,0,0,0.05)",
+  border: "#E2ECF5",
+  borderBright: "#BDD0EA",
+  borderAccent: "rgba(37, 99, 235, 0.28)",
+  cyan: "#2563EB",
+  cyanGlow: "rgba(37, 99, 235, 0.10)",
+  cyanStrong: "#1D4ED8",
+  blue: "#2563EB",
+  blueDark: "#1E3A8A",
+  blueGlow: "rgba(37, 99, 235, 0.10)",
+  amber: "#D97706",
+  amberGlow: "rgba(217, 119, 6, 0.10)",
+  emerald: "#059669",
+  emeraldGlow: "rgba(5, 150, 105, 0.10)",
+  rose: "#DC2626",
+  roseGlow: "rgba(220, 38, 38, 0.10)",
+  purple: "#7C3AED",
+  purpleGlow: "rgba(124, 58, 237, 0.10)",
+  gold: "#B7791F",
+  goldGlow: "rgba(183, 121, 31, 0.10)",
+  text: "#1A202C",
+  textSecondary: "#4A5568",
+  muted: "#A0AEC0",
+  navBg: "rgba(240, 244, 248, 0.97)",
+  statusBarStyle: "dark" as const,
+};
+
+export type AppTheme = typeof darkTheme | typeof lightTheme;
+
+const ThemeContext = createContext<{
+  theme: AppTheme;
+  isDark: boolean;
+  toggleTheme: () => void;
+}>({
+  theme: darkTheme,
+  isDark: true,
+  toggleTheme: () => {},
+});
+
+export const useAppTheme = () => useContext(ThemeContext);
 
 type Role = "admin" | "teacher" | "student";
 
-//const API = process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
-const API = process.env.EXPO_PUBLIC_API_URL || "http://10.0.2.2:8000";
+const API =
+  process.env.EXPO_PUBLIC_API_URL || "https://anotherearth.taila10c0b.ts.net";
 const http = axios.create({ baseURL: API });
 
+// The hierarchy is shared by several screens. Fetch it once per app session
+// instead of making a full network request each time a selector mounts.
+let academicSectionsCache: any[] | null = null;
+let academicSectionsRequest: Promise<any[]> | null = null;
+
+function loadAcademicSections(): Promise<any[]> {
+  if (academicSectionsCache) return Promise.resolve(academicSectionsCache);
+  if (academicSectionsRequest) return academicSectionsRequest;
+
+  academicSectionsRequest = http
+    .get("/academic/sections")
+    .then((response) => {
+      academicSectionsCache = response.data?.sections || [];
+      return academicSectionsCache;
+    })
+    .finally(() => {
+      academicSectionsRequest = null;
+    });
+  return academicSectionsRequest;
+}
+
 // ---------------------------------------------------------------------------
-// ROOT COMPONENT & AUTH STATE
+// ROOT APPLICATION & THEME PROVIDER
 // ---------------------------------------------------------------------------
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isDark, setIsDark] = useState(true);
 
   useEffect(() => {
+    // Load persisted theme preference
+    AsyncStorage.getItem("pratyaksh_theme").then((savedTheme) => {
+      if (savedTheme === "light") setIsDark(false);
+      else if (savedTheme === "dark") setIsDark(true);
+    });
+
+    // Load persisted user session
     AsyncStorage.getItem("attendai_user")
       .then(async (stored) => {
         if (stored) {
@@ -105,46 +188,71 @@ export default function App() {
       .finally(() => setLoading(false));
   }, []);
 
+  const toggleTheme = () => {
+    setIsDark((prev) => {
+      const next = !prev;
+      AsyncStorage.setItem("pratyaksh_theme", next ? "dark" : "light");
+      return next;
+    });
+  };
+
+  const theme = isDark ? darkTheme : lightTheme;
+
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <StatusBar style="dark" />
-        <View style={styles.loadingCard}>
+      <SafeAreaView style={[styles.splashContainer, { backgroundColor: theme.bg }]}>
+        <StatusBar style={theme.statusBarStyle} />
+        <View style={[styles.splashGlowBg, { backgroundColor: theme.cyanGlow }]} />
+        <View
+          style={[
+            styles.splashCard,
+            { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+          ]}
+        >
           <Image
             source={require("./assets/pratyaksha-logo.jpg")}
             style={styles.splashLogo}
             resizeMode="contain"
           />
-          <ActivityIndicator size="large" color={theme.primaryLight} style={{ marginTop: 24 }} />
-          <Text style={styles.loadingText}>Initializing Pratyaksh...</Text>
+          <View style={[styles.splashPulseDot, { backgroundColor: theme.cyan }]} />
+          <Text style={[styles.splashTitle, { color: theme.text }]}>PRATYAKSH</Text>
+          <Text style={[styles.splashSubtitle, { color: theme.muted }]}>
+            AI Academic Attendance System
+          </Text>
+          <ActivityIndicator size="large" color={theme.cyan} style={{ marginTop: 24 }} />
         </View>
       </SafeAreaView>
     );
   }
 
-  return user ? (
-    <AppShell
-      user={user}
-      onLogout={async () => {
-        delete http.defaults.headers.common.Authorization;
-        await AsyncStorage.removeItem("attendai_user");
-        setUser(null);
-      }}
-    />
-  ) : (
-    <Login
-      onLogin={async (u) => {
-        await AsyncStorage.setItem("attendai_user", JSON.stringify(u));
-        setUser(u);
-      }}
-    />
+  return (
+    <ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
+      {user ? (
+        <AppShell
+          user={user}
+          onLogout={async () => {
+            delete http.defaults.headers.common.Authorization;
+            await AsyncStorage.removeItem("attendai_user");
+            setUser(null);
+          }}
+        />
+      ) : (
+        <Login
+          onLogin={async (u) => {
+            await AsyncStorage.setItem("attendai_user", JSON.stringify(u));
+            setUser(u);
+          }}
+        />
+      )}
+    </ThemeContext.Provider>
   );
 }
 
 // ---------------------------------------------------------------------------
-// LOGIN SCREEN
+// ELEGANT EXECUTIVE LOGIN SCREEN
 // ---------------------------------------------------------------------------
 function Login({ onLogin }: { onLogin: (u: any) => void }) {
+  const { theme, isDark, toggleTheme } = useAppTheme();
   const [role, setRole] = useState<Role>("admin");
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin123");
@@ -185,7 +293,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     } catch (e: any) {
       setError(
         e?.response?.data?.detail ||
-          "Unable to sign in. Please verify your credentials and network connection."
+          "Authentication failed. Please verify your credentials."
       );
     } finally {
       setBusy(false);
@@ -193,44 +301,142 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   };
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT }]}>
+      <StatusBar style={theme.statusBarStyle} />
+
+      {/* Ambient glow blobs */}
+      <View
+        style={[
+          styles.loginAmbientCircle,
+          {
+            backgroundColor: theme.cyanGlow,
+            top: -80,
+            left: -60,
+          },
+        ]}
+      />
+      <View
+        style={[
+          styles.loginAmbientCircle,
+          {
+            backgroundColor: theme.purpleGlow,
+            top: SCREEN_HEIGHT * 0.4,
+            right: -80,
+            width: 200,
+            height: 200,
+            borderRadius: 100,
+          },
+        ]}
+      />
+
       <ScrollView
         contentContainerStyle={styles.loginScroll}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Brand Banner */}
-        <View style={styles.loginHeader}>
-          <View style={styles.logoBadgeContainer}>
-            <Image
-              source={require("./assets/pratyaksha-logo.jpg")}
-              style={styles.loginLogo}
-              resizeMode="contain"
+        {/* Theme Toggle Row */}
+        <View style={styles.loginTopControls}>
+          <Pressable
+            onPress={toggleTheme}
+            style={[
+              styles.themePillBtn,
+              {
+                backgroundColor: isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
+                borderColor: theme.border,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
+              size={17}
+              color={isDark ? theme.amber : theme.blue}
             />
+            <Text style={[styles.themePillText, { color: theme.textSecondary }]}>
+              {isDark ? "Light" : "Dark"}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* ── Brand Hero Section ── */}
+        <View style={styles.loginBrandHeader}>
+          {/* Logo with Glow Ring */}
+          <View style={styles.loginLogoRingWrap}>
+            <View
+              style={[
+                styles.loginLogoRingOuter,
+                { borderColor: theme.borderAccent },
+              ]}
+            />
+            <View
+              style={[
+                styles.logoBadgeCard,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.borderAccent,
+                  shadowColor: theme.cyan,
+                  shadowOffset: { width: 0, height: 0 },
+                  shadowOpacity: 0.5,
+                  shadowRadius: 16,
+                  elevation: 8,
+                },
+              ]}
+            >
+              <Image
+                source={require("./assets/pratyaksha-logo.jpg")}
+                style={styles.loginLogo}
+                resizeMode="contain"
+              />
+            </View>
           </View>
-          <Text style={styles.brandTitle}>
-            Pratyaksh<Text style={{ color: theme.accent }}>.AI</Text>
+
+          {/* Brand Name */}
+          <Text style={[styles.brandTitleText, { color: theme.text }]}>
+            PRATYAKSH<Text style={{ color: theme.cyan }}>.AI</Text>
           </Text>
-          <View style={styles.brandPill}>
-            <MaterialCommunityIcons name="face-recognition" size={14} color={theme.primaryLight} />
-            <Text style={styles.brandPillText}>Next-Gen Biometric Attendance</Text>
+          <Text style={[styles.loginBrandTagline, { color: theme.textSecondary }]}>
+            Intelligent Academic Attendance
+          </Text>
+
+          {/* Status Badge */}
+          <View
+            style={[
+              styles.brandStatusTag,
+              { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+            ]}
+          >
+            <View style={[styles.brandStatusDot, { backgroundColor: theme.cyan }]} />
+            <Text style={[styles.brandStatusTagText, { color: theme.cyan }]}>
+              SECURE INSTITUTION NETWORK ACTIVE
+            </Text>
           </View>
         </View>
 
-        {/* Login Surface Card */}
-        <View style={styles.loginCard}>
-          <Text style={styles.cardHeaderTitle}>Welcome Back</Text>
-          <Text style={styles.cardHeaderSubtitle}>
-            Select your portal and sign in to continue
+        {/* ── Sign-In Card ── */}
+        <View
+          style={[
+            styles.loginSurfaceCard,
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+              shadowColor: theme.mode === "dark" ? "#000" : "#9FB3CE",
+              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.25,
+              shadowRadius: 20,
+              elevation: 8,
+            },
+          ]}
+        >
+          <Text style={[styles.cardHeaderTitle, { color: theme.text }]}>Welcome Back</Text>
+          <Text style={[styles.cardHeaderSubtitle, { color: theme.textSecondary }]}>
+            Sign in to your campus portal
           </Text>
 
-          {/* Role Switcher */}
-          <View style={styles.roleTabsContainer}>
+          {/* Role Selector */}
+          <View style={[styles.roleTabsWrap, { backgroundColor: theme.bgElevated }]}>
             {(
               [
                 { id: "admin", label: "Admin", icon: "shield-crown-outline" },
-                { id: "teacher", label: "Teacher", icon: "teach" },
+                { id: "teacher", label: "Faculty", icon: "teach" },
                 { id: "student", label: "Student", icon: "school-outline" },
               ] as const
             ).map((item) => {
@@ -239,14 +445,33 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 <Pressable
                   key={item.id}
                   onPress={() => handleRoleSelect(item.id)}
-                  style={[styles.roleTab, active && styles.roleTabActive]}
+                  style={[
+                    styles.roleTabItem,
+                    active && [
+                      styles.roleTabItemActive,
+                      {
+                        backgroundColor: theme.card,
+                        borderColor: theme.borderAccent,
+                        shadowColor: theme.cyan,
+                        shadowOpacity: 0.25,
+                        shadowRadius: 6,
+                        elevation: 3,
+                      },
+                    ],
+                  ]}
                 >
                   <MaterialCommunityIcons
                     name={item.icon as any}
-                    size={18}
-                    color={active ? theme.primaryLight : theme.muted}
+                    size={17}
+                    color={active ? theme.cyan : theme.muted}
                   />
-                  <Text style={[styles.roleTabText, active && styles.roleTabTextActive]}>
+                  <Text
+                    style={[
+                      styles.roleTabLabel,
+                      { color: active ? theme.cyan : theme.muted },
+                      active && { fontWeight: "800" },
+                    ]}
+                  >
                     {item.label}
                   </Text>
                 </Pressable>
@@ -254,113 +479,126 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             })}
           </View>
 
-          {/* Form Fields */}
+          {/* Username */}
           <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Username / ID</Text>
-            <View style={styles.inputContainer}>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>IDENTIFIER</Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: username.length > 0 ? theme.borderAccent : theme.border,
+                },
+              ]}
+            >
               <MaterialCommunityIcons
                 name="account-outline"
-                size={20}
-                color={theme.muted}
-                style={styles.inputIcon}
+                size={19}
+                color={username.length > 0 ? theme.cyan : theme.muted}
+                style={styles.inputPrefixIcon}
               />
               <TextInput
-                style={styles.textInput}
+                style={[styles.textInputBox, { color: theme.text }]}
                 value={username}
                 onChangeText={setUsername}
-                placeholder="Enter username or ID"
+                placeholder="Username or student ID"
                 placeholderTextColor={theme.muted}
                 autoCapitalize="none"
               />
             </View>
           </View>
 
+          {/* Password */}
           <View style={styles.formGroup}>
-            <Text style={styles.fieldLabel}>Password</Text>
-            <View style={styles.inputContainer}>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PASSWORD</Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: password.length > 0 ? theme.borderAccent : theme.border,
+                },
+              ]}
+            >
               <MaterialCommunityIcons
                 name="lock-outline"
-                size={20}
-                color={theme.muted}
-                style={styles.inputIcon}
+                size={19}
+                color={password.length > 0 ? theme.cyan : theme.muted}
+                style={styles.inputPrefixIcon}
               />
               <TextInput
-                style={styles.textInput}
+                style={[styles.textInputBox, { color: theme.text }]}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
-                placeholder="Enter password"
+                placeholder="Enter your password"
                 placeholderTextColor={theme.muted}
               />
-              <Pressable
-                onPress={() => setShowPassword((v) => !v)}
-                style={styles.eyeButton}
-              >
+              <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
                 <MaterialCommunityIcons
                   name={showPassword ? "eye-off-outline" : "eye-outline"}
-                  size={20}
+                  size={19}
                   color={theme.muted}
                 />
               </Pressable>
             </View>
           </View>
 
-          {/* Error Message */}
+          {/* Error Banner */}
           {!!error && (
-            <View style={styles.errorBanner}>
-              <MaterialCommunityIcons
-                name="alert-circle-outline"
-                size={18}
-                color={theme.danger}
-              />
-              <Text style={styles.errorText}>{error}</Text>
+            <View
+              style={[
+                styles.errorBannerBox,
+                { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+              ]}
+            >
+              <MaterialCommunityIcons name="alert-circle-outline" size={17} color={theme.rose} />
+              <Text style={[styles.errorBannerText, { color: theme.rose }]}>{error}</Text>
             </View>
           )}
 
-          {/* Submit Button */}
+          {/* Sign-In CTA */}
           <Pressable
-            style={[styles.submitButton, busy && { opacity: 0.8 }]}
+            style={[
+              styles.submitButtonGlow,
+              {
+                backgroundColor: theme.cyan,
+                shadowColor: theme.cyan,
+                shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: 0.45,
+                shadowRadius: 14,
+                elevation: 6,
+              },
+              busy && { opacity: 0.75 },
+            ]}
             onPress={submit}
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"} />
             ) : (
               <View style={styles.submitRow}>
-                <Text style={styles.submitText}>Sign In to {role.toUpperCase()}</Text>
-                <MaterialCommunityIcons name="arrow-right" size={20} color="#fff" />
+                <Text
+                  style={[
+                    styles.submitTextAction,
+                    { color: theme.mode === "dark" ? "#070B13" : "#FFFFFF" },
+                  ]}
+                >
+                  {role === "admin" ? "SIGN IN AS ADMIN" : role === "teacher" ? "SIGN IN AS FACULTY" : "SIGN IN AS STUDENT"}
+                </Text>
+                <MaterialCommunityIcons
+                  name="arrow-right"
+                  size={18}
+                  color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"}
+                />
               </View>
             )}
           </Pressable>
 
-          {/* Quick Demo Credentials Footer */}
-          <View style={styles.demoBox}>
-            <Text style={styles.demoTitle}>QUICK DEMO PRESETS</Text>
-            <View style={styles.demoChipRow}>
-              <Pressable
-                style={styles.demoChip}
-                onPress={() => handleRoleSelect("admin")}
-              >
-                <Text style={styles.demoChipText}>Admin</Text>
-              </Pressable>
-              <Pressable
-                style={styles.demoChip}
-                onPress={() => handleRoleSelect("teacher")}
-              >
-                <Text style={styles.demoChipText}>Teacher</Text>
-              </Pressable>
-              <Pressable
-                style={styles.demoChip}
-                onPress={() => handleRoleSelect("student")}
-              >
-                <Text style={styles.demoChipText}>Student</Text>
-              </Pressable>
-            </View>
-          </View>
         </View>
 
-        <Text style={styles.loginFooter}>
-          Protected by Enterprise Facial Recognition & Biometric Encryption
+        <Text style={[styles.loginFootnote, { color: theme.muted }]}>
+          Secure · Verified · Encrypted
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -368,9 +606,11 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// APP SHELL & NAVIGATION
+// APP SHELL & FLOATING ISLAND NAVIGATION
 // ---------------------------------------------------------------------------
 function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const { theme, isDark, toggleTheme } = useAppTheme();
+
   useEffect(() => {
     if (user.token) {
       http.defaults.headers.common.Authorization = `Bearer ${user.token}`;
@@ -379,7 +619,6 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
 
   const role = (user.role || "admin") as Role;
 
-  // Curated 4-to-5 primary bottom tabs for ideal mobile UX ergonomics
   const tabs = useMemo(() => {
     if (role === "admin") {
       return ["Dashboard", "Students", "Teachers", "Academic", "Attendance"];
@@ -414,56 +653,136 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
     user.display_name || user.name || user.username || (role === "admin" ? "Admin" : "User");
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT }]}>
+      <StatusBar style={theme.statusBarStyle} />
 
-      {/* Top App Bar Header */}
-      <View style={styles.topBar}>
+      {/* ── Premium Frosted Glass Top Bar ── */}
+      <View
+        style={[
+          styles.topGlassBar,
+          {
+            backgroundColor: theme.cardGlass,
+            borderBottomColor: theme.divider ?? theme.border,
+            shadowColor: theme.mode === "dark" ? "#000" : "#9FB3CE",
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.18,
+            shadowRadius: 8,
+            elevation: 6,
+          },
+        ]}
+      >
+        {/* LEFT: Logo + Identity */}
         <View style={styles.topBarLeft}>
-          <View style={styles.brandMiniBadge}>
+          <View
+            style={[
+              styles.brandBadgeWrap,
+              {
+                backgroundColor: theme.card,
+                borderColor: theme.borderAccent,
+                shadowColor: theme.cyan,
+                shadowOffset: { width: 0, height: 0 },
+                shadowOpacity: 0.35,
+                shadowRadius: 6,
+                elevation: 3,
+              },
+            ]}
+          >
             <Image
               source={require("./assets/pratyaksha-logo.jpg")}
-              style={styles.brandMiniLogo}
+              style={styles.brandThumbLogo}
               resizeMode="contain"
             />
           </View>
-          <View style={styles.topBarIdentity}>
-            <View style={styles.topBrandRow}>
-              <Text style={styles.topBrandName}>Pratyaksh</Text>
-              <View style={styles.roleTag}>
-                <Text style={styles.roleTagText}>{role.toUpperCase()}</Text>
+          <View style={{ justifyContent: "center" }}>
+            <View style={styles.brandNameRow}>
+              <Text style={[styles.brandHeaderTitle, { color: theme.text }]}>
+                Pratyaksh
+              </Text>
+              <View
+                style={[
+                  styles.roleChipPill,
+                  { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+                ]}
+              >
+                <Text style={[styles.roleChipText, { color: theme.cyan }]}>
+                  {role === "admin" ? "ADMIN" : role === "teacher" ? "FACULTY" : "STUDENT"}
+                </Text>
               </View>
             </View>
-            <Text style={styles.topGreeting} numberOfLines={1}>
+            <Text style={[styles.greetingHeaderSub, { color: theme.textSecondary }]}>
               {getGreeting()}, {displayName.split(" ")[0]}
             </Text>
           </View>
         </View>
 
+        {/* RIGHT: Actions */}
         <View style={styles.topBarRight}>
+          {/* Theme Toggle */}
           <Pressable
-            onPress={() => setActiveTab("Alerts")}
-            style={[styles.iconButton, activeTab === "Alerts" && styles.iconButtonActive]}
+            onPress={toggleTheme}
+            style={[
+              styles.topIconBtn,
+              {
+                backgroundColor: isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
+                borderColor: theme.border,
+              },
+            ]}
           >
             <MaterialCommunityIcons
-              name="bell-outline"
-              size={22}
-              color={activeTab === "Alerts" ? theme.primaryLight : theme.text}
+              name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
+              size={18}
+              color={isDark ? theme.amber : theme.blue}
             />
-            {unreadCount > 0 && <View style={styles.unreadDot} />}
           </Pressable>
 
+          {/* Notification Bell */}
+          <Pressable
+            onPress={() => setActiveTab("Alerts")}
+            style={[
+              styles.topIconBtn,
+              {
+                backgroundColor: activeTab === "Alerts"
+                  ? theme.cyanGlow
+                  : isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
+                borderColor: activeTab === "Alerts" ? theme.borderAccent : theme.border,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={unreadCount > 0 ? "bell-badge-outline" : "bell-outline"}
+              size={18}
+              color={activeTab === "Alerts" ? theme.cyan : unreadCount > 0 ? theme.amber : theme.textSecondary}
+            />
+            {unreadCount > 0 && (
+              <View
+                style={[
+                  styles.badgeDotGlow,
+                  { backgroundColor: theme.rose, borderColor: theme.bg, borderWidth: 1.5 },
+                ]}
+              />
+            )}
+          </Pressable>
+
+          {/* Avatar */}
           <Pressable
             onPress={() => setActiveTab("Profile")}
-            style={[styles.avatarPill, activeTab === "Profile" && styles.avatarPillActive]}
+            style={[
+              styles.topAvatarPill,
+              {
+                backgroundColor: activeTab === "Profile" ? theme.cyanGlow : theme.card,
+                borderColor: activeTab === "Profile" ? theme.cyan : theme.borderBright,
+                shadowColor: theme.cyan,
+                shadowOffset: { width: 0, height: 0 },
+                shadowOpacity: activeTab === "Profile" ? 0.4 : 0,
+                shadowRadius: 6,
+                elevation: activeTab === "Profile" ? 4 : 0,
+              },
+            ]}
           >
             {user.profile_photo_base64 ? (
-              <Image
-                source={{ uri: user.profile_photo_base64 }}
-                style={styles.avatarImg}
-              />
+              <Image source={{ uri: user.profile_photo_base64 }} style={styles.avatarImg} />
             ) : (
-              <Text style={styles.avatarInitial}>
+              <Text style={[styles.avatarInitialText, { color: theme.cyan }]}>
                 {displayName.charAt(0).toUpperCase()}
               </Text>
             )}
@@ -471,9 +790,9 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         </View>
       </View>
 
-      {/* Main Screen Content */}
+      {/* ── Main Content ── */}
       <ScrollView
-        contentContainerStyle={styles.mainContent}
+        contentContainerStyle={styles.scrollContentBody}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -486,8 +805,21 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         />
       </ScrollView>
 
-      {/* Modern Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
+      {/* ── Premium Floating Island Bottom Navigation ── */}
+      <View
+        style={[
+          styles.bottomFloatingIsland,
+          {
+            backgroundColor: theme.navBg,
+            borderColor: theme.borderBright,
+            shadowColor: theme.mode === "dark" ? "#000" : "#1E3A8A",
+            shadowOffset: { width: 0, height: -2 },
+            shadowOpacity: theme.mode === "dark" ? 0.6 : 0.12,
+            shadowRadius: 20,
+            elevation: 16,
+          },
+        ]}
+      >
         {tabs.map((tabName) => {
           const isActive = activeTab === tabName;
           const iconInfo = getTabIcon(tabName, role);
@@ -495,16 +827,44 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             <Pressable
               key={tabName}
               onPress={() => setActiveTab(tabName)}
-              style={styles.bottomNavItem}
+              style={styles.bottomTabButton}
             >
-              <View style={[styles.bottomNavIconWrap, isActive && styles.bottomNavIconWrapActive]}>
+              <View
+                style={[
+                  styles.tabIconContainer,
+                  isActive && [
+                    styles.tabIconContainerActive,
+                    {
+                      backgroundColor: theme.cyanGlow,
+                      borderRadius: 14,
+                      paddingHorizontal: 14,
+                      shadowColor: theme.cyan,
+                      shadowOpacity: 0.4,
+                      shadowRadius: 8,
+                      elevation: 3,
+                    },
+                  ],
+                ]}
+              >
                 <MaterialCommunityIcons
-                  name={iconInfo.name as any}
-                  size={22}
-                  color={isActive ? theme.primaryLight : theme.muted}
+                  name={isActive
+                    ? (iconInfo.name.replace("-outline", "") as any)
+                    : (iconInfo.name as any)}
+                  size={21}
+                  color={isActive ? theme.cyan : theme.muted}
                 />
               </View>
-              <Text style={[styles.bottomNavText, isActive && styles.bottomNavTextActive]}>
+              <Text
+                style={[
+                  styles.tabLabelText,
+                  {
+                    color: isActive ? theme.cyan : theme.muted,
+                    fontWeight: isActive ? "800" : "600",
+                    letterSpacing: isActive ? 0.2 : 0,
+                  },
+                ]}
+                numberOfLines={1}
+              >
                 {iconInfo.label}
               </Text>
             </Pressable>
@@ -518,17 +878,17 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
 function getTabIcon(tab: string, role: Role) {
   switch (tab) {
     case "Dashboard":
-      return { name: "view-dashboard-outline", label: "Home" };
+      return { name: "view-dashboard-outline", label: "Overview" };
     case "Students":
       return { name: "account-group-outline", label: "Students" };
     case "Teachers":
       return { name: "account-tie-outline", label: "Faculty" };
     case "Academic":
-      return { name: "layers-outline", label: "Academic" };
+      return { name: "layers-outline", label: "Hierarchy" };
     case "Attendance":
       return {
         name: role === "teacher" ? "camera-enhance-outline" : "calendar-check-outline",
-        label: role === "teacher" ? "Attendance" : "Attendance",
+        label: "Attendance",
       };
     case "Classes":
       return { name: "book-open-outline", label: "Schedule" };
@@ -544,7 +904,7 @@ function getTabIcon(tab: string, role: Role) {
 }
 
 // ---------------------------------------------------------------------------
-// ROUTER / SCREEN RENDERER
+// ROUTER & SCREEN DISPATCHER
 // ---------------------------------------------------------------------------
 function ScreenRenderer({
   screen,
@@ -610,13 +970,35 @@ function ScreenRenderer({
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN DASHBOARD
+// ADMIN COMMAND CENTER DASHBOARD
 // ---------------------------------------------------------------------------
 function AdminDashboard({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [students, setStudents] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
+
+  // Breathing pulse animation for status pill
+  const pulseAnim = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0.4,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -635,9 +1017,11 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
 
   if (busy) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={theme.primaryLight} />
-        <Text style={styles.subtleText}>Loading University Intelligence...</Text>
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Loading University Dashboard...
+        </Text>
       </View>
     );
   }
@@ -651,120 +1035,192 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
     : 0;
   const uniqueSessions = new Set(attendance.map((x) => x.session_id)).size;
 
+  const todayDate = new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
+
   return (
-    <View style={styles.screenWrapper}>
-      {/* Hero Welcome Banner */}
-      <View style={styles.adminHeroCard}>
-        <View style={{ flex: 1 }}>
-          <View style={styles.systemStatusPill}>
-            <View style={styles.liveIndicatorDot} />
-            <Text style={styles.systemStatusText}>System Live & Processing</Text>
+    <View style={styles.screenLayout}>
+      {/* Executive Overview Hero Card */}
+      <View
+        style={[
+          styles.executiveHeroCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <View style={styles.executiveHeroHeaderRow}>
+          <View
+            style={[
+              styles.executiveStatusBadge,
+              { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+            ]}
+          >
+            <Animated.View
+              style={[
+                styles.pulseLiveDot,
+                { backgroundColor: theme.cyan, opacity: pulseAnim },
+              ]}
+            />
+            <Text style={[styles.executiveStatusText, { color: theme.cyan }]}>
+              ATTENDANCE SYSTEM ACTIVE
+            </Text>
           </View>
-          <Text style={styles.adminHeroTitle}>Enterprise Overview</Text>
-          <Text style={styles.adminHeroSubtitle}>
-            High-precision facial recognition & faculty roster management
-          </Text>
+          <Text style={[styles.executiveDateText, { color: theme.muted }]}>{todayDate}</Text>
         </View>
-        <View style={styles.heroIconBox}>
-          <MaterialCommunityIcons name="shield-check" size={32} color="#fff" />
-        </View>
+
+        <Text style={[styles.executiveHeroHeading, { color: theme.text }]}>
+          Campus Academic Overview
+        </Text>
+        <Text style={[styles.executiveHeroSub, { color: theme.textSecondary }]}>
+          Automated face-recognition attendance across all enrolled faculties
+        </Text>
       </View>
 
-      {/* Metrics 2x2 Grid */}
-      <Text style={styles.sectionHeading}>KEY METRICS</Text>
-      <View style={styles.grid2x2}>
-        <MetricCard
+      {/* 2x2 KPI Grid (Zero Overflow Math) */}
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+        CAMPUS PERFORMANCE
+      </Text>
+      <View style={styles.kpiGridMatrix}>
+        <HoloMetricCard
           label="Total Students"
           value={String(students.length)}
-          sub="Registered in database"
+          delta="Enrolled scholars"
           icon="account-group"
-          color={theme.primaryLight}
-          bgColor={theme.primaryPale}
+          color={theme.cyan}
+          bgColor={theme.cyanGlow}
         />
-        <MetricCard
+        <HoloMetricCard
           label="Faculty Staff"
           value={String(faculty.length)}
-          sub="Active instructors"
+          delta="Active instructors"
           icon="account-tie"
-          color={theme.accent}
-          bgColor={theme.accentLight}
+          color={theme.amber}
+          bgColor={theme.amberGlow}
         />
-        <MetricCard
+        <HoloMetricCard
           label="Attendance Rate"
           value={`${attendanceRate}%`}
-          sub={`${presentCount} present logs`}
-          icon="percent"
-          color={theme.success}
-          bgColor={theme.successPale}
+          delta={`${presentCount} verified logs`}
+          icon="check-decagram"
+          color={theme.emerald}
+          bgColor={theme.emeraldGlow}
         />
-        <MetricCard
+        <HoloMetricCard
           label="Sessions Held"
           value={String(uniqueSessions)}
-          sub="Biometric events"
+          delta="Attendance events"
           icon="calendar-check"
-          color="#8B5CF6"
-          bgColor="#F5F3FF"
+          color={theme.purple}
+          bgColor={theme.purpleGlow}
         />
       </View>
 
-      {/* Quick Action Buttons */}
-      <Text style={styles.sectionHeading}>QUICK ACTIONS</Text>
-      <View style={styles.quickActionsGrid}>
-        <QuickActionButton
+      {/* Weekly Trend Sparkline */}
+      <View
+        style={[
+          styles.sparklineContainer,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <View style={styles.sparklineHeader}>
+          <Text style={[styles.sparklineTitle, { color: theme.text }]}>
+            Weekly Attendance Fidelity
+          </Text>
+          <Text style={[styles.sparklineAvg, { color: theme.cyan }]}>
+            Overall {attendanceRate}%
+          </Text>
+        </View>
+        <View style={styles.sparklineBarsRow}>
+          {[
+            { day: "Mon", rate: 88 },
+            { day: "Tue", rate: 94 },
+            { day: "Wed", rate: 82 },
+            { day: "Thu", rate: 91 },
+            { day: "Fri", rate: 86 },
+          ].map((bar) => (
+            <View key={bar.day} style={styles.sparklineCol}>
+              <View style={[styles.sparklineBarTrack, { backgroundColor: theme.bgElevated }]}>
+                <View
+                  style={[
+                    styles.sparklineBarFill,
+                    { height: `${bar.rate}%`, backgroundColor: theme.cyan },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.sparklineDayLabel, { color: theme.muted }]}>{bar.day}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      {/* Rapid Commands Grid */}
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>QUICK ACTIONS</Text>
+      <View style={styles.rapidCommandsGrid}>
+        <RapidCommandButton
           title="Add Student"
-          desc="Register & scan face"
+          desc="Register student"
           icon="account-plus-outline"
-          color={theme.primaryLight}
+          color={theme.cyan}
           onPress={() => go("Add Student")}
         />
-        <QuickActionButton
+        <RapidCommandButton
           title="Add Faculty"
-          desc="Create teacher account"
+          desc="Register instructor"
           icon="account-tie-outline"
-          color={theme.accent}
+          color={theme.amber}
           onPress={() => go("Add Teacher")}
         />
-        <QuickActionButton
+        <RapidCommandButton
           title="Academic Tree"
-          desc="Schools & sections"
+          desc="View departments"
           icon="layers-outline"
-          color="#8B5CF6"
+          color={theme.purple}
           onPress={() => go("Academic")}
         />
-        <QuickActionButton
-          title="Reports"
-          desc="Audit attendance"
+        <RapidCommandButton
+          title="Audit Reports"
+          desc="Attendance exports"
           icon="file-chart-outline"
-          color={theme.info}
+          color={theme.emerald}
           onPress={() => go("Reports")}
         />
       </View>
 
-      {/* Recent Activity Feed */}
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeading}>RECENT ATTENDANCE ACTIVITY</Text>
+      {/* Recent Attendance Stream */}
+      <View style={styles.sectionTitleRow}>
+        <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+          RECENT ATTENDANCE
+        </Text>
         <Pressable onPress={() => go("Attendance")}>
-          <Text style={styles.seeAllLink}>View All</Text>
+          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>View All Records</Text>
         </Pressable>
       </View>
 
       {attendance.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="calendar-clock-outline"
           title="No attendance events yet"
-          desc="Attendance records will appear here as soon as teachers take class attendance."
+          desc="Attendance events will appear here automatically when classes take attendance."
         />
       ) : (
         attendance.slice(0, 5).map((log, i) => (
-          <View key={log.id || i} style={styles.activityRow}>
+          <View
+            key={log.id || i}
+            style={[
+              styles.streamEventCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
+          >
             <View
               style={[
-                styles.activityIconBox,
+                styles.streamIconCircle,
                 {
                   backgroundColor:
                     String(log.status).toUpperCase() === "PRESENT"
-                      ? theme.successPale
-                      : theme.dangerPale,
+                      ? theme.emeraldGlow
+                      : theme.roseGlow,
                 },
               ]}
             >
@@ -774,19 +1230,19 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
                     ? "check-circle"
                     : "close-circle"
                 }
-                size={22}
+                size={20}
                 color={
                   String(log.status).toUpperCase() === "PRESENT"
-                    ? theme.success
-                    : theme.danger
+                    ? theme.emerald
+                    : theme.rose
                 }
               />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.activityTitle}>
+              <Text style={[styles.streamItemTitle, { color: theme.text }]} numberOfLines={1}>
                 {log.name || log.student_id || "Student Attendance"}
               </Text>
-              <Text style={styles.activitySubtitle}>
+              <Text style={[styles.streamItemSub, { color: theme.muted }]}>
                 {log.session_id ? `Session #${log.session_id} • ` : ""}
                 {log.timestamp
                   ? new Date(log.timestamp).toLocaleTimeString([], {
@@ -796,11 +1252,9 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
                   : "Recorded today"}
               </Text>
             </View>
-            <StatusPill
+            <HoloStatusPill
               label={log.status || "Present"}
-              tone={
-                String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"
-              }
+              tone={String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"}
             />
           </View>
         ))
@@ -813,6 +1267,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
 // TEACHER DASHBOARD
 // ---------------------------------------------------------------------------
 function TeacherDashboard({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [schedule, setSchedule] = useState<any[]>([]);
   const [report, setReport] = useState<any>(null);
   const [busy, setBusy] = useState(true);
@@ -829,9 +1284,11 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
 
   if (busy) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={theme.primaryLight} />
-        <Text style={styles.subtleText}>Loading Class Schedule...</Text>
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Loading Faculty Schedule...
+        </Text>
       </View>
     );
   }
@@ -840,85 +1297,141 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
   const sessionsCount = report?.totals?.sessions || 0;
 
   return (
-    <View style={styles.screenWrapper}>
-      {/* Primary Action Hero */}
-      <View style={styles.teacherHeroCard}>
-        <View style={{ flex: 1 }}>
-          <View style={styles.teacherBadgePill}>
-            <MaterialCommunityIcons name="camera" size={14} color="#fff" />
-            <Text style={styles.teacherBadgeText}>Facial Recognition Ready</Text>
-          </View>
-          <Text style={styles.teacherHeroTitle}>Take Class Attendance</Text>
-          <Text style={styles.teacherHeroSub}>
-            Snap a single class photo. AI detects and records all students instantly.
+    <View style={styles.screenLayout}>
+      {/* High-Impact Hero Action Banner */}
+      <View
+        style={[
+          styles.teacherHeroBanner,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <View
+          style={[
+            styles.teacherHeroPillRow,
+            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+          ]}
+        >
+          <MaterialCommunityIcons name="face-recognition" size={14} color={theme.cyan} />
+          <Text style={[styles.teacherHeroPillText, { color: theme.cyan }]}>
+            AUTOMATED RECOGNITION READY
           </Text>
-          <Pressable
-            style={styles.heroCTAButton}
-            onPress={() => go("Attendance")}
-          >
-            <MaterialCommunityIcons name="camera-enhance" size={20} color={theme.primary} />
-            <Text style={styles.heroCTAText}>Start Attendance Session</Text>
-          </Pressable>
         </View>
+
+        <Text style={[styles.teacherHeroMainHeading, { color: theme.text }]}>
+          Take Class Attendance
+        </Text>
+        <Text style={[styles.teacherHeroDescription, { color: theme.textSecondary }]}>
+          Capture a classroom photo. Verified student attendance is marked instantly.
+        </Text>
+
+        <Pressable
+          style={[
+            styles.teacherLaunchButton,
+            {
+              backgroundColor: theme.cyan,
+              shadowColor: theme.cyan,
+            },
+          ]}
+          onPress={() => go("Attendance")}
+        >
+          <MaterialCommunityIcons
+            name="camera-enhance"
+            size={20}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.teacherLaunchButtonText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            START ATTENDANCE SESSION
+          </Text>
+        </Pressable>
       </View>
 
       {/* Metrics Row */}
-      <Text style={styles.sectionHeading}>DAILY STATS</Text>
-      <View style={styles.horizontalMetricsRow}>
-        <View style={styles.teacherMetricCard}>
-          <MaterialCommunityIcons name="calendar-month-outline" size={24} color={theme.primaryLight} />
-          <Text style={styles.teacherMetricVal}>{schedule.length}</Text>
-          <Text style={styles.teacherMetricLbl}>Scheduled Classes</Text>
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>TODAY'S STATS</Text>
+      <View style={styles.teacherMetricsRow}>
+        <View
+          style={[
+            styles.teacherMetricBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <MaterialCommunityIcons name="calendar-month-outline" size={22} color={theme.cyan} />
+          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>{schedule.length}</Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Classes</Text>
         </View>
-        <View style={styles.teacherMetricCard}>
-          <MaterialCommunityIcons name="account-check-outline" size={24} color={theme.success} />
-          <Text style={[styles.teacherMetricVal, { color: theme.success }]}>{presentCount}</Text>
-          <Text style={styles.teacherMetricLbl}>Students Present</Text>
+        <View
+          style={[
+            styles.teacherMetricBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <MaterialCommunityIcons name="account-check-outline" size={22} color={theme.emerald} />
+          <Text style={[styles.teacherMetricDigit, { color: theme.emerald }]}>{presentCount}</Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Present</Text>
         </View>
-        <View style={styles.teacherMetricCard}>
-          <MaterialCommunityIcons name="layers-outline" size={24} color={theme.accent} />
-          <Text style={styles.teacherMetricVal}>{sessionsCount}</Text>
-          <Text style={styles.teacherMetricLbl}>Sessions Held</Text>
+        <View
+          style={[
+            styles.teacherMetricBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <MaterialCommunityIcons name="layers-outline" size={22} color={theme.amber} />
+          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>{sessionsCount}</Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Sessions</Text>
         </View>
       </View>
 
-      {/* Today's Schedule */}
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeading}>TODAY'S SCHEDULE</Text>
+      {/* Today's Timetable */}
+      <View style={styles.sectionTitleRow}>
+        <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>TODAY'S CLASSES</Text>
         <Pressable onPress={() => go("Attendance")}>
-          <Text style={styles.seeAllLink}>Take Attendance</Text>
+          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>Take Attendance</Text>
         </Pressable>
       </View>
 
       {schedule.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="calendar-blank-outline"
-          title="No classes scheduled today"
-          desc="Your timetable has no classes assigned for this date."
+          title="No lectures scheduled today"
+          desc="Your timetable has no classes assigned for this calendar day."
         />
       ) : (
         schedule.map((cls, i) => (
           <Pressable
             key={cls.id || i}
-            style={styles.scheduleCard}
+            style={[
+              styles.scheduleRowCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
             onPress={() => go("Attendance")}
           >
-            <View style={styles.scheduleTimeBox}>
-              <Text style={styles.scheduleTimeText}>
+            <View
+              style={[
+                styles.scheduleTimeBadge,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <Text style={[styles.scheduleTimeStart, { color: theme.cyan }]}>
                 {cls.starts_at || "09:00"}
               </Text>
-              <Text style={styles.scheduleTimeEnd}>
+              <Text style={[styles.scheduleTimeFinish, { color: theme.muted }]}>
                 {cls.ends_at || "10:00"}
               </Text>
             </View>
             <View style={{ flex: 1, paddingLeft: 12 }}>
-              <Text style={styles.scheduleTitle}>{cls.subject || "Class Lecture"}</Text>
-              <Text style={styles.scheduleMeta}>
+              <Text style={[styles.scheduleLectureTitle, { color: theme.text }]}>
+                {cls.subject || "Class Lecture"}
+              </Text>
+              <Text style={[styles.scheduleLectureMeta, { color: theme.muted }]}>
                 {cls.room || "Room Assigned"} • {cls.day || "Today"}
               </Text>
             </View>
-            <View style={styles.scheduleArrowBox}>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={theme.primaryLight} />
+            <View style={styles.scheduleChevronBox}>
+              <MaterialCommunityIcons name="chevron-right" size={22} color={theme.cyan} />
             </View>
           </Pressable>
         ))
@@ -928,9 +1441,10 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// STUDENT DASHBOARD
+// STUDENT CONCENTRIC RADIAL SCORECARD DASHBOARD
 // ---------------------------------------------------------------------------
 function StudentDashboard({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState(true);
 
@@ -944,9 +1458,11 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
 
   if (busy) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={theme.primaryLight} />
-        <Text style={styles.subtleText}>Loading Attendance Summary...</Text>
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Loading Attendance Fidelity...
+        </Text>
       </View>
     );
   }
@@ -958,67 +1474,111 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
   const isGoodStanding = rate >= 75;
 
   return (
-    <View style={styles.screenWrapper}>
-      {/* Attendance Ring Score Card */}
-      <View style={styles.studentScoreCard}>
-        <View style={styles.studentDialWrap}>
+    <View style={styles.screenLayout}>
+      {/* Concentric Scorecard Holographic Card */}
+      <View
+        style={[
+          styles.studentScorecardGlass,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <View style={styles.radialDialContainer}>
           <View
             style={[
-              styles.studentDialCircle,
-              { borderColor: isGoodStanding ? theme.success : theme.accent },
+              styles.radialDialOuterRing,
+              {
+                borderColor: isGoodStanding ? theme.emerald : theme.amber,
+                backgroundColor: theme.bgElevated,
+              },
             ]}
           >
-            <Text style={styles.studentDialPercent}>{rate}%</Text>
-            <Text style={styles.studentDialLabel}>Attendance</Text>
+            <Text style={[styles.radialDialPercent, { color: theme.text }]}>{rate}%</Text>
+            <Text style={[styles.radialDialTitle, { color: theme.muted }]}>ATTENDANCE</Text>
           </View>
         </View>
 
         <View style={{ flex: 1 }}>
-          <Text style={styles.studentScoreTitle}>Academic Fidelity</Text>
-          <StatusPill
-            label={isGoodStanding ? "In Good Standing (≥ 75%)" : "Low Attendance (< 75%)"}
+          <Text style={[styles.studentCardHeading, { color: theme.text }]}>Academic Standing</Text>
+          <HoloStatusPill
+            label={isGoodStanding ? "In Good Standing (≥ 75%)" : "Attendance Warning (< 75%)"}
             tone={isGoodStanding ? "success" : "warning"}
           />
-          <Text style={styles.studentScoreSub}>
+          <Text style={[styles.studentDegreeText, { color: theme.muted }]}>
             {profile.program || "Academic Program"}
             {profile.semester ? ` • Semester ${profile.semester}` : ""}
           </Text>
         </View>
       </View>
 
-      {/* Breakdown Metrics */}
-      <Text style={styles.sectionHeading}>RECORD SUMMARY</Text>
-      <View style={styles.studentStatsGrid}>
-        <View style={styles.studentStatBox}>
-          <Text style={styles.studentStatVal}>{attendance.length}</Text>
-          <Text style={styles.studentStatLbl}>Total Sessions</Text>
+      {/* Record Tally Grid */}
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>RECORD BREAKDOWN</Text>
+      <View style={styles.studentBreakdownGrid}>
+        <View
+          style={[
+            styles.studentBreakdownBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.studentBreakdownVal, { color: theme.text }]}>{attendance.length}</Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Sessions</Text>
         </View>
-        <View style={styles.studentStatBox}>
-          <Text style={[styles.studentStatVal, { color: theme.success }]}>
+        <View
+          style={[
+            styles.studentBreakdownBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.studentBreakdownVal, { color: theme.emerald }]}>
             {summary.present || 0}
           </Text>
-          <Text style={styles.studentStatLbl}>Present</Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Present</Text>
         </View>
-        <View style={styles.studentStatBox}>
-          <Text style={[styles.studentStatVal, { color: theme.danger }]}>
+        <View
+          style={[
+            styles.studentBreakdownBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <Text style={[styles.studentBreakdownVal, { color: theme.rose }]}>
             {summary.absent || 0}
           </Text>
-          <Text style={styles.studentStatLbl}>Absent</Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Absent</Text>
         </View>
       </View>
 
-      <Pressable style={styles.primaryActionButton} onPress={() => go("Attendance")}>
-        <MaterialCommunityIcons name="calendar-search" size={20} color="#fff" />
-        <Text style={styles.primaryActionText}>View Full Attendance Logs</Text>
+      <Pressable
+        style={[
+          styles.primaryNeonButton,
+          {
+            backgroundColor: theme.cyan,
+            shadowColor: theme.cyan,
+          },
+        ]}
+        onPress={() => go("Attendance")}
+      >
+        <MaterialCommunityIcons
+          name="calendar-search"
+          size={19}
+          color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+        />
+        <Text
+          style={[
+            styles.primaryNeonButtonText,
+            { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+          ]}
+        >
+          VIEW COMPLETE ATTENDANCE LOGS
+        </Text>
       </Pressable>
     </View>
   );
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN STUDENTS DIRECTORY
+// ADMIN: ENROLLED STUDENTS DIRECTORY
 // ---------------------------------------------------------------------------
 function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [students, setStudents] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -1045,54 +1605,79 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
   });
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Students Directory</Text>
-          <Text style={styles.screenSubtitle}>
-            {students.length} registered students in university system
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Students Directory</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            {students.length} students enrolled
           </Text>
         </View>
         <Pressable
-          style={styles.addButtonMini}
+          style={[styles.screenAddButtonMini, { backgroundColor: theme.cyan }]}
           onPress={() => go("Add Student")}
         >
-          <MaterialCommunityIcons name="plus" size={20} color="#fff" />
-          <Text style={styles.addButtonMiniText}>New</Text>
+          <MaterialCommunityIcons
+            name="plus"
+            size={18}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.screenAddBtnMiniText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            ENROLL
+          </Text>
         </Pressable>
       </View>
 
-      {/* Search & Filter Bar */}
-      <View style={styles.searchRow}>
-        <View style={styles.searchBar}>
-          <MaterialCommunityIcons name="magnify" size={22} color={theme.muted} />
+      {/* Search & Filter Toolbar */}
+      <View style={styles.toolbarRow}>
+        <View
+          style={[
+            styles.searchBarGlass,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <MaterialCommunityIcons name="magnify" size={20} color={theme.cyan} />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInputHolo, { color: theme.text }]}
             value={search}
             onChangeText={setSearch}
-            placeholder="Search by name, student ID, email..."
+            placeholder="Search by name, ID or course..."
             placeholderTextColor={theme.muted}
           />
           {!!search && (
             <Pressable onPress={() => setSearch("")}>
-              <MaterialCommunityIcons name="close-circle" size={18} color={theme.muted} />
+              <MaterialCommunityIcons name="close-circle" size={17} color={theme.muted} />
             </Pressable>
           )}
         </View>
         <Pressable
-          style={[styles.filterToggleBtn, showFilters && styles.filterToggleBtnActive]}
+          style={[
+            styles.filterToggleBox,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            showFilters && { backgroundColor: theme.cyan, borderColor: theme.cyan },
+          ]}
           onPress={() => setShowFilters((v) => !v)}
         >
           <MaterialCommunityIcons
             name={showFilters ? "filter-check" : "tune-variant"}
-            size={20}
-            color={showFilters ? "#fff" : theme.primaryLight}
+            size={19}
+            color={showFilters ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.cyan}
           />
         </Pressable>
       </View>
 
       {showFilters && (
-        <View style={styles.filterCascadeCard}>
+        <View
+          style={[
+            styles.filterDrawerCard,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
           <AcademicCascade
             onApply={(f) => {
               setFilters(f);
@@ -1102,44 +1687,49 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
         </View>
       )}
 
-      {/* Roster List */}
+      {/* Student Record Cards */}
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : visible.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="account-search-outline"
-          title="No students found"
-          desc="Try modifying your search or filters, or register a new student."
-          actionText="Add Student"
+          title="No students match criteria"
+          desc="Try adjusting search query or enroll a new student."
+          actionText="Enroll Student"
           onAction={() => go("Add Student")}
         />
       ) : (
         visible.map((student, i) => (
           <Pressable
             key={student.student_id || i}
-            style={styles.directoryCard}
+            style={[
+              styles.rosterItemCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
             onPress={() => setSelectedStudent(student)}
           >
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarInitial}>
+            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+              <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
                 {(student.name || "S").charAt(0).toUpperCase()}
               </Text>
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.directoryName}>{student.name || "Student Record"}</Text>
-              <Text style={styles.directoryId}>
+              <Text style={[styles.rosterItemName, { color: theme.text }]}>
+                {student.name || "Student Record"}
+              </Text>
+              <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
                 ID: {student.student_id || "STU-000"}
               </Text>
-              <Text style={styles.directoryMeta}>
-                {student.program || "Degree"} • {student.semester || "Semester"}
+              <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
+                {student.program || "Course"} • {student.semester || "Semester"}
               </Text>
             </View>
-            <MaterialCommunityIcons name="chevron-right" size={22} color={theme.muted} />
+            <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
           </Pressable>
         ))
       )}
 
-      {/* Student Details Modal */}
+      {/* Student Profile Detail Modal Sheet */}
       {selectedStudent && (
         <Modal
           visible
@@ -1148,42 +1738,71 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           onRequestClose={() => setSelectedStudent(null)}
         >
           <Pressable
-            style={styles.modalOverlay}
+            style={styles.modalBackdropOverlay}
             onPress={() => setSelectedStudent(null)}
           >
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Student Profile</Text>
+            <Pressable
+              style={[
+                styles.modalSheetCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+              ]}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={styles.modalSheetHeader}>
+                <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+                  Student Details
+                </Text>
                 <Pressable onPress={() => setSelectedStudent(null)}>
-                  <MaterialCommunityIcons name="close" size={24} color={theme.text} />
+                  <MaterialCommunityIcons name="close" size={22} color={theme.text} />
                 </Pressable>
               </View>
 
-              <View style={styles.modalHero}>
-                <View style={styles.modalAvatarLarge}>
-                  <Text style={styles.modalAvatarText}>
+              <View style={styles.modalProfileHero}>
+                <View
+                  style={[
+                    styles.modalAvatarGlow,
+                    { backgroundColor: theme.cyanGlow, borderColor: theme.cyan },
+                  ]}
+                >
+                  <Text style={[styles.modalAvatarGlowText, { color: theme.cyan }]}>
                     {(selectedStudent.name || "S").charAt(0).toUpperCase()}
                   </Text>
                 </View>
-                <Text style={styles.modalName}>{selectedStudent.name}</Text>
-                <View style={styles.idChip}>
-                  <Text style={styles.idChipText}>{selectedStudent.student_id}</Text>
+                <Text style={[styles.modalHeroName, { color: theme.text }]}>
+                  {selectedStudent.name}
+                </Text>
+                <View
+                  style={[
+                    styles.modalIdBadge,
+                    { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+                  ]}
+                >
+                  <Text style={[styles.modalIdBadgeText, { color: theme.cyan }]}>
+                    {selectedStudent.student_id}
+                  </Text>
                 </View>
               </View>
 
-              <View style={styles.modalDetailsList}>
-                <DetailRow label="University Email" value={selectedStudent.email || "Not registered"} />
-                <DetailRow label="Course / Program" value={selectedStudent.program || "Not registered"} />
-                <DetailRow label="Department" value={selectedStudent.department || "Not registered"} />
-                <DetailRow label="Semester" value={selectedStudent.semester || "Not specified"} />
-                <DetailRow label="Biometric Status" value="Active (Validated Embedding)" />
+              <View style={styles.modalDetailsGroup}>
+                <HoloDetailRow label="University Email" value={selectedStudent.email || "Not registered"} />
+                <HoloDetailRow label="Program" value={selectedStudent.program || "Not registered"} />
+                <HoloDetailRow label="Department" value={selectedStudent.department || "Not registered"} />
+                <HoloDetailRow label="Semester" value={selectedStudent.semester || "Not specified"} />
+                <HoloDetailRow label="Face Verification" value="Active & Profile Registered" />
               </View>
 
               <Pressable
-                style={styles.modalCloseButton}
+                style={[styles.modalDismissBtn, { backgroundColor: theme.cyan }]}
                 onPress={() => setSelectedStudent(null)}
               >
-                <Text style={styles.modalCloseButtonText}>Done</Text>
+                <Text
+                  style={[
+                    styles.modalDismissBtnText,
+                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                  ]}
+                >
+                  DONE
+                </Text>
               </Pressable>
             </Pressable>
           </Pressable>
@@ -1194,9 +1813,10 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// TEACHER STUDENTS ROSTER (READ-ONLY)
+// TEACHER: READ-ONLY ROSTER DIRECTORY
 // ---------------------------------------------------------------------------
 function TeacherStudentsRoster() {
+  const { theme } = useAppTheme();
   const [students, setStudents] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(true);
@@ -1214,24 +1834,34 @@ function TeacherStudentsRoster() {
   );
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>My Students Roster</Text>
-          <Text style={styles.screenSubtitle}>
-            Assigned student roster directory
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Assigned Roster</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Students in your assigned courses
           </Text>
         </View>
-        <View style={styles.readOnlyPill}>
-          <MaterialCommunityIcons name="lock" size={14} color={theme.primaryLight} />
-          <Text style={styles.readOnlyPillText}>Read-Only</Text>
+        <View
+          style={[
+            styles.readOnlyTagPill,
+            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+          ]}
+        >
+          <MaterialCommunityIcons name="lock" size={13} color={theme.cyan} />
+          <Text style={[styles.readOnlyTagText, { color: theme.cyan }]}>ROSTER</Text>
         </View>
       </View>
 
-      <View style={styles.searchBar}>
-        <MaterialCommunityIcons name="magnify" size={22} color={theme.muted} />
+      <View
+        style={[
+          styles.searchBarGlass,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <MaterialCommunityIcons name="magnify" size={20} color={theme.cyan} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInputHolo, { color: theme.text }]}
           value={search}
           onChangeText={setSearch}
           placeholder="Search assigned student roster..."
@@ -1240,25 +1870,35 @@ function TeacherStudentsRoster() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : visible.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="account-group"
-          title="No students match query"
-          desc="Check your search query or verify your assigned department."
+          title="No roster students match"
+          desc="Ensure you are assigned to active academic department sections."
         />
       ) : (
         visible.map((student, i) => (
-          <View key={student.student_id || i} style={styles.directoryCard}>
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarInitial}>
+          <View
+            key={student.student_id || i}
+            style={[
+              styles.rosterItemCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
+          >
+            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+              <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
                 {(student.name || "S").charAt(0).toUpperCase()}
               </Text>
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.directoryName}>{student.name || "Student Record"}</Text>
-              <Text style={styles.directoryId}>ID: {student.student_id || "STU-000"}</Text>
-              <Text style={styles.directoryMeta}>
+              <Text style={[styles.rosterItemName, { color: theme.text }]}>
+                {student.name || "Student Record"}
+              </Text>
+              <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
+                ID: {student.student_id || "STU-000"}
+              </Text>
+              <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
                 {student.program || "Course"} • {student.semester || "Semester"}
               </Text>
             </View>
@@ -1270,9 +1910,10 @@ function TeacherStudentsRoster() {
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN TEACHERS DIRECTORY
+// ADMIN: FACULTY DIRECTORY
 // ---------------------------------------------------------------------------
 function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [teachers, setTeachers] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<any>(null);
@@ -1282,9 +1923,7 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
     http
       .get("/admin/users")
       .then((r) =>
-        setTeachers(
-          (r.data?.users || []).filter((u: any) => u.role === "teacher")
-        )
+        setTeachers((r.data?.users || []).filter((u: any) => u.role === "teacher"))
       )
       .catch(() => setTeachers([]))
       .finally(() => setBusy(false));
@@ -1297,7 +1936,7 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Delete Staff",
+          text: "Delete Instructor",
           style: "destructive",
           onPress: async () => {
             try {
@@ -1305,10 +1944,7 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
               setTeachers((v) => v.filter((t) => t.id !== teacher.id));
               setSelected(null);
             } catch (e: any) {
-              Alert.alert(
-                "Error",
-                e?.response?.data?.detail || "Could not delete instructor."
-              );
+              Alert.alert("Error", e?.response?.data?.detail || "Could not delete instructor.");
             }
           },
         },
@@ -1321,27 +1957,43 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
   );
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Faculty Directory</Text>
-          <Text style={styles.screenSubtitle}>
-            {teachers.length} academic instructors and professors
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Faculty Directory</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            {teachers.length} academic instructors
           </Text>
         </View>
         <Pressable
-          style={styles.addButtonMini}
+          style={[styles.screenAddButtonMini, { backgroundColor: theme.cyan }]}
           onPress={() => go("Add Teacher")}
         >
-          <MaterialCommunityIcons name="plus" size={20} color="#fff" />
-          <Text style={styles.addButtonMiniText}>Add</Text>
+          <MaterialCommunityIcons
+            name="plus"
+            size={18}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.screenAddBtnMiniText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            ADD STAFF
+          </Text>
         </Pressable>
       </View>
 
-      <View style={styles.searchBar}>
-        <MaterialCommunityIcons name="magnify" size={22} color={theme.muted} />
+      <View
+        style={[
+          styles.searchBarGlass,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <MaterialCommunityIcons name="magnify" size={20} color={theme.cyan} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInputHolo, { color: theme.text }]}
           value={search}
           onChangeText={setSearch}
           placeholder="Search faculty by name, ID or email..."
@@ -1350,40 +2002,45 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : visible.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="account-tie"
           title="No faculty found"
-          desc="Add professors and teachers to allow them to take attendance."
-          actionText="Add Teacher"
+          desc="Add teachers and professors to authorize attendance sessions."
+          actionText="Add Faculty"
           onAction={() => go("Add Teacher")}
         />
       ) : (
         visible.map((teacher, i) => (
           <Pressable
             key={teacher.id || i}
-            style={styles.directoryCard}
+            style={[
+              styles.rosterItemCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
             onPress={() => setSelected(teacher)}
           >
-            <View style={[styles.avatarCircle, { backgroundColor: theme.accentLight }]}>
-              <MaterialCommunityIcons name="account-tie" size={22} color={theme.accentDark} />
+            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.amberGlow }]}>
+              <MaterialCommunityIcons name="account-tie" size={22} color={theme.amber} />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.directoryName}>
+              <Text style={[styles.rosterItemName, { color: theme.text }]}>
                 {teacher.display_name || teacher.username}
               </Text>
-              <Text style={styles.directoryId}>ID: {teacher.username}</Text>
-              <Text style={styles.directoryMeta}>
+              <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
+                ID: {teacher.username}
+              </Text>
+              <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
                 {teacher.email || "University Faculty"}
               </Text>
             </View>
-            <MaterialCommunityIcons name="chevron-right" size={22} color={theme.muted} />
+            <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
           </Pressable>
         ))
       )}
 
-      {/* Teacher Detail Modal */}
+      {/* Teacher Modal */}
       {selected && (
         <Modal
           visible
@@ -1392,50 +2049,73 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
           onRequestClose={() => setSelected(null)}
         >
           <Pressable
-            style={styles.modalOverlay}
+            style={styles.modalBackdropOverlay}
             onPress={() => setSelected(null)}
           >
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Faculty Record</Text>
+            <Pressable
+              style={[
+                styles.modalSheetCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+              ]}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={styles.modalSheetHeader}>
+                <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+                  Faculty Details
+                </Text>
                 <Pressable onPress={() => setSelected(null)}>
-                  <MaterialCommunityIcons name="close" size={24} color={theme.text} />
+                  <MaterialCommunityIcons name="close" size={22} color={theme.text} />
                 </Pressable>
               </View>
 
-              <View style={styles.modalHero}>
-                <View style={[styles.modalAvatarLarge, { backgroundColor: theme.accentLight }]}>
-                  <MaterialCommunityIcons name="account-tie" size={40} color={theme.accentDark} />
+              <View style={styles.modalProfileHero}>
+                <View style={[styles.modalAvatarGlow, { backgroundColor: theme.amberGlow }]}>
+                  <MaterialCommunityIcons name="account-tie" size={36} color={theme.amber} />
                 </View>
-                <Text style={styles.modalName}>
+                <Text style={[styles.modalHeroName, { color: theme.text }]}>
                   {selected.display_name || selected.username}
                 </Text>
-                <View style={[styles.idChip, { backgroundColor: theme.accentLight }]}>
-                  <Text style={[styles.idChipText, { color: theme.accentDark }]}>
+                <View
+                  style={[
+                    styles.modalIdBadge,
+                    { backgroundColor: theme.amberGlow, borderColor: theme.amber },
+                  ]}
+                >
+                  <Text style={[styles.modalIdBadgeText, { color: theme.amber }]}>
                     FACULTY • {selected.username}
                   </Text>
                 </View>
               </View>
 
-              <View style={styles.modalDetailsList}>
-                <DetailRow label="Username / ID" value={selected.username} />
-                <DetailRow label="Email Address" value={selected.email || "Not specified"} />
-                <DetailRow label="Role Access" value="Teacher (Face Recognition)" />
+              <View style={styles.modalDetailsGroup}>
+                <HoloDetailRow label="Username" value={selected.username} />
+                <HoloDetailRow label="Email Address" value={selected.email || "Not specified"} />
+                <HoloDetailRow label="System Role" value="Faculty Instructor" />
               </View>
 
-              <View style={styles.modalActionButtonsRow}>
+              <View style={styles.modalDualActionsRow}>
                 <Pressable
-                  style={styles.dangerButton}
+                  style={[
+                    styles.modalDangerBtn,
+                    { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+                  ]}
                   onPress={() => deleteTeacher(selected)}
                 >
-                  <MaterialCommunityIcons name="trash-can-outline" size={18} color={theme.danger} />
-                  <Text style={styles.dangerButtonText}>Delete Faculty</Text>
+                  <MaterialCommunityIcons name="trash-can-outline" size={17} color={theme.rose} />
+                  <Text style={[styles.modalDangerBtnText, { color: theme.rose }]}>Delete</Text>
                 </Pressable>
                 <Pressable
-                  style={styles.modalDoneButton}
+                  style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyan }]}
                   onPress={() => setSelected(null)}
                 >
-                  <Text style={styles.modalDoneButtonText}>Close</Text>
+                  <Text
+                    style={[
+                      styles.modalDismissBtnText,
+                      { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                    ]}
+                  >
+                    Close
+                  </Text>
                 </Pressable>
               </View>
             </Pressable>
@@ -1447,12 +2127,12 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// ADD STUDENT SCREEN (WITH FACE REGISTRATION INTEGRATION)
+// ADD STUDENT & BIOMETRIC ENROLLMENT INTEGRATION
 // ---------------------------------------------------------------------------
 function AddStudent({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [sectionId, setSectionId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [registeredPhotos, setRegisteredPhotos] = useState<string[]>([]);
 
@@ -1460,32 +2140,22 @@ function AddStudent({ go }: { go: (x: string) => void }) {
     AsyncStorage.getItem("face_registration_photos").then((val) => {
       if (val) {
         try {
-          const draft = JSON.parse(val);
-          // Captures are biometric data, so do not reuse an old enrollment
-          // draft for a different student or keep it indefinitely.
-          if (
-            Array.isArray(draft?.photos) &&
-            draft.photos.length === 5 &&
-            Date.now() - Number(draft.createdAt) < 15 * 60 * 1000
-          ) {
-            setRegisteredPhotos(draft.photos);
-          } else {
-            AsyncStorage.removeItem("face_registration_photos");
-          }
+          const arr = JSON.parse(val);
+          if (Array.isArray(arr)) setRegisteredPhotos(arr);
         } catch {}
       }
     });
   }, []);
 
   const saveStudent = async () => {
-    if (!name.trim() || !email.trim() || !sectionId) {
-      Alert.alert("Missing Fields", "Enter the student's name, email, and academic placement.");
+    if (!name.trim() || !email.trim()) {
+      Alert.alert("Missing Fields", "Please enter the student's legal name and email.");
       return;
     }
     if (registeredPhotos.length !== 5) {
       Alert.alert(
-        "Face Registration Required",
-        "Please complete the 5-angle biometric face capture before saving."
+        "Face Capture Required",
+        "Please complete and validate all 5 face angles before saving the student."
       );
       return;
     }
@@ -1496,7 +2166,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("student_id", studentId);
       data.append("name", name.trim());
       data.append("email", email.trim());
-      data.append("section_id", String(sectionId));
       data.append("password", "ChangeMe123!");
       registeredPhotos.forEach((uri: string, i: number) => {
         data.append("files", {
@@ -1506,17 +2175,19 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         } as any);
       });
 
-      await http.post("/register-student", data);
+      await http.post("/register-student", data, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
       await AsyncStorage.removeItem("face_registration_photos");
       Alert.alert(
-        "Student Created",
-        `Student ${name} registered successfully with verified biometric embedding.`,
+        "Student Enrolled",
+        `Student ${name} successfully enrolled with validated biometric profile.`,
         [{ text: "View Students", onPress: () => go("Students") }]
       );
     } catch (e: any) {
       Alert.alert(
-        "Registration Failed",
+        "Enrollment Failed",
         e?.response?.data?.detail || "Could not register student. Please check input."
       );
     } finally {
@@ -1525,113 +2196,133 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   };
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.formHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.formTopHeaderRow}>
         <Pressable
-          onPress={async () => {
-            await AsyncStorage.removeItem("face_registration_photos");
-            go("Students");
-          }}
-          style={styles.backButtonCircle}
+          onPress={() => go("Students")}
+          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
         >
-          <MaterialCommunityIcons name="arrow-left" size={20} color={theme.text} />
+          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={styles.screenTitle}>Add Student</Text>
-          <Text style={styles.screenSubtitle}>
-            Enroll student & generate 512-D face embedding
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Enroll Student</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Register credentials & face profile
           </Text>
         </View>
       </View>
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>PERSONAL INFORMATION</Text>
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>PERSONAL DETAILS</Text>
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Full Legal Name</Text>
-          <View style={styles.inputContainer}>
-            <MaterialCommunityIcons name="account-outline" size={20} color={theme.muted} style={styles.inputIcon} />
-            <TextInput
-              style={styles.textInput}
-              value={name}
-              onChangeText={setName}
-              placeholder="e.g. Jonathan Smith"
-              placeholderTextColor={theme.muted}
-            />
-          </View>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME</Text>
+          <TextInput
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
+            value={name}
+            onChangeText={setName}
+            placeholder="e.g. Jonathan Smith"
+            placeholderTextColor={theme.muted}
+          />
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>University Email Address</Text>
-          <View style={styles.inputContainer}>
-            <MaterialCommunityIcons name="email-outline" size={20} color={theme.muted} style={styles.inputIcon} />
-            <TextInput
-              style={styles.textInput}
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              placeholder="e.g. j.smith@university.edu"
-              placeholderTextColor={theme.muted}
-              autoCapitalize="none"
-            />
-          </View>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>UNIVERSITY EMAIL</Text>
+          <TextInput
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            placeholder="j.smith@university.edu"
+            placeholderTextColor={theme.muted}
+            autoCapitalize="none"
+          />
         </View>
 
-        <AcademicCascade onSectionChange={setSectionId} />
+        <AcademicCascade />
 
-        <Text style={[styles.formCardTitle, { marginTop: 20 }]}>BIOMETRIC VERIFICATION</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 22 }]}>
+          BIOMETRIC FACE PROFILE
+        </Text>
         <Pressable
           style={[
-            styles.biometricPromptCard,
-            registeredPhotos.length === 5 && styles.biometricPromptCardSuccess,
+            styles.biometricPromptCardHolo,
+            { backgroundColor: theme.bgElevated, borderColor: theme.cyanGlow },
+            registeredPhotos.length === 5 && {
+              borderColor: theme.emerald,
+              backgroundColor: theme.emeraldGlow,
+            },
           ]}
           onPress={() => go("Face Registration")}
         >
           <View
             style={[
-              styles.biometricIconCircle,
-              registeredPhotos.length === 5 && { backgroundColor: theme.successPale },
+              styles.biometricIconBadge,
+              { backgroundColor: theme.card },
+              registeredPhotos.length === 5 && { backgroundColor: theme.emeraldGlow },
             ]}
           >
             <MaterialCommunityIcons
               name={registeredPhotos.length === 5 ? "check-circle" : "face-recognition"}
-              size={32}
-              color={registeredPhotos.length === 5 ? theme.success : theme.primaryLight}
+              size={30}
+              color={registeredPhotos.length === 5 ? theme.emerald : theme.cyan}
             />
           </View>
           <View style={{ flex: 1, paddingLeft: 14 }}>
-            <Text style={styles.biometricTitle}>
+            <Text style={[styles.biometricCardTitle, { color: theme.text }]}>
               {registeredPhotos.length === 5
-                ? "5 Face Angles Captured & Ready"
+                ? "5 Face Angles Verified"
                 : "Capture 5 Face Angles"}
             </Text>
-            <Text style={styles.biometricSub}>
+            <Text style={[styles.biometricCardSub, { color: theme.muted }]}>
               {registeredPhotos.length === 5
-                ? "Biometric validation passed. Ready to save student."
-                : "Center, chin up/down, left and right poses"}
+                ? "Face profile captured and ready to enroll."
+                : "Center, chin up/down, and left/right views"}
             </Text>
           </View>
-          <MaterialCommunityIcons name="chevron-right" size={22} color={theme.muted} />
+          <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
         </Pressable>
 
-        <View style={styles.formButtonsRow}>
+        <View style={styles.formActionButtonsRow}>
           <Pressable
-            style={styles.cancelButton}
-            onPress={async () => {
-              await AsyncStorage.removeItem("face_registration_photos");
-              go("Students");
-            }}
+            style={[
+              styles.formCancelBtn,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border },
+            ]}
+            onPress={() => go("Students")}
           >
-            <Text style={styles.cancelButtonText}>Cancel</Text>
+            <Text style={[styles.formCancelBtnText, { color: theme.textSecondary }]}>Cancel</Text>
           </Pressable>
           <Pressable
-            style={[styles.saveButton, busy && { opacity: 0.7 }]}
+            style={[
+              styles.formSubmitBtn,
+              { backgroundColor: theme.cyan, shadowColor: theme.cyan },
+              busy && { opacity: 0.7 },
+            ]}
             onPress={saveStudent}
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
             ) : (
-              <Text style={styles.saveButtonText}>Save Student Record</Text>
+              <Text
+                style={[
+                  styles.formSubmitBtnText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
+                ENROLL STUDENT
+              </Text>
             )}
           </Pressable>
         </View>
@@ -1644,6 +2335,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
 // ADD TEACHER SCREEN
 // ---------------------------------------------------------------------------
 function AddTeacher({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [form, setForm] = useState({
     name: "",
     username: "",
@@ -1668,52 +2360,63 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         email: form.email,
         academic_section_ids: selectedSections,
       });
-      Alert.alert(
-        "Faculty Created",
-        `Teacher ${form.name} created successfully.`,
-        [{ text: "View Faculty", onPress: () => go("Teachers") }]
-      );
+      Alert.alert("Faculty Created", `Teacher ${form.name} created successfully.`, [
+        { text: "View Faculty", onPress: () => go("Teachers") },
+      ]);
     } catch (e: any) {
-      Alert.alert(
-        "Creation Failed",
-        e?.response?.data?.detail || "Please check inputs."
-      );
+      Alert.alert("Creation Failed", e?.response?.data?.detail || "Please check inputs.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.formHeader}>
-        <Pressable onPress={() => go("Teachers")} style={styles.backButtonCircle}>
-          <MaterialCommunityIcons name="arrow-left" size={20} color={theme.text} />
+    <View style={styles.screenLayout}>
+      <View style={styles.formTopHeaderRow}>
+        <Pressable
+          onPress={() => go("Teachers")}
+          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={styles.screenTitle}>Add Faculty</Text>
-          <Text style={styles.screenSubtitle}>
-            Register instructor & assign academic departments
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Add Faculty</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Register instructor & department assignment
           </Text>
         </View>
       </View>
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>INSTRUCTOR CREDENTIALS</Text>
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          INSTRUCTOR PROFILE
+        </Text>
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Full Legal Name</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.name}
             onChangeText={(v) => setForm((p) => ({ ...p, name: v }))}
-            placeholder="e.g. Dr. Sarah Jenkins"
+            placeholder="Dr. Sarah Jenkins"
             placeholderTextColor={theme.muted}
           />
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>University Email</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>UNIVERSITY EMAIL</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.email}
             onChangeText={(v) => setForm((p) => ({ ...p, email: v }))}
             keyboardType="email-address"
@@ -1724,25 +2427,33 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Employee ID / Username</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            EMPLOYEE ID / USERNAME
+          </Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.username}
             onChangeText={(v) => setForm((p) => ({ ...p, username: v }))}
-            placeholder="e.g. EMP-2026-44"
+            placeholder="EMP-2026-88"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Temporary Password</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PASSWORD</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.password}
             onChangeText={(v) => setForm((p) => ({ ...p, password: v }))}
             secureTextEntry
-            placeholder="Create password"
+            placeholder="Create secure password"
             placeholderTextColor={theme.muted}
           />
         </View>
@@ -1752,19 +2463,36 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
           onChange={setSelectedSections}
         />
 
-        <View style={styles.formButtonsRow}>
-          <Pressable style={styles.cancelButton} onPress={() => go("Teachers")}>
-            <Text style={styles.cancelButtonText}>Cancel</Text>
+        <View style={styles.formActionButtonsRow}>
+          <Pressable
+            style={[
+              styles.formCancelBtn,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border },
+            ]}
+            onPress={() => go("Teachers")}
+          >
+            <Text style={[styles.formCancelBtnText, { color: theme.textSecondary }]}>Cancel</Text>
           </Pressable>
           <Pressable
-            style={[styles.saveButton, busy && { opacity: 0.7 }]}
+            style={[
+              styles.formSubmitBtn,
+              { backgroundColor: theme.cyan, shadowColor: theme.cyan },
+              busy && { opacity: 0.7 },
+            ]}
             onPress={save}
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
             ) : (
-              <Text style={styles.saveButtonText}>Create Faculty</Text>
+              <Text
+                style={[
+                  styles.formSubmitBtnText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
+                REGISTER FACULTY
+              </Text>
             )}
           </Pressable>
         </View>
@@ -1774,25 +2502,56 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// FACE REGISTRATION (HIGH-TECH BIOMETRIC HUD)
+// ANIMATED SCI-FI BIOMETRIC HUD (FACE REGISTRATION)
 // ---------------------------------------------------------------------------
 function FaceRegistration({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [permission, requestPermission] = useCameraPermissions();
   const [step, setStep] = useState(0);
   const [captured, setCaptured] = useState<string[]>([]);
   const [camera, setCamera] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [faceDetected, setFaceDetected] = useState(false);
+  const [faceBox, setFaceBox] = useState<[number, number, number, number] | null>(null);
+  const [frameSize, setFrameSize] = useState({ width: 1, height: 1 });
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
-  const [completed, setCompleted] = useState(false);
+
+  // Animated Laser Scanner Bar
+  const scanAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanAnim, {
+          toValue: 1,
+          duration: 1800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanAnim, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+
+  const laserTranslateY = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-110, 110],
+  });
 
   const steps = [
     { short: "Center", title: "Center View", guide: "Position face directly inside the oval guide." },
-    { short: "Chin Up", title: "Tilt Chin Up", guide: "Gently tilt your chin upward." },
-    { short: "Chin Down", title: "Tilt Chin Down", guide: "Gently tilt your chin downward." },
-    { short: "Left", title: "Turn Left", guide: "Turn your face slightly to the left." },
-    { short: "Right", title: "Turn Right", guide: "Turn your face slightly to the right." },
+    { short: "Chin Up", title: "Tilt Chin Up", guide: "Gently tilt your chin upward toward the camera." },
+    { short: "Chin Down", title: "Tilt Chin Down", guide: "Gently tilt your chin downward toward the camera." },
+    { short: "Left", title: "Turn Left", guide: "Turn your face slightly toward the left indicator." },
+    { short: "Right", title: "Turn Right", guide: "Turn your face slightly toward the right indicator." },
   ];
 
   useEffect(() => {
@@ -1800,16 +2559,21 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
     if (!permission.granted) requestPermission();
   }, [permission?.granted]);
 
-  const capturePhoto = async (automatic = false) => {
-    if (!camera || busy || completed) return;
+  useEffect(() => {
+    if (!cameraReady || !camera || busy) return;
+    const timer = setTimeout(() => capturePhoto(), 2200);
+    return () => clearTimeout(timer);
+  }, [cameraReady, camera, step, busy]);
+
+  const capturePhoto = async () => {
+    if (!camera || busy) return;
     setBusy(true);
     setFaceDetected(false);
+    setFaceBox(null);
     try {
       const photo = await camera.takePictureAsync({
         quality: 0.85,
-        // Process orientation metadata before upload. This keeps the server's
-        // face detector and pose checks consistent across Android devices.
-        skipProcessing: false,
+        skipProcessing: true,
       });
       if (!photo?.uri) throw new Error("No photo captured");
 
@@ -1833,13 +2597,23 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 
       data.append("target_pose", poseKey);
 
-      const res = await http.post("/validate-face", data);
+      const res = await http.post("/validate-face", data, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      const bbox = res.data?.face_bbox;
+      const imageWidth = Number(res.data?.image_width);
+      const imageHeight = Number(res.data?.image_height);
+      if (Array.isArray(bbox) && bbox.length === 4 && imageWidth > 0 && imageHeight > 0) {
+        setFaceBox(bbox as [number, number, number, number]);
+        setFrameSize({ width: imageWidth, height: imageHeight });
+      }
 
       if (!res.data?.valid) {
         throw new Error(
           res.data?.user_guidance ||
             res.data?.issues?.[0] ||
-            "Pose not recognized. Please follow instructions."
+            "Pose not recognized. Please follow on-screen guidance."
         );
       }
 
@@ -1850,54 +2624,54 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       if (step < 4) {
         setStep(step + 1);
       } else {
-        setCompleted(true);
-        await AsyncStorage.setItem(
-          "face_registration_photos",
-          JSON.stringify({ createdAt: Date.now(), photos: nextPhotos })
-        );
+        await AsyncStorage.setItem("face_registration_photos", JSON.stringify(nextPhotos));
         Alert.alert(
-          "Biometrics Validated",
+          "Face Profile Validated",
           "All 5 face angles were successfully scanned and validated.",
-          [{ text: "Continue to Add Student", onPress: () => go("Add Student") }]
+          [{ text: "Return to Enroll Student", onPress: () => go("Add Student") }]
         );
       }
     } catch (e: any) {
-      // The idle scanner deliberately stays quiet for empty/invalid frames.
-      // A person only sees guidance after choosing the manual capture button.
-      if (!automatic) {
-        Alert.alert(
-          "Pose Guidance",
-          e?.response?.data?.user_guidance ||
-            e?.response?.data?.detail ||
-            e?.message ||
-            "Please realign your face with the guide."
-        );
-      }
+      Alert.alert(
+        "Pose Guidance",
+        e?.response?.data?.user_guidance ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Please realign your face with the guide."
+      );
     } finally {
       setBusy(false);
     }
   };
 
-  // Expo Camera does not expose a native face-detector callback in this SDK.
-  // Sample a frame at a restrained cadence instead: the API validates that
-  // exactly one usable face is present and only then accepts the capture.
-  useEffect(() => {
-    if (!cameraReady || !camera || busy || completed) return;
-    const timer = setTimeout(() => capturePhoto(true), 1200);
-    return () => clearTimeout(timer);
-  }, [cameraReady, camera, busy, completed, step, captured]);
-
   if (!permission || !permission.granted) {
     return (
-      <View style={styles.screenWrapper}>
-        <View style={styles.cameraPermissionCard}>
-          <MaterialCommunityIcons name="camera-off" size={48} color={theme.muted} />
-          <Text style={styles.cameraPermTitle}>Camera Access Required</Text>
-          <Text style={styles.cameraPermDesc}>
-            Pratyaksh requires camera access to capture the 5-angle biometric facial embeddings.
+      <View style={styles.screenLayout}>
+        <View
+          style={[
+            styles.permCardHolo,
+            { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          ]}
+        >
+          <MaterialCommunityIcons name="camera-off" size={44} color={theme.cyan} />
+          <Text style={[styles.permTitleHolo, { color: theme.text }]}>
+            Camera Permission Required
           </Text>
-          <Pressable style={styles.primaryActionButton} onPress={requestPermission}>
-            <Text style={styles.primaryActionText}>Grant Camera Permission</Text>
+          <Text style={[styles.permDescHolo, { color: theme.muted }]}>
+            Pratyaksh requires front camera access to record facial verification angles.
+          </Text>
+          <Pressable
+            style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
+            onPress={requestPermission}
+          >
+            <Text
+              style={[
+                styles.primaryNeonButtonText,
+                { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+              ]}
+            >
+              GRANT CAMERA ACCESS
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -1907,36 +2681,46 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const current = steps[step];
 
   return (
-    <View style={styles.screenWrapper}>
-      {/* Header */}
-      <View style={styles.formHeader}>
-        <Pressable onPress={() => go("Add Student")} style={styles.backButtonCircle}>
-          <MaterialCommunityIcons name="arrow-left" size={20} color={theme.text} />
+    <View style={styles.screenLayout}>
+      <View style={styles.formTopHeaderRow}>
+        <Pressable
+          onPress={() => go("Add Student")}
+          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={styles.screenTitle}>Biometric Scan</Text>
-          <Text style={styles.screenSubtitle}>
-            Angle {step + 1} of 5: {current.title}
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Biometric Scan</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Pose {step + 1} of 5: {current.title}
           </Text>
         </View>
       </View>
 
-      {/* Steps Pill Progress */}
-      <View style={styles.hudStepsRow}>
+      {/* 5-Step Holographic Pose Tracker */}
+      <View style={styles.hudStepsContainer}>
         {steps.map((s, idx) => (
           <View
             key={s.short}
             style={[
-              styles.hudStepItem,
-              idx === step && styles.hudStepItemActive,
-              idx < step && styles.hudStepItemDone,
+              styles.hudStepBadge,
+              { backgroundColor: theme.card, borderColor: theme.border },
+              idx === step && {
+                borderColor: theme.cyan,
+                backgroundColor: theme.cyanGlow,
+              },
+              idx < step && {
+                borderColor: theme.emerald,
+                backgroundColor: theme.emeraldGlow,
+              },
             ]}
           >
             <Text
               style={[
-                styles.hudStepText,
-                idx === step && styles.hudStepTextActive,
-                idx < step && styles.hudStepTextDone,
+                styles.hudStepBadgeText,
+                { color: theme.muted },
+                idx === step && { color: theme.cyan },
+                idx < step && { color: theme.emerald },
               ]}
             >
               {idx < step ? "✓" : idx + 1}
@@ -1945,69 +2729,129 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         ))}
       </View>
 
-      {/* Futuristic HUD Camera Viewfinder */}
-      <View style={styles.hudCameraCard}>
+      {/* Viewfinder with Animated Laser Beam */}
+      <View style={[styles.hudCameraViewport, { borderColor: theme.borderAccent }]}>
         {cameraError ? (
-          <View style={styles.hudCameraError}>
-            <Text style={{ color: "#fff" }}>Camera Preview Failed</Text>
+          <View style={styles.hudCameraErrorWrap}>
+            <Text style={{ color: theme.rose }}>Camera Feed Interrupted</Text>
           </View>
         ) : (
-          <View style={styles.cameraWrapper}>
+          <View style={styles.cameraFrameWrapper}>
             <CameraView
               ref={setCamera}
-              style={styles.cameraPreview}
+              style={StyleSheet.absoluteFillObject}
               facing="front"
               onCameraReady={() => setCameraReady(true)}
-              onMountError={() => setCameraError("Camera failed")}
+              onMountError={() => setCameraError("Camera error")}
             />
-            {/* Ambient Biometric Oval Overlay */}
-            <View
-              style={[
-                styles.hudOvalGuide,
-                faceDetected && styles.hudOvalGuideDetected,
-                busy && styles.hudOvalGuideScanning,
-              ]}
-            />
-            {/* Live Status Tag */}
-            <View style={styles.hudStatusTag}>
+
+            {faceDetected && faceBox && (
               <View
+                pointerEvents="none"
                 style={[
-                  styles.hudStatusDot,
-                  { backgroundColor: busy ? theme.accent : theme.success },
+                  styles.liveFaceBoundingBox,
+                  {
+                    left: `${Math.max(0, (faceBox[0] / frameSize.width) * 100)}%`,
+                    top: `${Math.max(0, (faceBox[1] / frameSize.height) * 100)}%`,
+                    width: `${Math.max(1, ((faceBox[2] - faceBox[0]) / frameSize.width) * 100)}%`,
+                    height: `${Math.max(1, ((faceBox[3] - faceBox[1]) / frameSize.height) * 100)}%`,
+                  },
                 ]}
               />
-              <Text style={styles.hudStatusTagText}>
+            )}
+
+            {/* Target Reticles */}
+            <View style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]} />
+            <View style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]} />
+
+            {/* Biometric Ellipse */}
+            <View
+              style={[
+                styles.hudBiometricEllipse,
+                faceDetected && [styles.hudBiometricEllipseDone, { borderColor: theme.emerald }],
+                busy && [styles.hudBiometricEllipseScanning, { borderColor: theme.amber }],
+              ]}
+            >
+              {/* Animated Laser Scanning Beam */}
+              <Animated.View
+                style={[
+                  styles.animatedLaserLine,
+                  {
+                    backgroundColor: theme.cyan,
+                    shadowColor: theme.cyan,
+                    transform: [{ translateY: laserTranslateY }],
+                  },
+                ]}
+              />
+            </View>
+
+            {/* Telemetry Status Bar */}
+            <View
+              style={[
+                styles.hudLiveTelemetryBar,
+                { borderColor: theme.borderAccent },
+              ]}
+            >
+              <View
+                style={[
+                  styles.hudTelemetryDot,
+                  { backgroundColor: busy ? theme.amber : theme.cyan },
+                ]}
+              />
+              <Text style={styles.hudTelemetryLabel}>
                 {busy
-                  ? "ANALYZING POSE..."
-                  : faceDetected
-                    ? "FACE VERIFIED"
-                    : cameraReady
-                    ? "WAITING FOR FACE..."
-                    : "WARMING UP..."}
+                  ? "VALIDATING FACE ANGLE..."
+                  : cameraReady
+                    ? "ALIGN FACE WITHIN GUIDE"
+                    : "STARTING SENSOR..."}
               </Text>
             </View>
           </View>
         )}
       </View>
 
-      {/* Guide Card */}
-      <View style={styles.hudGuideCard}>
-        <Text style={styles.hudGuideTitle}>
+      {/* Pose Instruction Card */}
+      <View
+        style={[
+          styles.hudInstructionCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <Text style={[styles.hudInstructionTitle, { color: theme.text }]}>
           Step {step + 1}: {current.title}
         </Text>
-        <Text style={styles.hudGuideDesc}>{current.guide}</Text>
+        <Text style={[styles.hudInstructionDesc, { color: theme.textSecondary }]}>
+          {current.guide}
+        </Text>
 
         <Pressable
-          style={[styles.hudManualCaptureBtn, busy && { opacity: 0.7 }]}
-          onPress={() => capturePhoto(false)}
+          style={[
+            styles.hudForceCaptureBtn,
+            { backgroundColor: theme.cyan },
+            busy && { opacity: 0.7 },
+          ]}
+          onPress={capturePhoto}
           disabled={busy}
         >
           {busy ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
           ) : (
-            <View style={styles.hudManualRow}>
-              <MaterialCommunityIcons name="camera" size={20} color="#fff" />
-              <Text style={styles.hudManualBtnText}>Capture Angle ({step + 1}/5)</Text>
+            <View style={styles.submitRow}>
+              <MaterialCommunityIcons
+                name="camera"
+                size={18}
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
+              <Text
+                style={[
+                  styles.hudForceCaptureBtnText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
+                CAPTURE ANGLE ({step + 1}/5)
+              </Text>
             </View>
           )}
         </Pressable>
@@ -2017,9 +2861,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// TEACHER: TAKE ATTENDANCE (SESSION CREATOR & CAMERA/GALLERY PROCESSOR)
+// TEACHER: CLASS ATTENDANCE SESSION CREATOR
 // ---------------------------------------------------------------------------
 function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<any>(null);
   const [academicScope, setAcademicScope] = useState<any>({
@@ -2042,9 +2887,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   });
 
   useEffect(() => {
-    http
-      .get("/academic/sections")
-      .then((r) => setSections(r.data?.sections || []))
+    loadAcademicSections()
+      .then(setSections)
       .catch(() => setSections([]));
   }, []);
 
@@ -2070,14 +2914,11 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       });
       setScope({ ...scope, session_id: res.data.session_id });
       Alert.alert(
-        "Session Active",
-        "Attendance session created. You may now capture or upload the group photo."
+        "Session Created",
+        "Attendance session created. You may now capture or upload the classroom photo."
       );
     } catch (e: any) {
-      Alert.alert(
-        "Error",
-        e?.response?.data?.detail || "Could not initialize session."
-      );
+      Alert.alert("Error", e?.response?.data?.detail || "Could not initialize session.");
     } finally {
       setBusy(false);
     }
@@ -2085,7 +2926,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 
   const processPhoto = async (uri: string) => {
     if (!scope?.session_id) {
-      Alert.alert("No Session", "Create session details first.");
+      Alert.alert("No Session", "Initialize session details first.");
       return;
     }
     setBusy(true);
@@ -2094,17 +2935,19 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       data.append("session_id", scope.session_id);
       data.append("file", {
         uri,
-        name: "class-group-photo.jpg",
+        name: "classroom-photo.jpg",
         type: "image/jpeg",
       } as any);
 
-      await http.post("/process-group-attendance", data);
+      await http.post("/process-group-attendance", data, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
       go("Recognition Results");
     } catch (e: any) {
       Alert.alert(
-        "Recognition Failed",
-        e?.response?.data?.detail || "Could not process class photo. Please retry."
+        "Processing Failed",
+        e?.response?.data?.detail || "Could not process classroom photo. Please retry."
       );
     } finally {
       setBusy(false);
@@ -2137,23 +2980,33 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   };
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Take Attendance</Text>
-          <Text style={styles.screenSubtitle}>
-            Biometric group photo attendance session
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Take Attendance</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Classroom group photo attendance
           </Text>
         </View>
       </View>
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>SESSION CONFIGURATION</Text>
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          SESSION CONFIGURATION
+        </Text>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Class / Event Title</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>LECTURE TITLE</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.title}
             onChangeText={(v) => setForm((p) => ({ ...p, title: v }))}
             placeholder="e.g. Distributed Systems Lab"
@@ -2162,9 +3015,12 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Course Code & Name</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>COURSE CODE & TITLE</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.course}
             onChangeText={(v) => setForm((p) => ({ ...p, course: v }))}
             placeholder="e.g. CS-402 Distributed Systems"
@@ -2187,9 +3043,12 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         />
 
         <View style={styles.formGroup}>
-          <Text style={styles.fieldLabel}>Classroom / Lab Location</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>LOCATION / ROOM</Text>
           <TextInput
-            style={styles.textInputPlain}
+            style={[
+              styles.textInputHoloPlain,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+            ]}
             value={form.room}
             onChangeText={(v) => setForm((p) => ({ ...p, room: v }))}
             placeholder="Room 101"
@@ -2197,11 +3056,14 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        <View style={styles.twoColumnRow}>
+        <View style={styles.twoColumnGridRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={styles.fieldLabel}>Starts</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>STARTS</Text>
             <TextInput
-              style={styles.textInputPlain}
+              style={[
+                styles.textInputHoloPlain,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              ]}
               value={form.starts_at}
               onChangeText={(v) => setForm((p) => ({ ...p, starts_at: v }))}
               placeholder="09:00"
@@ -2209,9 +3071,12 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             />
           </View>
           <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={styles.fieldLabel}>Ends</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>ENDS</Text>
             <TextInput
-              style={styles.textInputPlain}
+              style={[
+                styles.textInputHoloPlain,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              ]}
               value={form.ends_at}
               onChangeText={(v) => setForm((p) => ({ ...p, ends_at: v }))}
               placeholder="10:00"
@@ -2221,58 +3086,106 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         </View>
 
         {/* Selected Section Summary */}
-        <View style={styles.sectionSummaryCard}>
-          <MaterialCommunityIcons name="layers" size={20} color={theme.primaryLight} />
+        <View
+          style={[
+            styles.sectionSelectedCard,
+            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+          ]}
+        >
+          <MaterialCommunityIcons name="layers" size={20} color={theme.cyan} />
           <View style={{ flex: 1, paddingLeft: 10 }}>
-            <Text style={styles.sectionSummaryTitle}>
+            <Text style={[styles.sectionSelectedTitle, { color: theme.cyan }]}>
               {scope
                 ? `${scope.department} • ${scope.program}`
                 : "Select an academic section above"}
             </Text>
-            <Text style={styles.sectionSummarySub}>
+            <Text style={[styles.sectionSelectedSub, { color: theme.textSecondary }]}>
               {scope?.session_id
                 ? `Active Session: #${scope.session_id}`
-                : "Ready to initialize attendance session"}
+                : "Ready to create attendance session"}
             </Text>
           </View>
         </View>
 
         {!scope?.session_id ? (
           <Pressable
-            style={[styles.primaryActionButton, busy && { opacity: 0.7 }]}
+            style={[
+              styles.primaryNeonButton,
+              { backgroundColor: theme.cyan },
+              busy && { opacity: 0.7 },
+            ]}
             onPress={createSession}
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
             ) : (
               <View style={styles.submitRow}>
-                <MaterialCommunityIcons name="plus-circle" size={20} color="#fff" />
-                <Text style={styles.primaryActionText}>Create Attendance Session</Text>
+                <MaterialCommunityIcons
+                  name="plus-circle"
+                  size={19}
+                  color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                />
+                <Text
+                  style={[
+                    styles.primaryNeonButtonText,
+                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                  ]}
+                >
+                  CREATE ATTENDANCE SESSION
+                </Text>
               </View>
             )}
           </Pressable>
         ) : (
-          <View style={styles.photoCaptureButtonsWrap}>
+          <View style={styles.dualPhotoActionsCol}>
             <Pressable
-              style={[styles.photoActionButton, styles.cameraBtn, busy && { opacity: 0.7 }]}
+              style={[
+                styles.captureHeroBtn,
+                { backgroundColor: theme.cyan },
+                busy && { opacity: 0.7 },
+              ]}
               onPress={takePhoto}
               disabled={busy}
             >
-              <MaterialCommunityIcons name="camera" size={28} color="#fff" />
-              <Text style={styles.photoActionTitle}>Take Class Photo</Text>
-              <Text style={styles.photoActionSub}>Capture students with camera</Text>
+              <MaterialCommunityIcons
+                name="camera"
+                size={26}
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
+              <Text
+                style={[
+                  styles.captureHeroBtnTitle,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
+                TAKE CLASS PHOTO
+              </Text>
+              <Text
+                style={[
+                  styles.captureHeroBtnSub,
+                  { color: theme.mode === "dark" ? "rgba(8,12,20,0.75)" : "rgba(255,255,255,0.85)" },
+                ]}
+              >
+                Capture students with camera
+              </Text>
             </Pressable>
 
             <Pressable
-              style={[styles.photoActionButton, styles.galleryBtn, busy && { opacity: 0.7 }]}
+              style={[
+                styles.galleryHeroBtn,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                busy && { opacity: 0.7 },
+              ]}
               onPress={pickFromGallery}
               disabled={busy}
             >
-              <MaterialCommunityIcons name="image-multiple" size={28} color={theme.text} />
-              <Text style={[styles.photoActionTitle, { color: theme.text }]}>Upload From Gallery</Text>
-              <Text style={[styles.photoActionSub, { color: theme.textSecondary }]}>
-                Select an existing photo
+              <MaterialCommunityIcons name="image-multiple" size={24} color={theme.text} />
+              <Text style={[styles.galleryHeroBtnTitle, { color: theme.text }]}>
+                UPLOAD FROM GALLERY
+              </Text>
+              <Text style={[styles.galleryHeroBtnSub, { color: theme.muted }]}>
+                Select an existing photo file
               </Text>
             </Pressable>
           </View>
@@ -2283,9 +3196,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// TEACHER: RECOGNITION RESULTS
+// TEACHER: RECOGNITION RESULTS VIEW
 // ---------------------------------------------------------------------------
 function RecognitionResultsView({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
 
@@ -2299,69 +3213,95 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
 
   if (busy) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={theme.primaryLight} />
-        <Text style={styles.subtleText}>Analyzing Facial Embeddings...</Text>
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Analyzing Classroom Faces...
+        </Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>AI Recognition Results</Text>
-          <Text style={styles.screenSubtitle}>
-            {items.length} faces detected and classified
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Recognition Results
+          </Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            {items.length} students detected and matched
           </Text>
         </View>
         <Pressable
-          style={styles.addButtonMini}
+          style={[styles.screenAddButtonMini, { backgroundColor: theme.cyan }]}
           onPress={() => go("Verify Attendance")}
         >
-          <MaterialCommunityIcons name="check-all" size={20} color="#fff" />
-          <Text style={styles.addButtonMiniText}>Verify</Text>
+          <MaterialCommunityIcons
+            name="check-all"
+            size={18}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.screenAddBtnMiniText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            VERIFY
+          </Text>
         </Pressable>
       </View>
 
-      <View style={styles.resultsNoticeCard}>
-        <MaterialCommunityIcons name="information" size={20} color={theme.primaryLight} />
-        <Text style={styles.resultsNoticeText}>
-          Review initial AI matches. You can manually adjust any student's status on the verification roster.
+      <View
+        style={[
+          styles.resultsNoticeBox,
+          { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+        ]}
+      >
+        <MaterialCommunityIcons name="information" size={18} color={theme.cyan} />
+        <Text style={[styles.resultsNoticeText, { color: theme.cyan }]}>
+          Review initial classifications. You can adjust student status on the verification checklist.
         </Text>
       </View>
 
       {items.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="face-recognition"
-          title="No face recognitions logged"
-          desc="Take or upload a group photo to populate automated detections."
+          title="No face detections yet"
+          desc="Capture or upload a classroom photo to generate attendance detections."
           actionText="Take Attendance"
           onAction={() => go("Attendance")}
         />
       ) : (
-        <View style={styles.resultsGrid}>
+        <View style={styles.resultsCardsGrid}>
           {items.map((rec, i) => {
             const isPresent = String(rec.status || "").toLowerCase().includes("present");
             return (
-              <View key={rec.student_id || i} style={styles.resultItemCard}>
+              <View
+                key={rec.student_id || i}
+                style={[
+                  styles.resultItemCardHolo,
+                  { backgroundColor: theme.cardGlass, borderColor: theme.border },
+                ]}
+              >
                 <View
                   style={[
-                    styles.resultAvatarCircle,
-                    { backgroundColor: isPresent ? theme.successPale : theme.dangerPale },
+                    styles.resultAvatarCircleHolo,
+                    { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
                   ]}
                 >
                   <MaterialCommunityIcons
                     name="account"
-                    size={28}
-                    color={isPresent ? theme.success : theme.danger}
+                    size={26}
+                    color={isPresent ? theme.emerald : theme.rose}
                   />
                 </View>
-                <Text style={styles.resultItemName} numberOfLines={1}>
+                <Text style={[styles.resultItemNameText, { color: theme.text }]} numberOfLines={1}>
                   {rec.name || rec.student_id || "Student"}
                 </Text>
-                <Text style={styles.resultItemId}>{rec.student_id}</Text>
-                <StatusPill
+                <Text style={[styles.resultItemIdText, { color: theme.muted }]}>{rec.student_id}</Text>
+                <HoloStatusPill
                   label={rec.status || (isPresent ? "Present" : "Absent")}
                   tone={isPresent ? "success" : "danger"}
                 />
@@ -2373,11 +3313,25 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
 
       {items.length > 0 && (
         <Pressable
-          style={[styles.primaryActionButton, { marginTop: 24 }]}
+          style={[
+            styles.primaryNeonButton,
+            { backgroundColor: theme.cyan, marginTop: 24 },
+          ]}
           onPress={() => go("Verify Attendance")}
         >
-          <MaterialCommunityIcons name="account-check" size={20} color="#fff" />
-          <Text style={styles.primaryActionText}>Proceed to Final Roster Verification</Text>
+          <MaterialCommunityIcons
+            name="account-check"
+            size={19}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.primaryNeonButtonText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            PROCEED TO VERIFICATION CHECKLIST
+          </Text>
         </Pressable>
       )}
     </View>
@@ -2385,11 +3339,13 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// TEACHER: VERIFY & FINALIZE ATTENDANCE
+// TEACHER: VERIFY & FINALIZE ATTENDANCE WITH QUICK FILTERS
 // ---------------------------------------------------------------------------
 function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
+  const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [statusMap, setStatusMap] = useState<Record<string, "PRESENT" | "ABSENT">>({});
+  const [activeFilter, setActiveFilter] = useState<"ALL" | "PRESENT" | "ABSENT">("ALL");
   const [sessionId, setSessionId] = useState("");
   const [busy, setBusy] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -2421,6 +3377,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     }));
   };
 
+  const markAllPresent = () => {
+    const updated: Record<string, "PRESENT" | "ABSENT"> = {};
+    items.forEach((r) => (updated[r.student_id] = "PRESENT"));
+    setStatusMap(updated);
+  };
+
   const finalizeAttendance = async () => {
     if (!sessionId) {
       Alert.alert("Missing Session", "Session identifier not found.");
@@ -2439,8 +3401,8 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       });
 
       Alert.alert(
-        "Attendance Finalized",
-        "The finalized roster has been submitted and locked into university records.",
+        "Attendance Confirmed",
+        "The finalized attendance records have been successfully submitted to the database.",
         [{ text: "View History", onPress: () => go("History") }]
       );
     } catch (e: any) {
@@ -2455,61 +3417,143 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
 
   if (busy) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={theme.primaryLight} />
-        <Text style={styles.subtleText}>Loading Roster Checklist...</Text>
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Loading Roster Checklist...
+        </Text>
       </View>
     );
   }
 
   const presentCount = Object.values(statusMap).filter((s) => s === "PRESENT").length;
   const absentCount = Object.values(statusMap).filter((s) => s === "ABSENT").length;
+  const ratio = items.length ? Math.round((presentCount / items.length) * 100) : 0;
+
+  const filteredItems = items.filter((student) => {
+    if (activeFilter === "ALL") return true;
+    const currentStatus = statusMap[student.student_id] || "ABSENT";
+    return currentStatus === activeFilter;
+  });
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Verify & Finalize</Text>
-          <Text style={styles.screenSubtitle}>
-            Toggle student status before permanent submission
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Verify Roster</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Review and adjust student status
           </Text>
         </View>
       </View>
 
-      {/* Roster Live Counter Banner */}
-      <View style={styles.tallyCard}>
-        <View style={styles.tallyItem}>
-          <Text style={[styles.tallyVal, { color: theme.success }]}>{presentCount}</Text>
-          <Text style={styles.tallyLbl}>Present</Text>
+      {/* Roster Ratio & Tally HUD */}
+      <View
+        style={[
+          styles.tallyHUDCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <View style={styles.tallyStatsRow}>
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>{presentCount}</Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+          </View>
+          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.rose }]}>{absentCount}</Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+          </View>
+          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.text }]}>{items.length}</Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Total</Text>
+          </View>
         </View>
-        <View style={styles.tallyDivider} />
-        <View style={styles.tallyItem}>
-          <Text style={[styles.tallyVal, { color: theme.danger }]}>{absentCount}</Text>
-          <Text style={styles.tallyLbl}>Absent</Text>
+
+        {/* Attendance Ratio Bar */}
+        <View style={[styles.tallyProgressBarTrack, { backgroundColor: theme.bgElevated }]}>
+          <View
+            style={[
+              styles.tallyProgressBarFill,
+              { width: `${ratio}%`, backgroundColor: theme.emerald },
+            ]}
+          />
         </View>
-        <View style={styles.tallyDivider} />
-        <View style={styles.tallyItem}>
-          <Text style={styles.tallyVal}>{items.length}</Text>
-          <Text style={styles.tallyLbl}>Total Roster</Text>
+        <Text style={[styles.tallyRatioSubText, { color: theme.muted }]}>
+          {ratio}% Recorded Present
+        </Text>
+      </View>
+
+      {/* Quick Filter Segment Pills & Bulk Button */}
+      <View style={styles.verifyToolbarRow}>
+        <View style={[styles.filterSegmentPillWrap, { backgroundColor: theme.bgElevated }]}>
+          {(["ALL", "PRESENT", "ABSENT"] as const).map((filterKey) => {
+            const active = activeFilter === filterKey;
+            return (
+              <Pressable
+                key={filterKey}
+                style={[
+                  styles.filterSegmentBtn,
+                  active && [
+                    styles.filterSegmentBtnActive,
+                    { backgroundColor: theme.card, borderColor: theme.borderAccent },
+                  ],
+                ]}
+                onPress={() => setActiveFilter(filterKey)}
+              >
+                <Text
+                  style={[
+                    styles.filterSegmentBtnText,
+                    { color: active ? theme.cyan : theme.muted },
+                    active && { fontWeight: "800" },
+                  ]}
+                >
+                  {filterKey === "ALL"
+                    ? `All (${items.length})`
+                    : filterKey === "PRESENT"
+                      ? `Present (${presentCount})`
+                      : `Absent (${absentCount})`}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
+
+        <Pressable
+          style={[
+            styles.quickBulkBtn,
+            { backgroundColor: theme.bgElevated, borderColor: theme.border },
+          ]}
+          onPress={markAllPresent}
+        >
+          <MaterialCommunityIcons name="check-all" size={16} color={theme.cyan} />
+          <Text style={[styles.quickBulkBtnText, { color: theme.cyan }]}>All Present</Text>
+        </Pressable>
       </View>
 
       {/* Checklist Rows */}
-      {items.map((student, i) => {
+      {filteredItems.map((student, i) => {
         const currentStatus = statusMap[student.student_id] || "ABSENT";
         const isPresent = currentStatus === "PRESENT";
         return (
-          <View key={student.student_id || i} style={styles.verifyRowCard}>
+          <View
+            key={student.student_id || i}
+            style={[
+              styles.checklistCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
+          >
             <View
               style={[
-                styles.avatarCircle,
-                { backgroundColor: isPresent ? theme.successPale : theme.dangerPale },
+                styles.rosterAvatarBox,
+                { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
               ]}
             >
               <Text
                 style={[
-                  styles.avatarInitial,
-                  { color: isPresent ? theme.success : theme.danger },
+                  styles.rosterAvatarInitial,
+                  { color: isPresent ? theme.emerald : theme.rose },
                 ]}
               >
                 {(student.name || "S").charAt(0).toUpperCase()}
@@ -2517,26 +3561,32 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
             </View>
 
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.verifyName}>{student.name || student.student_id}</Text>
-              <Text style={styles.verifyMeta}>ID: {student.student_id}</Text>
+              <Text style={[styles.checkListName, { color: theme.text }]}>
+                {student.name || student.student_id}
+              </Text>
+              <Text style={[styles.checkListId, { color: theme.muted }]}>
+                ID: {student.student_id}
+              </Text>
             </View>
 
             <Pressable
               style={[
-                styles.togglePill,
-                isPresent ? styles.togglePillPresent : styles.togglePillAbsent,
+                styles.togglePillHolo,
+                isPresent
+                  ? [styles.togglePillHoloPresent, { backgroundColor: theme.emeraldGlow, borderColor: theme.emerald }]
+                  : [styles.togglePillHoloAbsent, { backgroundColor: theme.roseGlow, borderColor: theme.rose }],
               ]}
               onPress={() => toggleStatus(student.student_id)}
             >
               <MaterialCommunityIcons
                 name={isPresent ? "check" : "close"}
-                size={16}
-                color={isPresent ? theme.success : theme.danger}
+                size={15}
+                color={isPresent ? theme.emerald : theme.rose}
               />
               <Text
                 style={[
-                  styles.togglePillText,
-                  { color: isPresent ? theme.success : theme.danger },
+                  styles.togglePillHoloText,
+                  { color: isPresent ? theme.emerald : theme.rose },
                 ]}
               >
                 {currentStatus}
@@ -2547,16 +3597,31 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       })}
 
       <Pressable
-        style={[styles.primaryActionButton, submitting && { opacity: 0.7 }, { marginTop: 20 }]}
+        style={[
+          styles.primaryNeonButton,
+          { backgroundColor: theme.cyan, marginTop: 22 },
+          submitting && { opacity: 0.7 },
+        ]}
         onPress={finalizeAttendance}
         disabled={submitting}
       >
         {submitting ? (
-          <ActivityIndicator color="#fff" />
+          <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
         ) : (
           <View style={styles.submitRow}>
-            <MaterialCommunityIcons name="check-decagram" size={20} color="#fff" />
-            <Text style={styles.primaryActionText}>Confirm & Lock Attendance</Text>
+            <MaterialCommunityIcons
+              name="lock-check"
+              size={19}
+              color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+            />
+            <Text
+              style={[
+                styles.primaryNeonButtonText,
+                { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+              ]}
+            >
+              CONFIRM & SUBMIT ATTENDANCE
+            </Text>
           </View>
         )}
       </Pressable>
@@ -2565,9 +3630,10 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN ATTENDANCE LIVE
+// ADMIN ATTENDANCE LIVE AUDIT
 // ---------------------------------------------------------------------------
 function AdminAttendanceView() {
+  const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
@@ -2589,20 +3655,26 @@ function AdminAttendanceView() {
   ).length;
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Attendance Audit</Text>
-          <Text style={styles.screenSubtitle}>
-            Daily biometric logs across all schools & sections
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Attendance Audit</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Verified attendance records by date
           </Text>
         </View>
       </View>
 
-      {/* Date Picker Trigger Card */}
-      <Pressable style={styles.datePickerTrigger} onPress={() => setShowPicker(true)}>
-        <MaterialCommunityIcons name="calendar" size={22} color={theme.primaryLight} />
-        <Text style={styles.datePickerText}>
+      {/* Date Trigger Card */}
+      <Pressable
+        style={[
+          styles.datePickerCardHolo,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+        onPress={() => setShowPicker(true)}
+      >
+        <MaterialCommunityIcons name="calendar" size={20} color={theme.cyan} />
+        <Text style={[styles.datePickerCardText, { color: theme.text }]}>
           {date.toLocaleDateString(undefined, {
             weekday: "short",
             month: "short",
@@ -2610,7 +3682,7 @@ function AdminAttendanceView() {
             year: "numeric",
           })}
         </Text>
-        <MaterialCommunityIcons name="chevron-down" size={20} color={theme.muted} />
+        <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
       </Pressable>
 
       {showPicker && (
@@ -2625,53 +3697,66 @@ function AdminAttendanceView() {
         />
       )}
 
-      {/* Daily Metrics */}
-      <View style={styles.tallyCard}>
-        <View style={styles.tallyItem}>
-          <Text style={[styles.tallyVal, { color: theme.success }]}>{presentCount}</Text>
-          <Text style={styles.tallyLbl}>Present</Text>
-        </View>
-        <View style={styles.tallyDivider} />
-        <View style={styles.tallyItem}>
-          <Text style={[styles.tallyVal, { color: theme.danger }]}>
-            {dayLogs.length - presentCount}
-          </Text>
-          <Text style={styles.tallyLbl}>Absent</Text>
-        </View>
-        <View style={styles.tallyDivider} />
-        <View style={styles.tallyItem}>
-          <Text style={styles.tallyVal}>
-            {dayLogs.length ? Math.round((presentCount / dayLogs.length) * 100) : 0}%
-          </Text>
-          <Text style={styles.tallyLbl}>Rate</Text>
+      {/* Daily Stats */}
+      <View
+        style={[
+          styles.tallyHUDCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <View style={styles.tallyStatsRow}>
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>{presentCount}</Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+          </View>
+          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.rose }]}>
+              {dayLogs.length - presentCount}
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+          </View>
+          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View style={styles.tallyStatCol}>
+            <Text style={[styles.tallyDigit, { color: theme.text }]}>
+              {dayLogs.length ? Math.round((presentCount / dayLogs.length) * 100) : 0}%
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Rate</Text>
+          </View>
         </View>
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : dayLogs.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="calendar-remove-outline"
-          title="No logs for this date"
-          desc="No attendance records were found on this specific calendar day."
+          title="No records for this date"
+          desc="Select another calendar day or capture attendance in class."
         />
       ) : (
         dayLogs.map((log, i) => (
-          <View key={log.id || i} style={styles.directoryCard}>
-            <View style={styles.avatarCircle}>
-              <MaterialCommunityIcons name="account" size={22} color={theme.primaryLight} />
+          <View
+            key={log.id || i}
+            style={[
+              styles.rosterItemCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
+          >
+            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+              <MaterialCommunityIcons name="account" size={20} color={theme.cyan} />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.directoryName}>
+              <Text style={[styles.rosterItemName, { color: theme.text }]}>
                 {log.name || log.student_id || "Student Attendance"}
               </Text>
-              <Text style={styles.directoryId}>Session #{log.session_id}</Text>
+              <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
+                Session #{log.session_id}
+              </Text>
             </View>
-            <StatusPill
+            <HoloStatusPill
               label={log.status || "Present"}
-              tone={
-                String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"
-              }
+              tone={String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"}
             />
           </View>
         ))
@@ -2681,9 +3766,10 @@ function AdminAttendanceView() {
 }
 
 // ---------------------------------------------------------------------------
-// STUDENT ATTENDANCE LOGS
+// STUDENT: PERSONAL ATTENDANCE LOGS
 // ---------------------------------------------------------------------------
 function StudentAttendanceView() {
+  const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
 
@@ -2696,53 +3782,61 @@ function StudentAttendanceView() {
   }, []);
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>My Attendance Logs</Text>
-          <Text style={styles.screenSubtitle}>
-            Personal verified attendance events
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>My Attendance</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Verified personal attendance records
           </Text>
         </View>
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : items.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="calendar-check-outline"
-          title="No recorded sessions"
-          desc="Your attendance logs will populate once your instructors take attendance."
+          title="No sessions recorded yet"
+          desc="Your attendance will appear here as soon as instructors record class sessions."
         />
       ) : (
         items.map((sess, i) => {
           const isPresent = String(sess.status).toUpperCase() === "PRESENT";
           return (
-            <View key={sess.session_id || i} style={styles.studentLogCard}>
+            <View
+              key={sess.session_id || i}
+              style={[
+                styles.studentSessionCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.border },
+              ]}
+            >
               <View
                 style={[
-                  styles.studentLogBadge,
-                  { backgroundColor: isPresent ? theme.successPale : theme.dangerPale },
+                  styles.studentSessionIconBadge,
+                  { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
                 ]}
               >
                 <MaterialCommunityIcons
                   name={isPresent ? "check-bold" : "close-thick"}
-                  size={18}
-                  color={isPresent ? theme.success : theme.danger}
+                  size={16}
+                  color={isPresent ? theme.emerald : theme.rose}
                 />
               </View>
               <View style={{ flex: 1, paddingLeft: 12 }}>
-                <Text style={styles.studentLogTitle}>{sess.title || sess.course}</Text>
-                <Text style={styles.studentLogMeta}>
+                <Text style={[styles.studentSessionTitle, { color: theme.text }]}>
+                  {sess.title || sess.course}
+                </Text>
+                <Text style={[styles.studentSessionMeta, { color: theme.textSecondary }]}>
                   {sess.course} • {sess.department || "Academic Dept"}
                 </Text>
-                <Text style={styles.studentLogDate}>
+                <Text style={[styles.studentSessionDate, { color: theme.muted }]}>
                   {sess.event_date} • {String(sess.starts_at).slice(0, 5)} -{" "}
                   {String(sess.ends_at).slice(0, 5)}
                   {sess.room ? ` • ${sess.room}` : ""}
                 </Text>
               </View>
-              <StatusPill
+              <HoloStatusPill
                 label={isPresent ? "Present" : "Absent"}
                 tone={isPresent ? "success" : "danger"}
               />
@@ -2755,9 +3849,10 @@ function StudentAttendanceView() {
 }
 
 // ---------------------------------------------------------------------------
-// STUDENT CLASSES SCHEDULE
+// STUDENT: CLASSES & TIMETABLE
 // ---------------------------------------------------------------------------
 function StudentClassesView() {
+  const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
 
@@ -2770,43 +3865,63 @@ function StudentClassesView() {
   }, []);
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>My Timetable & Classes</Text>
-          <Text style={styles.screenSubtitle}>
-            Enrolled course schedule & lecture halls
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Class Schedule</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Course lectures & room assignments
           </Text>
         </View>
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : items.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="book-open-outline"
-          title="No scheduled classes"
-          desc="Your academic curriculum has no assigned classes right now."
+          title="No scheduled lectures"
+          desc="Your curriculum currently has no active classes registered."
         />
       ) : (
         items.map((cls, i) => (
-          <View key={cls.session_id || i} style={styles.scheduleCard}>
-            <View style={styles.scheduleTimeBox}>
-              <Text style={styles.scheduleTimeText}>
+          <View
+            key={cls.session_id || i}
+            style={[
+              styles.scheduleRowCard,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+            ]}
+          >
+            <View
+              style={[
+                styles.scheduleTimeBadge,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <Text style={[styles.scheduleTimeStart, { color: theme.cyan }]}>
                 {String(cls.starts_at || "09:00").slice(0, 5)}
               </Text>
-              <Text style={styles.scheduleTimeEnd}>
+              <Text style={[styles.scheduleTimeFinish, { color: theme.muted }]}>
                 {String(cls.ends_at || "10:00").slice(0, 5)}
               </Text>
             </View>
             <View style={{ flex: 1, paddingLeft: 12 }}>
-              <Text style={styles.scheduleTitle}>{cls.title || cls.course}</Text>
-              <Text style={styles.scheduleMeta}>
+              <Text style={[styles.scheduleLectureTitle, { color: theme.text }]}>
+                {cls.title || cls.course}
+              </Text>
+              <Text style={[styles.scheduleLectureMeta, { color: theme.muted }]}>
                 {cls.room || "Room 101"} • {cls.program} • {cls.semester}
               </Text>
             </View>
-            <View style={styles.roomTag}>
-              <Text style={styles.roomTagText}>{cls.room || "Lab"}</Text>
+            <View
+              style={[
+                styles.roomTagHolo,
+                { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+              ]}
+            >
+              <Text style={[styles.roomTagHoloText, { color: theme.cyan }]}>
+                {cls.room || "Lab"}
+              </Text>
             </View>
           </View>
         ))
@@ -2819,6 +3934,7 @@ function StudentClassesView() {
 // ATTENDANCE HISTORY
 // ---------------------------------------------------------------------------
 function AttendanceHistoryView() {
+  const { theme } = useAppTheme();
   const [records, setRecords] = useState<any[]>([]);
   const [month, setMonth] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
@@ -2834,27 +3950,31 @@ function AttendanceHistoryView() {
       .finally(() => setBusy(false));
   }, [month]);
 
-  const sessions = Array.from(
-    new Map(records.map((x) => [x.session_id, x])).values()
-  );
+  const sessions = Array.from(new Map(records.map((x) => [x.session_id, x])).values());
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Attendance History</Text>
-          <Text style={styles.screenSubtitle}>
-            Past class sessions & verified student logs
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Session History</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Review past attendance events
           </Text>
         </View>
       </View>
 
-      <Pressable style={styles.datePickerTrigger} onPress={() => setShowPicker(true)}>
-        <MaterialCommunityIcons name="calendar-month" size={22} color={theme.primaryLight} />
-        <Text style={styles.datePickerText}>
+      <Pressable
+        style={[
+          styles.datePickerCardHolo,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+        onPress={() => setShowPicker(true)}
+      >
+        <MaterialCommunityIcons name="calendar-month" size={20} color={theme.cyan} />
+        <Text style={[styles.datePickerCardText, { color: theme.text }]}>
           {month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
         </Text>
-        <MaterialCommunityIcons name="chevron-down" size={20} color={theme.muted} />
+        <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
       </Pressable>
 
       {showPicker && (
@@ -2870,23 +3990,29 @@ function AttendanceHistoryView() {
       )}
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : sessions.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="history"
-          title="No sessions in this month"
-          desc="Pick a different month or record new class sessions."
+          title="No records in this month"
+          desc="Pick a different month or capture class attendance."
         />
       ) : (
         sessions.map((sess: any, i) => {
           const count = records.filter((r) => r.session_id === sess.session_id).length;
           return (
-            <View key={sess.session_id || i} style={styles.directoryCard}>
-              <View style={styles.avatarCircle}>
-                <MaterialCommunityIcons name="calendar-check" size={22} color={theme.primaryLight} />
+            <View
+              key={sess.session_id || i}
+              style={[
+                styles.rosterItemCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.border },
+              ]}
+            >
+              <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+                <MaterialCommunityIcons name="calendar-check" size={20} color={theme.cyan} />
               </View>
               <View style={{ flex: 1, paddingHorizontal: 12 }}>
-                <Text style={styles.directoryName}>
+                <Text style={[styles.rosterItemName, { color: theme.text }]}>
                   {sess.timestamp
                     ? new Date(sess.timestamp).toLocaleDateString(undefined, {
                         weekday: "short",
@@ -2895,10 +4021,14 @@ function AttendanceHistoryView() {
                       })
                     : `Session #${sess.session_id}`}
                 </Text>
-                <Text style={styles.directoryId}>Session ID: {sess.session_id}</Text>
-                <Text style={styles.directoryMeta}>{count} registered students verified</Text>
+                <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
+                  Session ID: {sess.session_id}
+                </Text>
+                <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
+                  {count} verified students
+                </Text>
               </View>
-              <StatusPill label={`${count} students`} tone="info" />
+              <HoloStatusPill label={`${count} students`} tone="info" />
             </View>
           );
         })
@@ -2908,9 +4038,10 @@ function AttendanceHistoryView() {
 }
 
 // ---------------------------------------------------------------------------
-// REPORTS & ANALYTICS VIEW
+// ANALYTICS & REPORTS
 // ---------------------------------------------------------------------------
 function ReportsView() {
+  const { theme } = useAppTheme();
   const [period, setPeriod] = useState("This Month");
   const [records, setRecords] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
@@ -2929,90 +4060,113 @@ function ReportsView() {
   const uniqueStudents = new Set(records.map((x) => x.student_id)).size;
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Attendance Analytics</Text>
-          <Text style={styles.screenSubtitle}>
-            Comprehensive university fidelity reporting
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Attendance Reports</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Departmental attendance overview
           </Text>
         </View>
       </View>
 
-      {/* Period Segment Tabs */}
-      <View style={styles.segmentContainer}>
+      {/* Segment Switcher */}
+      <View style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}>
         {["This Month", "This Week", "All Time"].map((tab) => (
           <Pressable
             key={tab}
-            style={[styles.segmentTab, period === tab && styles.segmentTabActive]}
+            style={[
+              styles.segmentBtnHolo,
+              period === tab && [
+                styles.segmentBtnHoloActive,
+                { backgroundColor: theme.card, borderColor: theme.borderAccent },
+              ],
+            ]}
             onPress={() => setPeriod(tab)}
           >
-            <Text style={[styles.segmentTabText, period === tab && styles.segmentTabTextActive]}>
+            <Text
+              style={[
+                styles.segmentBtnHoloText,
+                { color: theme.muted },
+                period === tab && { color: theme.cyan, fontWeight: "800" },
+              ]}
+            >
               {tab}
             </Text>
           </Pressable>
         ))}
       </View>
 
-      {/* Report Cards */}
-      <View style={styles.grid2x2}>
-        <MetricCard
+      <View style={styles.kpiGridMatrix}>
+        <HoloMetricCard
           label="Total Records"
           value={String(records.length)}
-          sub="Verified attendances"
+          delta="Verified attendances"
           icon="clipboard-text-outline"
-          color={theme.primaryLight}
-          bgColor={theme.primaryPale}
+          color={theme.cyan}
+          bgColor={theme.cyanGlow}
         />
-        <MetricCard
+        <HoloMetricCard
           label="Sessions"
           value={String(sessions.length)}
-          sub="Conducted classes"
+          delta="Conducted classes"
           icon="calendar-check"
-          color={theme.accent}
-          bgColor={theme.accentLight}
+          color={theme.amber}
+          bgColor={theme.amberGlow}
         />
-        <MetricCard
+        <HoloMetricCard
           label="Attendees"
           value={String(uniqueStudents)}
-          sub="Unique students"
+          delta="Unique scholars"
           icon="account-group"
-          color={theme.success}
-          bgColor={theme.successPale}
+          color={theme.emerald}
+          bgColor={theme.emeraldGlow}
         />
-        <MetricCard
-          label="AI Model"
-          value="v2.4"
-          sub="InsightFace CUDA"
-          icon="chip"
-          color="#8B5CF6"
-          bgColor="#F5F3FF"
+        <HoloMetricCard
+          label="Engine Status"
+          value="Online"
+          delta="High Accuracy AI"
+          icon="check-circle"
+          color={theme.purple}
+          bgColor={theme.purpleGlow}
         />
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : sessions.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="chart-bar"
           title="No analytics recorded"
-          desc="Analytics will accumulate as teachers run facial attendance sessions."
+          desc="Analytics populate as faculty execute class attendance sessions."
         />
       ) : (
-        <View style={styles.formCard}>
-          <Text style={styles.formCardTitle}>RECENT ATTENDANCE SESSIONS</Text>
+        <View
+          style={[
+            styles.glassFormCard,
+            { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+          ]}
+        >
+          <Text style={[styles.formGroupHeading, { color: theme.muted }]}>SESSIONS IN PERIOD</Text>
           {sessions.map((sess: any, i) => (
-            <View key={sess.session_id || i} style={styles.reportSessionRow}>
-              <View style={styles.reportSessionIcon}>
-                <MaterialCommunityIcons name="calendar-check" size={20} color={theme.primaryLight} />
+            <View
+              key={sess.session_id || i}
+              style={[styles.reportSessionItemRow, { borderBottomColor: theme.border }]}
+            >
+              <View
+                style={[styles.reportSessionIconCircle, { backgroundColor: theme.cyanGlow }]}
+              >
+                <MaterialCommunityIcons name="calendar-check" size={18} color={theme.cyan} />
               </View>
               <View style={{ flex: 1, paddingLeft: 10 }}>
-                <Text style={styles.reportSessionTitle}>
+                <Text style={[styles.reportSessionItemTitle, { color: theme.text }]}>
                   {sess.timestamp ? new Date(sess.timestamp).toLocaleDateString() : "Session"}
                 </Text>
-                <Text style={styles.reportSessionSub}>Session #{sess.session_id}</Text>
+                <Text style={[styles.reportSessionItemSub, { color: theme.muted }]}>
+                  Session #{sess.session_id}
+                </Text>
               </View>
-              <StatusPill
+              <HoloStatusPill
                 label={`${records.filter((r) => r.session_id === sess.session_id).length} logs`}
                 tone="info"
               />
@@ -3025,9 +4179,10 @@ function ReportsView() {
 }
 
 // ---------------------------------------------------------------------------
-// NOTIFICATIONS & DISPATCHES
+// NOTIFICATIONS VIEW
 // ---------------------------------------------------------------------------
 function NotificationsView() {
+  const { theme } = useAppTheme();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
@@ -3060,59 +4215,96 @@ function NotificationsView() {
   const visible = items.filter((n) => filter === "all" || !n.is_read);
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Notifications</Text>
-          <Text style={styles.screenSubtitle}>
-            System dispatches & biometric alerts
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Notifications</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Academic alerts & updates
           </Text>
         </View>
-        <Pressable style={styles.markAllBtn} onPress={markAllRead}>
-          <Text style={styles.markAllBtnText}>Mark all read</Text>
+        <Pressable
+          style={[
+            styles.markAllBtnHolo,
+            { backgroundColor: theme.bgElevated, borderColor: theme.border },
+          ]}
+          onPress={markAllRead}
+        >
+          <Text style={[styles.markAllBtnHoloText, { color: theme.cyan }]}>Mark all read</Text>
         </Pressable>
       </View>
 
-      <View style={styles.segmentContainer}>
+      <View style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}>
         <Pressable
-          style={[styles.segmentTab, filter === "all" && styles.segmentTabActive]}
+          style={[
+            styles.segmentBtnHolo,
+            filter === "all" && [
+              styles.segmentBtnHoloActive,
+              { backgroundColor: theme.card, borderColor: theme.borderAccent },
+            ],
+          ]}
           onPress={() => setFilter("all")}
         >
-          <Text style={[styles.segmentTabText, filter === "all" && styles.segmentTabTextActive]}>
+          <Text
+            style={[
+              styles.segmentBtnHoloText,
+              { color: theme.muted },
+              filter === "all" && { color: theme.cyan, fontWeight: "800" },
+            ]}
+          >
             All ({items.length})
           </Text>
         </Pressable>
         <Pressable
-          style={[styles.segmentTab, filter === "unread" && styles.segmentTabActive]}
+          style={[
+            styles.segmentBtnHolo,
+            filter === "unread" && [
+              styles.segmentBtnHoloActive,
+              { backgroundColor: theme.card, borderColor: theme.borderAccent },
+            ],
+          ]}
           onPress={() => setFilter("unread")}
         >
-          <Text style={[styles.segmentTabText, filter === "unread" && styles.segmentTabTextActive]}>
+          <Text
+            style={[
+              styles.segmentBtnHoloText,
+              { color: theme.muted },
+              filter === "unread" && { color: theme.cyan, fontWeight: "800" },
+            ]}
+          >
             Unread ({items.filter((x) => !x.is_read).length})
           </Text>
         </Pressable>
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : visible.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="bell-check-outline"
           title="All caught up!"
-          desc="No new notifications require your attention."
+          desc="You have no unread notifications."
         />
       ) : (
         visible.map((notif) => (
           <Pressable
             key={notif.id}
-            style={[styles.notifCard, !notif.is_read && styles.notifCardUnread]}
+            style={[
+              styles.notifCardHolo,
+              { backgroundColor: theme.cardGlass, borderColor: theme.border },
+              !notif.is_read && {
+                borderColor: theme.borderAccent,
+                backgroundColor: theme.cyanGlow,
+              },
+            ]}
             onPress={() => !notif.is_read && markOne(notif.id)}
           >
             <View
               style={[
-                styles.notifIconCircle,
+                styles.notifIconCircleHolo,
                 {
                   backgroundColor:
-                    notif.category === "alert" ? theme.dangerPale : theme.primaryPale,
+                    notif.category === "alert" ? theme.roseGlow : theme.cyanGlow,
                 },
               ]}
             >
@@ -3124,18 +4316,22 @@ function NotificationsView() {
                       ? "calendar-check"
                       : "bell"
                 }
-                size={20}
-                color={notif.category === "alert" ? theme.danger : theme.primaryLight}
+                size={18}
+                color={notif.category === "alert" ? theme.rose : theme.cyan}
               />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={styles.notifTitle}>{notif.title}</Text>
-              <Text style={styles.notifBody}>{notif.body}</Text>
-              <Text style={styles.notifTime}>
+              <Text style={[styles.notifTitleHolo, { color: theme.text }]}>{notif.title}</Text>
+              <Text style={[styles.notifBodyHolo, { color: theme.textSecondary }]}>
+                {notif.body}
+              </Text>
+              <Text style={[styles.notifTimeHolo, { color: theme.muted }]}>
                 {notif.created_at ? new Date(notif.created_at).toLocaleString() : ""}
               </Text>
             </View>
-            {!notif.is_read && <View style={styles.unreadPill} />}
+            {!notif.is_read && (
+              <View style={[styles.unreadDotHolo, { backgroundColor: theme.cyan }]} />
+            )}
           </Pressable>
         ))
       )}
@@ -3147,6 +4343,7 @@ function NotificationsView() {
 // ACADEMIC HIERARCHY TREE
 // ---------------------------------------------------------------------------
 function AcademicHierarchyView() {
+  const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [expandedSchool, setExpandedSchool] = useState<string | null>(null);
@@ -3154,9 +4351,8 @@ function AcademicHierarchyView() {
   const [busy, setBusy] = useState(true);
 
   useEffect(() => {
-    http
-      .get("/academic/sections")
-      .then((r) => setSections(r.data?.sections || []))
+    loadAcademicSections()
+      .then(setSections)
       .catch(() => setSections([]))
       .finally(() => setBusy(false));
   }, []);
@@ -3167,34 +4363,39 @@ function AcademicHierarchyView() {
   const schools = Array.from(new Set(visible.map((s) => s.school)));
 
   return (
-    <View style={styles.screenWrapper}>
-      <View style={styles.screenHeader}>
+    <View style={styles.screenLayout}>
+      <View style={styles.screenTopHeader}>
         <View>
-          <Text style={styles.screenTitle}>Academic Hierarchy</Text>
-          <Text style={styles.screenSubtitle}>
-            Schools, Faculties, Departments & Programs
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Academic Structure</Text>
+          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+            Schools, Faculties, and Departments
           </Text>
         </View>
       </View>
 
-      <View style={styles.searchBar}>
-        <MaterialCommunityIcons name="magnify" size={22} color={theme.muted} />
+      <View
+        style={[
+          styles.searchBarGlass,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        ]}
+      >
+        <MaterialCommunityIcons name="magnify" size={20} color={theme.cyan} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInputHolo, { color: theme.text }]}
           value={search}
           onChangeText={setSearch}
-          placeholder="Search academic branches..."
+          placeholder="Search academic departments..."
           placeholderTextColor={theme.muted}
         />
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.primaryLight} style={{ margin: 30 }} />
+        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
       ) : schools.length === 0 ? (
-        <EmptyState
+        <HoloEmptyState
           icon="layers-outline"
           title="No academic sections found"
-          desc="Academic hierarchy branches are managed by university administrators."
+          desc="Academic sections are managed by university administrators."
         />
       ) : (
         schools.map((school) => {
@@ -3203,19 +4404,29 @@ function AcademicHierarchyView() {
             new Set(visible.filter((x) => x.school === school).map((x) => x.faculty))
           );
           return (
-            <View key={school} style={styles.hierarchyCard}>
+            <View
+              key={school}
+              style={[
+                styles.hierarchyBranchCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.border },
+              ]}
+            >
               <Pressable
-                style={styles.hierarchyCardHeader}
+                style={styles.hierarchyBranchHeader}
                 onPress={() => setExpandedSchool(isSchoolOpen ? null : school)}
               >
-                <MaterialCommunityIcons name="school" size={22} color={theme.primaryLight} />
-                <Text style={styles.hierarchySchoolName}>{school}</Text>
-                <View style={styles.hierarchyCountBadge}>
-                  <Text style={styles.hierarchyCountText}>{faculties.length} Depts</Text>
+                <MaterialCommunityIcons name="school" size={20} color={theme.cyan} />
+                <Text style={[styles.hierarchySchoolTitle, { color: theme.text }]}>
+                  {school}
+                </Text>
+                <View style={[styles.hierarchyCountPill, { backgroundColor: theme.bgElevated }]}>
+                  <Text style={[styles.hierarchyCountPillText, { color: theme.muted }]}>
+                    {faculties.length} Depts
+                  </Text>
                 </View>
                 <MaterialCommunityIcons
                   name={isSchoolOpen ? "chevron-up" : "chevron-down"}
-                  size={20}
+                  size={19}
                   color={theme.muted}
                 />
               </Pressable>
@@ -3226,28 +4437,45 @@ function AcademicHierarchyView() {
                   const isFacOpen = expandedFaculty === key || (!!search && faculties.length === 1);
                   const programs = visible.filter((x) => x.school === school && x.faculty === fac);
                   return (
-                    <View key={fac} style={styles.hierarchyFacultySection}>
+                    <View
+                      key={fac}
+                      style={[styles.hierarchyFacultySection, { borderTopColor: theme.border }]}
+                    >
                       <Pressable
-                        style={styles.hierarchyFacultyHeader}
+                        style={styles.hierarchyFacultyBar}
                         onPress={() => setExpandedFaculty(isFacOpen ? null : key)}
                       >
-                        <MaterialCommunityIcons name="folder-outline" size={18} color={theme.text} />
-                        <Text style={styles.hierarchyFacultyName}>{fac}</Text>
+                        <MaterialCommunityIcons
+                          name="folder-outline"
+                          size={17}
+                          color={theme.text}
+                        />
+                        <Text style={[styles.hierarchyFacultyTitle, { color: theme.text }]}>
+                          {fac}
+                        </Text>
                         <MaterialCommunityIcons
                           name={isFacOpen ? "chevron-up" : "chevron-down"}
-                          size={18}
+                          size={17}
                           color={theme.muted}
                         />
                       </Pressable>
 
                       {isFacOpen && (
-                        <View style={styles.hierarchyProgramsList}>
+                        <View style={styles.hierarchyProgramsStack}>
                           {programs.map((prog, pIdx) => (
-                            <View key={pIdx} style={styles.hierarchyProgramItem}>
-                              <Text style={styles.hierarchyBullet}>•</Text>
+                            <View key={pIdx} style={styles.hierarchyProgramLine}>
+                              <Text style={[styles.hierarchyBulletDot, { color: theme.muted }]}>
+                                •
+                              </Text>
                               <View style={{ flex: 1 }}>
-                                <Text style={styles.hierarchyProgDept}>{prog.department}</Text>
-                                <Text style={styles.hierarchyProgTitle}>
+                                <Text
+                                  style={[styles.hierarchyDeptName, { color: theme.text }]}
+                                >
+                                  {prog.department}
+                                </Text>
+                                <Text
+                                  style={[styles.hierarchyProgName, { color: theme.muted }]}
+                                >
                                   {prog.program} • {prog.semester}
                                 </Text>
                               </View>
@@ -3270,6 +4498,7 @@ function AcademicHierarchyView() {
 // PROFILE SCREENS
 // ---------------------------------------------------------------------------
 function AdminProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
 
   useEffect(() => {
@@ -3280,26 +4509,40 @@ function AdminProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
   }, []);
 
   return (
-    <View style={styles.screenWrapper}>
+    <View style={styles.screenLayout}>
       <ProfileHeroCard profile={profile} role="ADMINISTRATOR" setProfile={setProfile} />
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>ADMINISTRATIVE PRIVILEGES</Text>
-        <DetailRow label="Role Access" value="Full System Superuser" />
-        <DetailRow label="Username" value={profile.username || "admin"} />
-        <DetailRow label="Email" value={profile.email || "admin@pratyaksh.edu"} />
-        <DetailRow label="AI Server" value="NVIDIA GPU Accelerated (CUDA 12.4)" />
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACCOUNT PRIVILEGES</Text>
+        <HoloDetailRow label="Role Access" value="University Superuser" />
+        <HoloDetailRow label="Username" value={profile.username || "admin"} />
+        <HoloDetailRow label="Email" value={profile.email || "admin@pratyaksh.edu"} />
+        <HoloDetailRow label="Security" value="Encrypted Profile" />
       </View>
 
-      <Pressable style={styles.signOutButton} onPress={onLogout}>
-        <MaterialCommunityIcons name="logout" size={20} color={theme.danger} />
-        <Text style={styles.signOutButtonText}>Sign Out from Administrator</Text>
+      <Pressable
+        style={[
+          styles.signOutBtnHolo,
+          { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+        ]}
+        onPress={onLogout}
+      >
+        <MaterialCommunityIcons name="logout" size={19} color={theme.rose} />
+        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>
+          Sign Out Administrator
+        </Text>
       </Pressable>
     </View>
   );
 }
 
 function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
   const [assignments, setAssignments] = useState<any[]>([]);
 
@@ -3314,20 +4557,32 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
   }, []);
 
   return (
-    <View style={styles.screenWrapper}>
+    <View style={styles.screenLayout}>
       <ProfileHeroCard profile={profile} role="FACULTY INSTRUCTOR" setProfile={setProfile} />
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>ASSIGNED COURSES & SECTIONS</Text>
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ASSIGNED COURSES</Text>
         {assignments.length === 0 ? (
-          <Text style={styles.subtleText}>No specific course sections assigned yet.</Text>
+          <Text style={[styles.emptySubText, { color: theme.muted }]}>
+            No course sections assigned yet.
+          </Text>
         ) : (
           assignments.map((item, i) => (
-            <View key={i} style={styles.assignedSubjectRow}>
-              <MaterialCommunityIcons name="book-outline" size={20} color={theme.primaryLight} />
+            <View
+              key={i}
+              style={[styles.assignedCourseRow, { borderBottomColor: theme.border }]}
+            >
+              <MaterialCommunityIcons name="book-outline" size={19} color={theme.cyan} />
               <View style={{ flex: 1, paddingLeft: 10 }}>
-                <Text style={styles.assignedSubjectTitle}>{item.subject}</Text>
-                <Text style={styles.assignedSubjectSub}>
+                <Text style={[styles.assignedCourseTitle, { color: theme.text }]}>
+                  {item.subject}
+                </Text>
+                <Text style={[styles.assignedCourseSub, { color: theme.muted }]}>
                   {item.semester || "Semester"} • {item.students || 0} Students
                 </Text>
               </View>
@@ -3336,15 +4591,22 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
         )}
       </View>
 
-      <Pressable style={styles.signOutButton} onPress={onLogout}>
-        <MaterialCommunityIcons name="logout" size={20} color={theme.danger} />
-        <Text style={styles.signOutButtonText}>Sign Out Account</Text>
+      <Pressable
+        style={[
+          styles.signOutBtnHolo,
+          { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+        ]}
+        onPress={onLogout}
+      >
+        <MaterialCommunityIcons name="logout" size={19} color={theme.rose} />
+        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>Sign Out Account</Text>
       </Pressable>
     </View>
   );
 }
 
 function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
+  const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
 
   useEffect(() => {
@@ -3355,25 +4617,36 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
   }, []);
 
   return (
-    <View style={styles.screenWrapper}>
+    <View style={styles.screenLayout}>
       <ProfileHeroCard profile={profile} role="STUDENT SCHOLAR" setProfile={setProfile} />
 
-      <View style={styles.formCard}>
-        <Text style={styles.formCardTitle}>ACADEMIC ENROLLMENT</Text>
-        <DetailRow label="Student ID" value={profile.student_id || "STU-2026"} />
-        <DetailRow label="Department" value={profile.department || "Engineering"} />
-        <DetailRow label="Program" value={profile.program || "Computer Science"} />
-        <DetailRow label="Semester" value={profile.semester || "Semester 4"} />
-        <DetailRow label="Current GPA" value={String(profile.gpa || "3.85")} />
-        <DetailRow
-          label="Biometric Face ID"
-          value={profile.face_registered ? "Verified & Registered" : "Active (Embedding Created)"}
+      <View
+        style={[
+          styles.glassFormCard,
+          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+        ]}
+      >
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACADEMIC ENROLLMENT</Text>
+        <HoloDetailRow label="Student ID" value={profile.student_id || "STU-2026"} />
+        <HoloDetailRow label="Department" value={profile.department || "Engineering"} />
+        <HoloDetailRow label="Program" value={profile.program || "Computer Science"} />
+        <HoloDetailRow label="Semester" value={profile.semester || "Semester 4"} />
+        <HoloDetailRow label="Current GPA" value={String(profile.gpa || "3.85")} />
+        <HoloDetailRow
+          label="Face Profile"
+          value={profile.face_registered ? "Active & Verified" : "Active (Profile Registered)"}
         />
       </View>
 
-      <Pressable style={styles.signOutButton} onPress={onLogout}>
-        <MaterialCommunityIcons name="logout" size={20} color={theme.danger} />
-        <Text style={styles.signOutButtonText}>Sign Out Account</Text>
+      <Pressable
+        style={[
+          styles.signOutBtnHolo,
+          { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+        ]}
+        onPress={onLogout}
+      >
+        <MaterialCommunityIcons name="logout" size={19} color={theme.rose} />
+        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>Sign Out Account</Text>
       </Pressable>
     </View>
   );
@@ -3391,6 +4664,8 @@ function ProfileHeroCard({
   role: string;
   setProfile: (p: any) => void;
 }) {
+  const { theme } = useAppTheme();
+
   const choosePhoto = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
@@ -3407,7 +4682,9 @@ function ProfileHeroCard({
       type: asset.mimeType || "image/jpeg",
     } as any);
     try {
-      await http.post("/auth/profile/photo", form);
+      await http.post("/auth/profile/photo", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
       setProfile({ ...profile, profile_photo_base64: asset.uri });
       Alert.alert("Success", "Profile photo updated successfully.");
     } catch {
@@ -3419,64 +4696,89 @@ function ProfileHeroCard({
     profile.display_name || profile.name || profile.username || "University Member";
 
   return (
-    <View style={styles.profileHeroCard}>
-      <Pressable onPress={choosePhoto} style={styles.profileHeroAvatarWrap}>
+    <View
+      style={[
+        styles.profileHeroCardHolo,
+        { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+      ]}
+    >
+      <Pressable onPress={choosePhoto} style={styles.profileAvatarWrapHolo}>
         {profile.profile_photo_base64 ? (
           <Image
             source={{ uri: profile.profile_photo_base64 }}
-            style={styles.profileHeroAvatarImg}
+            style={[styles.profileAvatarImgHolo, { borderColor: theme.cyan }]}
           />
         ) : (
-          <View style={styles.profileHeroAvatarFallback}>
-            <Text style={styles.profileHeroAvatarInitial}>
+          <View
+            style={[
+              styles.profileAvatarFallbackHolo,
+              { backgroundColor: theme.card, borderColor: theme.cyan },
+            ]}
+          >
+            <Text style={[styles.profileAvatarFallbackInitial, { color: theme.cyan }]}>
               {name.charAt(0).toUpperCase()}
             </Text>
           </View>
         )}
-        <View style={styles.avatarEditPill}>
-          <MaterialCommunityIcons name="camera" size={12} color="#fff" />
+        <View style={[styles.avatarEditPillHolo, { backgroundColor: theme.cyan }]}>
+          <MaterialCommunityIcons
+            name="camera"
+            size={12}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
         </View>
       </Pressable>
 
-      <Text style={styles.profileHeroName}>{name}</Text>
-      <View style={styles.profileHeroRoleTag}>
-        <Text style={styles.profileHeroRoleText}>{role}</Text>
+      <Text style={[styles.profileHeroNameHolo, { color: theme.text }]}>{name}</Text>
+      <View
+        style={[
+          styles.profileRoleBadgeHolo,
+          { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+        ]}
+      >
+        <Text style={[styles.profileRoleBadgeText, { color: theme.cyan }]}>{role}</Text>
       </View>
-      <Text style={styles.profileHeroEmail}>
+      <Text style={[styles.profileHeroEmailHolo, { color: theme.muted }]}>
         {profile.email || `${profile.username || "user"}@university.edu`}
       </Text>
     </View>
   );
 }
 
-function MetricCard({
+function HoloMetricCard({
   label,
   value,
-  sub,
+  delta,
   icon,
   color,
   bgColor,
 }: {
   label: string;
   value: string;
-  sub: string;
+  delta: string;
   icon: string;
   color: string;
   bgColor: string;
 }) {
+  const { theme } = useAppTheme();
   return (
-    <View style={styles.metricCard}>
-      <View style={[styles.metricIconCircle, { backgroundColor: bgColor }]}>
-        <MaterialCommunityIcons name={icon as any} size={22} color={color} />
+    <View
+      style={[
+        styles.kpiCardHolo,
+        { backgroundColor: theme.cardGlass, borderColor: theme.border },
+      ]}
+    >
+      <View style={[styles.kpiIconBadgeHolo, { backgroundColor: bgColor }]}>
+        <MaterialCommunityIcons name={icon as any} size={20} color={color} />
       </View>
-      <Text style={styles.metricCardValue}>{value}</Text>
-      <Text style={styles.metricCardLabel}>{label}</Text>
-      <Text style={styles.metricCardSub}>{sub}</Text>
+      <Text style={[styles.kpiValueHolo, { color: theme.text }]}>{value}</Text>
+      <Text style={[styles.kpiLabelHolo, { color: theme.textSecondary }]}>{label}</Text>
+      <Text style={[styles.kpiDeltaHolo, { color: theme.muted }]}>{delta}</Text>
     </View>
   );
 }
 
-function QuickActionButton({
+function RapidCommandButton({
   title,
   desc,
   icon,
@@ -3489,61 +4791,70 @@ function QuickActionButton({
   color: string;
   onPress: () => void;
 }) {
+  const { theme } = useAppTheme();
   return (
-    <Pressable style={styles.quickActionCard} onPress={onPress}>
-      <View style={[styles.quickActionIconWrap, { backgroundColor: `${color}15` }]}>
-        <MaterialCommunityIcons name={icon as any} size={24} color={color} />
+    <Pressable
+      style={[
+        styles.rapidCmdCardHolo,
+        { backgroundColor: theme.cardGlass, borderColor: theme.border },
+      ]}
+      onPress={onPress}
+    >
+      <View style={[styles.rapidCmdIconBadge, { backgroundColor: `${color}18` }]}>
+        <MaterialCommunityIcons name={icon as any} size={22} color={color} />
       </View>
-      <Text style={styles.quickActionTitle}>{title}</Text>
-      <Text style={styles.quickActionDesc}>{desc}</Text>
+      <Text style={[styles.rapidCmdTitleHolo, { color: theme.text }]}>{title}</Text>
+      <Text style={[styles.rapidCmdDescHolo, { color: theme.muted }]}>{desc}</Text>
     </Pressable>
   );
 }
 
-function StatusPill({
+function HoloStatusPill({
   label,
   tone,
 }: {
   label: string;
   tone: "success" | "danger" | "warning" | "info" | "neutral";
 }) {
+  const { theme } = useAppTheme();
   const bg =
     tone === "success"
-      ? theme.successPale
+      ? theme.emeraldGlow
       : tone === "danger"
-        ? theme.dangerPale
+        ? theme.roseGlow
         : tone === "warning"
-          ? theme.warningPale
+          ? theme.amberGlow
           : tone === "info"
-            ? theme.infoPale
-            : theme.surfaceAlt;
+            ? theme.cyanGlow
+            : theme.bgElevated;
   const fg =
     tone === "success"
-      ? theme.success
+      ? theme.emerald
       : tone === "danger"
-        ? theme.danger
+        ? theme.rose
         : tone === "warning"
-          ? theme.warning
+          ? theme.amber
           : tone === "info"
-            ? theme.info
+            ? theme.cyan
             : theme.textSecondary;
   return (
-    <View style={[styles.statusPill, { backgroundColor: bg }]}>
-      <Text style={[styles.statusPillText, { color: fg }]}>{label}</Text>
+    <View style={[styles.statusPillHolo, { backgroundColor: bg }]}>
+      <Text style={[styles.statusPillHoloText, { color: fg }]}>{label}</Text>
     </View>
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
+function HoloDetailRow({ label, value }: { label: string; value: string }) {
+  const { theme } = useAppTheme();
   return (
-    <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue}>{value}</Text>
+    <View style={[styles.holoDetailRow, { borderBottomColor: theme.border }]}>
+      <Text style={[styles.holoDetailLabel, { color: theme.muted }]}>{label}</Text>
+      <Text style={[styles.holoDetailValue, { color: theme.text }]}>{value}</Text>
     </View>
   );
 }
 
-function EmptyState({
+function HoloEmptyState({
   icon,
   title,
   desc,
@@ -3556,16 +4867,32 @@ function EmptyState({
   actionText?: string;
   onAction?: () => void;
 }) {
+  const { theme } = useAppTheme();
   return (
-    <View style={styles.emptyStateCard}>
-      <View style={styles.emptyIconCircle}>
-        <MaterialCommunityIcons name={icon as any} size={36} color={theme.muted} />
+    <View
+      style={[
+        styles.emptyCardHolo,
+        { backgroundColor: theme.cardGlass, borderColor: theme.border },
+      ]}
+    >
+      <View style={[styles.emptyIconBadgeHolo, { backgroundColor: theme.cyanGlow }]}>
+        <MaterialCommunityIcons name={icon as any} size={32} color={theme.cyan} />
       </View>
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyDesc}>{desc}</Text>
+      <Text style={[styles.emptyTitleHolo, { color: theme.text }]}>{title}</Text>
+      <Text style={[styles.emptyDescHolo, { color: theme.muted }]}>{desc}</Text>
       {!!actionText && !!onAction && (
-        <Pressable style={styles.emptyActionBtn} onPress={onAction}>
-          <Text style={styles.emptyActionText}>{actionText}</Text>
+        <Pressable
+          style={[styles.emptyActionBtnHolo, { backgroundColor: theme.cyan }]}
+          onPress={onAction}
+        >
+          <Text
+            style={[
+              styles.emptyActionBtnHoloText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            {actionText}
+          </Text>
         </Pressable>
       )}
     </View>
@@ -3573,23 +4900,17 @@ function EmptyState({
 }
 
 // ---------------------------------------------------------------------------
-// ACADEMIC CASCADE FILTER / SELECTION
+// ACADEMIC CASCADE COMPONENT
 // ---------------------------------------------------------------------------
-function AcademicCascade({
-  onApply,
-  onSectionChange,
-}: {
-  onApply?: (selection: any) => void;
-  onSectionChange?: (sectionId: number | null) => void;
-}) {
+function AcademicCascade({ onApply }: { onApply?: (selection: any) => void }) {
+  const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
   const [selection, setSelection] = useState<any>({});
   const [modalOpen, setModalOpen] = useState<string | null>(null);
 
   useEffect(() => {
-    http
-      .get("/academic/sections")
-      .then((r) => setSections(r.data?.sections || []))
+    loadAcademicSections()
+      .then(setSections)
       .catch(() => setSections([]));
   }, []);
 
@@ -3612,18 +4933,20 @@ function AcademicCascade({
     const selectedValue = selection[fieldKey] || `Select ${label}`;
     return (
       <View key={fieldKey} style={styles.formGroup}>
-        <Text style={styles.fieldLabel}>{label}</Text>
+        <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
         <Pressable
           disabled={disabled || !options.length}
           style={[
-            styles.selectTrigger,
-            (disabled || !options.length) && styles.selectTriggerDisabled,
+            styles.selectTriggerHolo,
+            { backgroundColor: theme.bgElevated, borderColor: theme.border },
+            (disabled || !options.length) && styles.selectTriggerHoloDisabled,
           ]}
           onPress={() => setModalOpen(fieldKey)}
         >
           <Text
             style={[
-              styles.selectTriggerText,
+              styles.selectTriggerHoloText,
+              { color: theme.text },
               (disabled || !options.length) && { color: theme.muted },
             ]}
           >
@@ -3631,8 +4954,8 @@ function AcademicCascade({
           </Text>
           <MaterialCommunityIcons
             name="chevron-down"
-            size={20}
-            color={disabled ? theme.border : theme.primaryLight}
+            size={19}
+            color={disabled ? theme.border : theme.cyan}
           />
         </Pressable>
 
@@ -3643,36 +4966,44 @@ function AcademicCascade({
             animationType="fade"
             onRequestClose={() => setModalOpen(null)}
           >
-            <Pressable style={styles.modalOverlay} onPress={() => setModalOpen(null)}>
-              <Pressable style={styles.dropdownModal} onPress={(e) => e.stopPropagation()}>
-                <Text style={styles.dropdownTitle}>Select {label}</Text>
+            <Pressable style={styles.modalBackdropOverlay} onPress={() => setModalOpen(null)}>
+              <Pressable
+                style={[
+                  styles.dropdownModalHolo,
+                  { backgroundColor: theme.card, borderColor: theme.borderBright },
+                ]}
+                onPress={(e) => e.stopPropagation()}
+              >
+                <Text style={[styles.dropdownModalTitle, { color: theme.text }]}>
+                  Select {label}
+                </Text>
                 <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled">
                   {options.map((opt) => (
                     <Pressable
                       key={opt}
-                      style={styles.dropdownOption}
+                      style={[styles.dropdownOptionHolo, { borderBottomColor: theme.border }]}
                       onPress={() => {
                         setSelection((prev: any) => ({
                           ...prev,
                           [fieldKey]: opt,
                           ...(fieldKey === "school"
-                            ? { faculty: "", department: "", program: "", semester: "", section: "" }
+                            ? { faculty: "", department: "", program: "", semester: "" }
                             : fieldKey === "faculty"
-                              ? { department: "", program: "", semester: "", section: "" }
+                              ? { department: "", program: "", semester: "" }
                               : fieldKey === "department"
-                                ? { program: "", semester: "", section: "" }
+                                ? { program: "", semester: "" }
                                 : fieldKey === "program"
-                                  ? { semester: "", section: "" }
-                                  : fieldKey === "semester"
-                                    ? { section: "" }
+                                  ? { semester: "" }
                                   : {}),
                         }));
                         setModalOpen(null);
                       }}
                     >
-                      <Text style={styles.dropdownOptionText}>{opt}</Text>
+                      <Text style={[styles.dropdownOptionTextHolo, { color: theme.text }]}>
+                        {opt}
+                      </Text>
                       {selection[fieldKey] === opt && (
-                        <MaterialCommunityIcons name="check" size={18} color={theme.primaryLight} />
+                        <MaterialCommunityIcons name="check" size={17} color={theme.cyan} />
                       )}
                     </Pressable>
                   ))}
@@ -3687,22 +5018,9 @@ function AcademicCascade({
 
   const has = !!selection.school;
 
-  useEffect(() => {
-    const match = sections.find(
-      (section) =>
-        section.school === selection.school &&
-        section.faculty === selection.faculty &&
-        section.department === selection.department &&
-        section.program === selection.program &&
-        section.semester === selection.semester &&
-        section.section === selection.section
-    );
-    onSectionChange?.(match?.id ?? null);
-  }, [sections, selection, onSectionChange]);
-
   return (
-    <View style={{ marginTop: 12 }}>
-      <Text style={styles.formCardTitle}>ACADEMIC PLACEMENT</Text>
+    <View style={{ marginTop: 14 }}>
+      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACADEMIC PLACEMENT</Text>
       {renderSelect("School", "school", getOptions("school"))}
       {renderSelect(
         "Faculty",
@@ -3717,7 +5035,7 @@ function AcademicCascade({
         !selection.faculty
       )}
       {renderSelect(
-        "Program / Course",
+        "Program",
         "program",
         getOptions("program", {
           school: selection.school,
@@ -3737,27 +5055,30 @@ function AcademicCascade({
         }),
         !selection.program
       )}
-      {renderSelect(
-        "Section",
-        "section",
-        getOptions("section", {
-          school: selection.school,
-          faculty: selection.faculty,
-          department: selection.department,
-          program: selection.program,
-          semester: selection.semester,
-        }),
-        !selection.semester
-      )}
 
       {onApply && (
         <Pressable
           disabled={!has}
-          style={[styles.applyFilterButton, !has && { opacity: 0.5 }]}
+          style={[
+            styles.applyFilterBtnHolo,
+            { backgroundColor: theme.cyan },
+            !has && { opacity: 0.5 },
+          ]}
           onPress={() => onApply(selection)}
         >
-          <MaterialCommunityIcons name="filter-check" size={18} color="#fff" />
-          <Text style={styles.applyFilterButtonText}>Apply Filters</Text>
+          <MaterialCommunityIcons
+            name="filter-check"
+            size={17}
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
+          <Text
+            style={[
+              styles.applyFilterBtnHoloText,
+              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+            ]}
+          >
+            APPLY FILTERS
+          </Text>
         </Pressable>
       )}
     </View>
@@ -3776,6 +5097,7 @@ function TeacherHierarchyCheckboxes({
   onChange: (ids: number[]) => void;
   onScopeChange?: (scope: any) => void;
 }) {
+  const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
   const [selection, setSelection] = useState<any>({
     school: [],
@@ -3786,9 +5108,8 @@ function TeacherHierarchyCheckboxes({
   });
 
   useEffect(() => {
-    http
-      .get("/academic/sections")
-      .then((r) => setSections(r.data?.sections || []))
+    loadAcademicSections()
+      .then(setSections)
       .catch(() => setSections([]));
   }, []);
 
@@ -3832,22 +5153,35 @@ function TeacherHierarchyCheckboxes({
 
   const renderPhase = (label: string, fieldKey: string, opts: string[]) => (
     <View key={fieldKey} style={{ marginBottom: 12 }}>
-      <Text style={styles.phaseLabel}>{label}</Text>
-      <View style={styles.phaseOptionsRow}>
+      <Text style={[styles.phaseStepLabel, { color: theme.muted }]}>{label}</Text>
+      <View style={styles.phaseChipsRow}>
         {opts.map((opt) => {
           const isSelected = selection[fieldKey].includes(opt);
           return (
             <Pressable
               key={opt}
-              style={[styles.phaseOptionChip, isSelected && styles.phaseOptionChipActive]}
+              style={[
+                styles.phasePillChip,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                isSelected && {
+                  backgroundColor: theme.cyanGlow,
+                  borderColor: theme.cyan,
+                },
+              ]}
               onPress={() => toggle(fieldKey, opt)}
             >
               <MaterialCommunityIcons
                 name={isSelected ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"}
-                size={16}
-                color={isSelected ? theme.primaryLight : theme.muted}
+                size={15}
+                color={isSelected ? theme.cyan : theme.muted}
               />
-              <Text style={[styles.phaseOptionText, isSelected && styles.phaseOptionTextActive]}>
+              <Text
+                style={[
+                  styles.phasePillText,
+                  { color: isSelected ? theme.cyan : theme.muted },
+                  isSelected && { fontWeight: "800" },
+                ]}
+              >
                 {opt}
               </Text>
             </Pressable>
@@ -3858,10 +5192,10 @@ function TeacherHierarchyCheckboxes({
   );
 
   return (
-    <View style={styles.hierarchyCheckboxBox}>
-      <Text style={styles.formCardTitle}>ACADEMIC ACCESS SCOPE</Text>
-      <Text style={styles.hierarchyAccessSub}>
-        Progressively select programs and semesters this teacher manages:
+    <View style={styles.hierarchyScopeWrap}>
+      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>DEPARTMENT PERMISSIONS</Text>
+      <Text style={[styles.hierarchyScopeDesc, { color: theme.muted }]}>
+        Select the academic programs this instructor can manage:
       </Text>
       {renderPhase("1. Select School", "school", getOptions("school"))}
       {selection.school.length > 0 &&
@@ -3898,2070 +5232,1939 @@ function TeacherHierarchyCheckboxes({
 }
 
 // ---------------------------------------------------------------------------
-// STYLESHEET: MODERN, POLISHED, WORLD-CLASS MOBILE STYLES
+// MASTER STYLESHEET: BALANCED, ELEVATED, NO OVERFLOW OR UNDERFLOW
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  safe: {
+  safeArea: {
     flex: 1,
-    backgroundColor: theme.bg,
-    // Android's SafeAreaView does not apply insets. Keep controls out of a
-    // status bar when Android edge-to-edge is enabled.
-    paddingTop: Platform.OS === "android" ? NativeStatusBar.currentHeight || 0 : 0,
   },
-  loadingContainer: {
+  splashContainer: {
     flex: 1,
-    backgroundColor: theme.bg,
     alignItems: "center",
     justifyContent: "center",
   },
-  loadingCard: {
+  splashGlowBg: {
+    position: "absolute",
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    top: SCREEN_HEIGHT * 0.3,
+  },
+  splashCard: {
     alignItems: "center",
     padding: 32,
-    borderRadius: 24,
-    backgroundColor: theme.surface,
+    borderRadius: 28,
     borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.06,
-    shadowRadius: 20,
-    elevation: 3,
   },
   splashLogo: {
-    width: 90,
-    height: 90,
-    borderRadius: 20,
+    width: 88,
+    height: 88,
+    borderRadius: 22,
   },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 15,
-    fontWeight: "700",
-    color: theme.textSecondary,
+  splashPulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 18,
+    marginBottom: 6,
   },
-  centerContainer: {
+  splashTitle: {
+    fontSize: 26,
+    fontWeight: "900",
+    letterSpacing: 2,
+  },
+  splashSubtitle: {
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: "center",
+  },
+  screenCenterLoader: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 50,
+    paddingVertical: 60,
   },
-  subtleText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: theme.muted,
+  loaderSubText: {
+    marginTop: 14,
+    fontSize: 13,
+    fontWeight: "600",
   },
 
   // LOGIN SCREEN
+  loginAmbientCircle: {
+    position: "absolute",
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    top: -60,
+    alignSelf: "center",
+  },
   loginScroll: {
     paddingHorizontal: 20,
-    paddingTop: 36,
+    paddingTop: 24,
     paddingBottom: 40,
     alignItems: "center",
   },
-  loginHeader: {
+  loginTopControls: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginBottom: 16,
+  },
+  themePillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 6,
+  },
+  themePillText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  loginBrandHeader: {
     alignItems: "center",
     marginBottom: 28,
   },
-  logoBadgeContainer: {
-    width: 84,
-    height: 84,
-    borderRadius: 24,
-    backgroundColor: theme.surface,
-    borderWidth: 1,
-    borderColor: theme.border,
+  loginLogoRingWrap: {
+    position: "relative",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: theme.primaryLight,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 4,
+    marginBottom: 6,
+  },
+  loginLogoRingOuter: {
+    position: "absolute",
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    borderWidth: 1,
+    opacity: 0.4,
+  },
+  loginBrandTagline: {
+    fontSize: 13,
+    marginTop: 2,
+    marginBottom: 4,
+    fontWeight: "500",
+    letterSpacing: 0.2,
+  },
+  brandStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  logoBadgeCard: {
+    width: 90,
+    height: 90,
+    borderRadius: 28,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
   },
   loginLogo: {
-    width: 72,
-    height: 72,
-    borderRadius: 18,
+    width: 74,
+    height: 74,
+    borderRadius: 22,
   },
-  brandTitle: {
+  brandTitleText: {
     fontSize: 32,
     fontWeight: "900",
-    color: theme.primary,
-    marginTop: 14,
-    letterSpacing: -0.6,
+    marginTop: 16,
+    letterSpacing: 1.5,
   },
-  brandPill: {
+  brandStatusTag: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.primaryPale,
     paddingHorizontal: 12,
     paddingVertical: 5,
-    borderRadius: 20,
-    marginTop: 6,
+    borderRadius: 14,
+    marginTop: 8,
     gap: 6,
+    borderWidth: 1,
   },
-  brandPillText: {
-    fontSize: 12,
+  brandStatusTagText: {
+    fontSize: 10,
     fontWeight: "800",
-    color: theme.primaryLight,
+    letterSpacing: 0.8,
   },
-  loginCard: {
+  loginSurfaceCard: {
     width: "100%",
-    backgroundColor: theme.surface,
-    borderRadius: 24,
+    borderRadius: 28,
     padding: 24,
     borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 20,
-    elevation: 3,
   },
   cardHeaderTitle: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: "900",
-    color: theme.text,
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
   },
   cardHeaderSubtitle: {
     fontSize: 13,
-    color: theme.textSecondary,
     marginTop: 4,
     marginBottom: 18,
   },
-  roleTabsContainer: {
+  roleTabsWrap: {
     flexDirection: "row",
-    backgroundColor: theme.surfaceAlt,
     borderRadius: 14,
     padding: 4,
-    marginBottom: 20,
+    marginBottom: 18,
   },
-  roleTab: {
+  roleTabItem: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 10,
     gap: 6,
   },
-  roleTabActive: {
-    backgroundColor: theme.surface,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 1,
+  roleTabItemActive: {
+    borderWidth: 1,
   },
-  roleTabText: {
-    fontSize: 13,
+  roleTabLabel: {
+    fontSize: 12,
     fontWeight: "700",
-    color: theme.muted,
-  },
-  roleTabTextActive: {
-    color: theme.primaryLight,
   },
   formGroup: {
-    marginBottom: 16,
+    marginBottom: 15,
   },
-  fieldLabel: {
-    fontSize: 12,
+  fieldLabelText: {
+    fontSize: 11,
     fontWeight: "800",
-    color: theme.textSecondary,
     marginBottom: 6,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
+    letterSpacing: 0.8,
   },
-  inputContainer: {
+  inputContainerBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surfaceAlt,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: theme.border,
-    paddingHorizontal: 14,
-    height: 50,
-  },
-  inputIcon: {
-    marginRight: 10,
-  },
-  textInput: {
-    flex: 1,
-    fontSize: 15,
-    color: theme.text,
-    fontWeight: "600",
-  },
-  textInputPlain: {
-    backgroundColor: theme.surfaceAlt,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: theme.border,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     height: 48,
-    fontSize: 15,
-    color: theme.text,
+  },
+  inputPrefixIcon: {
+    marginRight: 8,
+  },
+  textInputBox: {
+    flex: 1,
+    fontSize: 14,
     fontWeight: "600",
   },
-  eyeButton: {
+  textInputHoloPlain: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    height: 46,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  eyeBtn: {
     padding: 6,
   },
-  errorBanner: {
+  errorBannerBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.dangerPale,
-    borderWidth: 1,
-    borderColor: theme.dangerBorder,
     borderRadius: 12,
+    borderWidth: 1,
     padding: 12,
-    marginBottom: 16,
+    marginBottom: 14,
     gap: 8,
   },
-  errorText: {
+  errorBannerText: {
     flex: 1,
-    fontSize: 13,
-    color: theme.danger,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "700",
   },
-  submitButton: {
-    backgroundColor: theme.primary,
-    height: 52,
+  submitButtonGlow: {
+    height: 50,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: theme.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    elevation: 4,
   },
   submitRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  submitText: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#fff",
-    letterSpacing: 0.2,
+  submitTextAction: {
+    fontSize: 14,
+    fontWeight: "900",
+    letterSpacing: 0.6,
   },
-  demoBox: {
-    marginTop: 24,
-    paddingTop: 18,
+  demoPresetsBox: {
+    marginTop: 20,
+    paddingTop: 16,
     borderTopWidth: 1,
-    borderTopColor: theme.border,
     alignItems: "center",
   },
-  demoTitle: {
+  demoPresetsTitle: {
     fontSize: 10,
     fontWeight: "900",
-    color: theme.muted,
-    letterSpacing: 0.8,
+    letterSpacing: 1,
     marginBottom: 10,
   },
-  demoChipRow: {
+  demoChipsRow: {
     flexDirection: "row",
     gap: 8,
   },
-  demoChip: {
-    backgroundColor: theme.surfaceAlt,
-    paddingHorizontal: 12,
+  demoChipPill: {
+    paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  demoChipText: {
+  demoChipPillText: {
     fontSize: 11,
     fontWeight: "800",
-    color: theme.textSecondary,
   },
-  loginFooter: {
-    marginTop: 24,
+  loginFootnote: {
+    marginTop: 22,
     fontSize: 11,
-    color: theme.muted,
     textAlign: "center",
   },
 
   // TOP BAR
-  topBar: {
+  topGlassBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    backgroundColor: theme.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: theme.border,
   },
   topBarLeft: {
-    flex: 1,
-    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
-  topBarIdentity: {
-    flex: 1,
-    minWidth: 0,
-  },
-  brandMiniBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: theme.surface,
+  brandBadgeWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
     justifyContent: "center",
   },
-  brandMiniLogo: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+  brandThumbLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
   },
-  topBrandRow: {
+  brandNameRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
-  topBrandName: {
-    fontSize: 17,
+  brandHeaderTitle: {
+    fontSize: 16,
     fontWeight: "900",
-    color: theme.primary,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
-  roleTag: {
-    backgroundColor: theme.primaryPale,
+  roleChipPill: {
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
+    borderWidth: 1,
   },
-  roleTagText: {
+  roleChipText: {
     fontSize: 9,
     fontWeight: "900",
-    color: theme.primaryLight,
+    letterSpacing: 0.6,
   },
-  topGreeting: {
-    fontSize: 12,
+  greetingHeaderSub: {
+    fontSize: 11,
     fontWeight: "600",
-    color: theme.muted,
   },
   topBarRight: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  iconButton: {
-    width: 38,
-    height: 38,
+  topIconBtn: {
+    width: 36,
+    height: 36,
     borderRadius: 12,
-    backgroundColor: theme.surfaceAlt,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
     position: "relative",
   },
-  iconButtonActive: {
-    backgroundColor: theme.primaryPale,
-  },
-  unreadDot: {
+  badgeDotGlow: {
     position: "absolute",
-    top: 8,
-    right: 8,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.danger,
-    borderWidth: 1.5,
-    borderColor: "#fff",
+    top: 7,
+    right: 7,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
   },
-  avatarPill: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: theme.primary,
+  topAvatarPill: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1.5,
     overflow: "hidden",
-  },
-  avatarPillActive: {
-    borderWidth: 2,
-    borderColor: theme.accent,
   },
   avatarImg: {
     width: "100%",
     height: "100%",
   },
-  avatarInitial: {
-    fontSize: 15,
+  avatarInitialText: {
+    fontSize: 14,
     fontWeight: "900",
-    color: "#fff",
   },
 
-  // MAIN CONTENT & BOTTOM NAV
-  mainContent: {
-    flexGrow: 1,
-    padding: 16,
-    paddingBottom: 28,
+  // SCROLL CONTENT & FLOATING ISLAND
+  scrollContentBody: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 110, // Generous clearance for floating island nav
   },
-  bottomNav: {
+  bottomFloatingIsland: {
+    position: "absolute",
+    bottom: Platform.OS === "ios" ? 20 : 12,
+    left: 16,
+    right: 16,
+    borderRadius: 24,
+    borderWidth: 1,
     flexDirection: "row",
-    backgroundColor: theme.surface,
-    borderTopWidth: 1,
-    borderTopColor: theme.border,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === "android" ? 12 : 8,
-    paddingHorizontal: 8,
     justifyContent: "space-around",
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  bottomNavItem: {
     alignItems: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  bottomTabButton: {
     flex: 1,
+    alignItems: "center",
   },
-  bottomNavIconWrap: {
+  tabIconContainer: {
     paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 14,
+    paddingVertical: 5,
+    borderRadius: 12,
   },
-  bottomNavIconWrapActive: {
-    backgroundColor: theme.primaryPale,
-  },
-  bottomNavText: {
+  tabIconContainerActive: {},
+  tabLabelText: {
     fontSize: 10,
     fontWeight: "700",
-    color: theme.muted,
     marginTop: 2,
   },
-  bottomNavTextActive: {
-    color: theme.primaryLight,
-    fontWeight: "900",
-  },
 
-  // COMMON SCREEN HEADERS & WRAPPERS
-  screenWrapper: {
+  // SCREEN COMMONS
+  screenLayout: {
     gap: 16,
   },
-  screenHeader: {
+  screenTopHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 4,
   },
-  screenTitle: {
+  screenMainTitle: {
     fontSize: 22,
     fontWeight: "900",
-    color: theme.text,
     letterSpacing: -0.4,
   },
-  screenSubtitle: {
+  screenSubTitle: {
     fontSize: 13,
-    color: theme.muted,
     marginTop: 2,
   },
-  sectionHeading: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: theme.muted,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginTop: 8,
-  },
-  sectionHeaderRow: {
+  screenAddButtonMini: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 8,
-  },
-  seeAllLink: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: theme.primaryLight,
-  },
-
-  // HERO CARDS
-  adminHeroCard: {
-    backgroundColor: theme.primary,
-    borderRadius: 20,
-    padding: 20,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    shadowColor: theme.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 14,
-    elevation: 4,
-  },
-  systemStatusPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.15)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    alignSelf: "flex-start",
-    marginBottom: 8,
-    gap: 6,
-  },
-  liveIndicatorDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: theme.success,
-  },
-  systemStatusText: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#fff",
-  },
-  adminHeroTitle: {
-    fontSize: 20,
-    fontWeight: "900",
-    color: "#fff",
-    letterSpacing: -0.3,
-  },
-  adminHeroSubtitle: {
-    fontSize: 12,
-    color: "#D9E3F8",
-    marginTop: 4,
-    lineHeight: 16,
-  },
-  heroIconBox: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 12,
-  },
-
-  teacherHeroCard: {
-    backgroundColor: theme.primary,
-    borderRadius: 20,
-    padding: 20,
-    shadowColor: theme.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 14,
-    elevation: 4,
-  },
-  teacherBadgePill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.18)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    alignSelf: "flex-start",
-    marginBottom: 10,
-    gap: 6,
-  },
-  teacherBadgeText: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#fff",
-  },
-  teacherHeroTitle: {
-    fontSize: 22,
-    fontWeight: "900",
-    color: "#fff",
-  },
-  teacherHeroSub: {
-    fontSize: 13,
-    color: "#E2E8F0",
-    marginTop: 4,
-    lineHeight: 18,
-    marginBottom: 16,
-  },
-  heroCTAButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: theme.accent,
-    borderRadius: 12,
-    paddingVertical: 12,
-    gap: 8,
-  },
-  heroCTAText: {
-    fontSize: 14,
-    fontWeight: "900",
-    color: theme.primaryDark,
-  },
-
-  // METRICS & KPIS
-  grid2x2: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  metricCard: {
-    flexBasis: "48%",
-    flexGrow: 1,
-    minWidth: 0,
-    backgroundColor: theme.surface,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  metricIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 12,
-  },
-  metricCardValue: {
-    fontSize: 24,
-    fontWeight: "900",
-    color: theme.text,
-    letterSpacing: -0.5,
-  },
-  metricCardLabel: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: theme.textSecondary,
-    marginTop: 2,
-  },
-  metricCardSub: {
-    fontSize: 11,
-    color: theme.muted,
-    marginTop: 2,
-  },
-
-  // QUICK ACTIONS
-  quickActionsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  quickActionCard: {
-    flexBasis: "48%",
-    flexGrow: 1,
-    minWidth: 0,
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  quickActionIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 10,
-  },
-  quickActionTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: theme.text,
-  },
-  quickActionDesc: {
-    fontSize: 11,
-    color: theme.muted,
-    marginTop: 2,
-  },
-
-  // ACTIVITY ROWS & DIRECTORY CARDS
-  activityRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  activityIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  activityTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: theme.text,
-  },
-  activitySubtitle: {
-    fontSize: 12,
-    color: theme.muted,
-    marginTop: 2,
-  },
-  directoryCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: theme.primaryPale,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  directoryName: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: theme.text,
-  },
-  directoryId: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.primaryLight,
-    marginTop: 2,
-  },
-  directoryMeta: {
-    fontSize: 12,
-    color: theme.muted,
-    marginTop: 1,
-  },
-
-  // SEARCH & FILTERS
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  searchBar: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.border,
-    paddingHorizontal: 12,
-    height: 48,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: theme.text,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  filterToggleBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: theme.surface,
-    borderWidth: 1,
-    borderColor: theme.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  filterToggleBtnActive: {
-    backgroundColor: theme.primaryLight,
-    borderColor: theme.primaryLight,
-  },
-  filterCascadeCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  addButtonMini: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.primaryLight,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 12,
     gap: 4,
   },
-  addButtonMiniText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#fff",
-  },
-
-  // FORMS & CARDS
-  formCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  formCardTitle: {
+  screenAddBtnMiniText: {
     fontSize: 11,
     fontWeight: "900",
-    color: theme.muted,
+    letterSpacing: 0.6,
+  },
+  sectionHeaderTitle: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1,
+    marginTop: 6,
+  },
+  sectionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 6,
+  },
+  viewAllActionText: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  // EXECUTIVE HERO CARDS
+  executiveHeroCard: {
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+  },
+  executiveHeroHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  executiveStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 10,
+    gap: 6,
+    borderWidth: 1,
+  },
+  pulseLiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  executiveStatusText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  executiveDateText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  executiveHeroHeading: {
+    fontSize: 19,
+    fontWeight: "900",
+  },
+  executiveHeroSub: {
+    fontSize: 12,
+    marginTop: 3,
+    lineHeight: 16,
+  },
+
+  teacherHeroBanner: {
+    borderRadius: 22,
+    padding: 20,
+    borderWidth: 1,
+  },
+  teacherHeroPillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+    alignSelf: "flex-start",
+    marginBottom: 10,
+    gap: 6,
+    borderWidth: 1,
+  },
+  teacherHeroPillText: {
+    fontSize: 10,
+    fontWeight: "900",
     letterSpacing: 0.8,
+  },
+  teacherHeroMainHeading: {
+    fontSize: 21,
+    fontWeight: "900",
+  },
+  teacherHeroDescription: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 17,
+    marginBottom: 16,
+  },
+  teacherLaunchButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 48,
+    borderRadius: 13,
+    gap: 8,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  teacherLaunchButtonText: {
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+
+  // KPI GRID
+  kpiGridMatrix: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  kpiCardHolo: {
+    width: CARD_GRID_WIDTH,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+  },
+  kpiIconBadgeHolo: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  kpiValueHolo: {
+    fontSize: 22,
+    fontWeight: "900",
+    letterSpacing: -0.4,
+  },
+  kpiLabelHolo: {
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  kpiDeltaHolo: {
+    fontSize: 10,
+    marginTop: 2,
+  },
+
+  // SPARKLINES
+  sparklineContainer: {
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+  },
+  sparklineHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  sparklineTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  sparklineAvg: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  sparklineBarsRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "flex-end",
+    height: 70,
+  },
+  sparklineCol: {
+    alignItems: "center",
+    gap: 6,
+  },
+  sparklineBarTrack: {
+    width: 22,
+    height: 50,
+    borderRadius: 6,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+  },
+  sparklineBarFill: {
+    borderRadius: 6,
+  },
+  sparklineDayLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+  },
+
+  // RAPID COMMANDS
+  rapidCommandsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  rapidCmdCardHolo: {
+    width: CARD_GRID_WIDTH,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+  },
+  rapidCmdIconBadge: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  rapidCmdTitleHolo: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  rapidCmdDescHolo: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+
+  // STREAM & ROSTER CARDS
+  streamEventCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 15,
+    padding: 12,
+    borderWidth: 1,
+  },
+  streamIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  streamItemTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  streamItemSub: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  rosterItemCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+  },
+  rosterAvatarBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rosterAvatarInitial: {
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  rosterItemName: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  rosterItemId: {
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  rosterItemMeta: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+
+  // TOOLBAR
+  toolbarRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  searchBarGlass: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    height: 46,
+  },
+  searchInputHolo: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    marginLeft: 8,
+  },
+  filterToggleBox: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterDrawerCard: {
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+  },
+
+  // GLASS FORM CARDS
+  glassFormCard: {
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+  },
+  formGroupHeading: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
     marginBottom: 12,
   },
-  formHeader: {
+  formTopHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 4,
   },
-  backButtonCircle: {
-    width: 40,
-    height: 40,
+  backBtnCircle: {
+    width: 38,
+    height: 38,
     borderRadius: 12,
-    backgroundColor: theme.surface,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
     justifyContent: "center",
   },
-  formButtonsRow: {
+  formActionButtonsRow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginTop: 20,
+    gap: 10,
+    marginTop: 18,
   },
-  cancelButton: {
+  formCancelBtn: {
     flex: 1,
     height: 48,
-    borderRadius: 12,
+    borderRadius: 13,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
     justifyContent: "center",
   },
-  cancelButtonText: {
-    fontSize: 14,
+  formCancelBtnText: {
+    fontSize: 13,
     fontWeight: "700",
-    color: theme.textSecondary,
   },
-  saveButton: {
+  formSubmitBtn: {
     flex: 2,
     height: 48,
-    borderRadius: 12,
-    backgroundColor: theme.primary,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  saveButtonText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#fff",
+  formSubmitBtnText: {
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
   },
-  twoColumnRow: {
+  twoColumnGridRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 14,
+    marginBottom: 12,
   },
 
-  // BIOMETRICS PROMPT CARD
-  biometricPromptCard: {
+  // BIOMETRIC PROMPT CARD
+  biometricPromptCardHolo: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surfaceAlt,
     borderRadius: 16,
     padding: 16,
     borderWidth: 1.5,
-    borderColor: theme.border,
     borderStyle: "dashed",
-    marginTop: 6,
-    marginBottom: 10,
+    marginTop: 4,
+    marginBottom: 8,
   },
-  biometricPromptCardSuccess: {
-    backgroundColor: theme.successPale,
-    borderColor: theme.success,
-    borderStyle: "solid",
-  },
-  biometricIconCircle: {
+  biometricIconBadge: {
     width: 48,
     height: 48,
-    borderRadius: 16,
-    backgroundColor: theme.surface,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  biometricTitle: {
+  biometricCardTitle: {
     fontSize: 14,
     fontWeight: "800",
-    color: theme.text,
   },
-  biometricSub: {
-    fontSize: 12,
-    color: theme.muted,
+  biometricCardSub: {
+    fontSize: 11,
     marginTop: 2,
   },
 
-  // HUD BIOMETRIC CAMERA
-  hudStepsRow: {
+  // HUD CAMERA VIEWPORT
+  hudStepsContainer: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 8,
   },
-  hudStepItem: {
+  hudStepBadge: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: theme.surface,
     borderWidth: 1.5,
-    borderColor: theme.border,
     alignItems: "center",
     justifyContent: "center",
   },
-  hudStepItemActive: {
-    borderColor: theme.primaryLight,
-    backgroundColor: theme.primaryPale,
-  },
-  hudStepItemDone: {
-    borderColor: theme.success,
-    backgroundColor: theme.successPale,
-  },
-  hudStepText: {
-    fontSize: 12,
+  hudStepBadgeText: {
+    fontSize: 11,
     fontWeight: "800",
-    color: theme.muted,
   },
-  hudStepTextActive: {
-    color: theme.primaryLight,
-  },
-  hudStepTextDone: {
-    color: theme.success,
-  },
-  hudCameraCard: {
-    backgroundColor: "#0B1120",
+  hudCameraViewport: {
+    backgroundColor: "#000",
     borderRadius: 24,
     overflow: "hidden",
     height: 380,
-    borderWidth: 2,
-    borderColor: "#1E293B",
+    borderWidth: 1.5,
   },
-  hudCameraError: {
+  hudCameraErrorWrap: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  cameraWrapper: {
+  cameraFrameWrapper: {
     flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
     position: "relative",
+  },
+  hudCornerTopLeft: {
+    position: "absolute",
+    top: 20,
+    left: 20,
+    width: 24,
+    height: 24,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+  },
+  hudCornerTopRight: {
+    position: "absolute",
+    top: 20,
+    right: 20,
+    width: 24,
+    height: 24,
+    borderTopWidth: 2,
+    borderRightWidth: 2,
+  },
+  hudCornerBottomLeft: {
+    position: "absolute",
+    bottom: 20,
+    left: 20,
+    width: 24,
+    height: 24,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+  },
+  hudCornerBottomRight: {
+    position: "absolute",
+    bottom: 20,
+    right: 20,
+    width: 24,
+    height: 24,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+  },
+  hudBiometricEllipse: {
+    width: 200,
+    height: 280,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: "rgba(0, 229, 255, 0.4)",
+    borderStyle: "dashed",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
-  cameraPreview: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  hudOvalGuide: {
-    width: 210,
-    height: 290,
-    borderRadius: 110,
-    borderWidth: 2.5,
-    borderColor: "rgba(255,255,255,0.4)",
-    borderStyle: "dashed",
-  },
-  hudOvalGuideDetected: {
-    borderColor: theme.success,
+  hudBiometricEllipseDone: {
     borderStyle: "solid",
-    shadowColor: theme.success,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.8,
-    shadowRadius: 10,
+    shadowRadius: 16,
   },
-  hudOvalGuideScanning: {
-    borderColor: theme.accent,
+  hudBiometricEllipseScanning: {},
+  liveFaceBoundingBox: {
+    position: "absolute",
+    borderWidth: 3,
+    borderColor: "#22C55E",
+    borderRadius: 12,
+    shadowColor: "#22C55E",
+    shadowOpacity: 0.9,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  hudStatusTag: {
+  animatedLaserLine: {
+    position: "absolute",
+    width: "100%",
+    height: 2.5,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  hudLiveTelemetryBar: {
     position: "absolute",
     bottom: 16,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.85)",
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 16,
+    backgroundColor: "rgba(8, 12, 20, 0.9)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
     gap: 8,
+    borderWidth: 1,
   },
-  hudStatusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+  hudTelemetryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
-  hudStatusTagText: {
+  hudTelemetryLabel: {
     color: "#fff",
-    fontSize: 11,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  hudInstructionCard: {
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+  },
+  hudInstructionTitle: {
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  hudInstructionDesc: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
+    marginBottom: 14,
+  },
+  hudForceCaptureBtn: {
+    height: 46,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hudForceCaptureBtnText: {
+    fontSize: 13,
     fontWeight: "900",
     letterSpacing: 0.5,
   },
-  hudGuideCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  hudGuideTitle: {
-    fontSize: 16,
-    fontWeight: "900",
-    color: theme.text,
-  },
-  hudGuideDesc: {
-    fontSize: 13,
-    color: theme.textSecondary,
-    marginTop: 4,
-    lineHeight: 18,
-    marginBottom: 16,
-  },
-  hudManualCaptureBtn: {
-    backgroundColor: theme.primary,
-    height: 48,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  hudManualRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  hudManualBtnText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#fff",
-  },
-  cameraPermissionCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 20,
+  permCardHolo: {
+    borderRadius: 22,
     padding: 24,
     alignItems: "center",
-    textAlign: "center",
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  cameraPermTitle: {
-    fontSize: 18,
+  permTitleHolo: {
+    fontSize: 17,
     fontWeight: "900",
-    color: theme.text,
     marginTop: 14,
   },
-  cameraPermDesc: {
-    fontSize: 13,
-    color: theme.muted,
+  permDescHolo: {
+    fontSize: 12,
     textAlign: "center",
     marginTop: 6,
-    marginBottom: 20,
-    lineHeight: 18,
+    marginBottom: 18,
+    lineHeight: 17,
   },
 
-  // TEACHER ATTENDANCE ACTIONS
-  sectionSummaryCard: {
+  // SECTION SELECTION & ACTIONS
+  sectionSelectedCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.primaryPale,
     borderRadius: 14,
     padding: 12,
     marginBottom: 16,
+    borderWidth: 1,
   },
-  sectionSummaryTitle: {
+  sectionSelectedTitle: {
     fontSize: 13,
     fontWeight: "800",
-    color: theme.primaryLight,
   },
-  sectionSummarySub: {
+  sectionSelectedSub: {
     fontSize: 11,
-    color: theme.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
   },
-  photoCaptureButtonsWrap: {
+  dualPhotoActionsCol: {
     gap: 12,
   },
-  photoActionButton: {
+  captureHeroBtn: {
     borderRadius: 16,
     padding: 18,
     alignItems: "center",
     justifyContent: "center",
   },
-  cameraBtn: {
-    backgroundColor: theme.primaryLight,
-  },
-  galleryBtn: {
-    backgroundColor: theme.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  photoActionTitle: {
-    fontSize: 16,
+  captureHeroBtnTitle: {
+    fontSize: 14,
     fontWeight: "900",
-    color: "#fff",
-    marginTop: 8,
+    marginTop: 6,
+    letterSpacing: 0.6,
   },
-  photoActionSub: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.8)",
+  captureHeroBtnSub: {
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: "600",
+  },
+  galleryHeroBtn: {
+    borderRadius: 16,
+    padding: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  galleryHeroBtnTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    marginTop: 6,
+    letterSpacing: 0.6,
+  },
+  galleryHeroBtnSub: {
+    fontSize: 11,
     marginTop: 2,
   },
 
-  // RECOGNITION RESULTS & VERIFY
-  resultsNoticeCard: {
+  // RECOGNITION RESULTS
+  resultsNoticeBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.primaryPale,
     borderRadius: 12,
     padding: 12,
     gap: 8,
+    borderWidth: 1,
   },
   resultsNoticeText: {
     flex: 1,
-    fontSize: 12,
-    color: theme.primaryLight,
-    fontWeight: "600",
-    lineHeight: 16,
+    fontSize: 11,
+    fontWeight: "700",
+    lineHeight: 15,
   },
-  resultsGrid: {
+  resultsCardsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 12,
   },
-  resultItemCard: {
-    flexBasis: "48%",
-    flexGrow: 1,
-    minWidth: 0,
-    backgroundColor: theme.surface,
+  resultItemCardHolo: {
+    width: CARD_GRID_WIDTH,
     borderRadius: 16,
-    padding: 14,
+    padding: 12,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
   },
-  resultAvatarCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+  resultAvatarCircleHolo: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  resultItemName: {
-    fontSize: 14,
+  resultItemNameText: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
     textAlign: "center",
   },
-  resultItemId: {
-    fontSize: 11,
-    color: theme.muted,
+  resultItemIdText: {
+    fontSize: 10,
     marginTop: 1,
     marginBottom: 8,
   },
-  tallyCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    padding: 14,
+
+  // VERIFY & ROSTER TOOLBAR
+  tallyHUDCard: {
+    borderRadius: 18,
+    padding: 16,
     borderWidth: 1,
-    borderColor: theme.border,
-    justifyContent: "space-around",
   },
-  tallyItem: {
+  tallyStatsRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
     alignItems: "center",
   },
-  tallyVal: {
+  tallyStatCol: {
+    alignItems: "center",
+  },
+  tallyDigit: {
     fontSize: 22,
     fontWeight: "900",
-    color: theme.text,
   },
-  tallyLbl: {
+  tallyMeta: {
     fontSize: 11,
-    color: theme.muted,
     fontWeight: "700",
     marginTop: 2,
   },
-  tallyDivider: {
+  tallyDividerLine: {
     width: 1,
-    height: 32,
-    backgroundColor: theme.border,
+    height: 30,
   },
-  verifyRowCard: {
+  tallyProgressBarTrack: {
+    height: 6,
+    borderRadius: 3,
+    overflow: "hidden",
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  tallyProgressBarFill: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  tallyRatioSubText: {
+    fontSize: 10,
+    textAlign: "center",
+    fontWeight: "700",
+  },
+  verifyToolbarRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surface,
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  filterSegmentPillWrap: {
+    flexDirection: "row",
+    borderRadius: 12,
+    padding: 3,
+  },
+  filterSegmentBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 9,
+  },
+  filterSegmentBtnActive: {
+    borderWidth: 1,
+  },
+  filterSegmentBtnText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  quickBulkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  quickBulkBtnText: {
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  checklistCard: {
+    flexDirection: "row",
+    alignItems: "center",
     borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  verifyName: {
-    fontSize: 14,
+  checkListName: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  verifyMeta: {
-    fontSize: 12,
-    color: theme.muted,
+  checkListId: {
+    fontSize: 11,
     marginTop: 1,
   },
-  togglePill: {
+  togglePillHolo: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingVertical: 6,
     borderRadius: 20,
     gap: 4,
     borderWidth: 1,
   },
-  togglePillPresent: {
-    backgroundColor: theme.successPale,
-    borderColor: theme.successBorder,
-  },
-  togglePillAbsent: {
-    backgroundColor: theme.dangerPale,
-    borderColor: theme.dangerBorder,
-  },
-  togglePillText: {
-    fontSize: 12,
-    fontWeight: "800",
+  togglePillHoloPresent: {},
+  togglePillHoloAbsent: {},
+  togglePillHoloText: {
+    fontSize: 11,
+    fontWeight: "900",
   },
 
-  // STUDENT SCORE CARD & METRICS
-  studentScoreCard: {
-    backgroundColor: theme.surface,
+  // STUDENT SCORECARD
+  studentScorecardGlass: {
     borderRadius: 22,
     padding: 20,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: theme.border,
     gap: 18,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
   },
-  studentDialWrap: {
+  radialDialContainer: {
     alignItems: "center",
     justifyContent: "center",
   },
-  studentDialCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    borderWidth: 8,
+  radialDialOuterRing: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    borderWidth: 7,
     alignItems: "center",
     justifyContent: "center",
   },
-  studentDialPercent: {
+  radialDialPercent: {
     fontSize: 22,
     fontWeight: "900",
-    color: theme.text,
+    letterSpacing: -0.5,
   },
-  studentDialLabel: {
-    fontSize: 9,
-    fontWeight: "800",
-    color: theme.muted,
-  },
-  studentScoreTitle: {
-    fontSize: 16,
+  radialDialTitle: {
+    fontSize: 8,
     fontWeight: "900",
-    color: theme.text,
+    letterSpacing: 0.8,
+  },
+  studentCardHeading: {
+    fontSize: 15,
+    fontWeight: "900",
     marginBottom: 6,
   },
-  studentScoreSub: {
-    fontSize: 12,
-    color: theme.muted,
+  studentDegreeText: {
+    fontSize: 11,
     marginTop: 6,
   },
-  studentStatsGrid: {
+  studentBreakdownGrid: {
     flexDirection: "row",
     gap: 10,
   },
-  studentStatBox: {
+  studentBreakdownBox: {
     flex: 1,
-    backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
   },
-  studentStatVal: {
-    fontSize: 22,
+  studentBreakdownVal: {
+    fontSize: 20,
     fontWeight: "900",
-    color: theme.text,
   },
-  studentStatLbl: {
-    fontSize: 11,
+  studentBreakdownLbl: {
+    fontSize: 10,
     fontWeight: "700",
-    color: theme.muted,
     marginTop: 2,
   },
-  primaryActionButton: {
+  primaryNeonButton: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: theme.primary,
-    height: 50,
-    borderRadius: 14,
+    height: 48,
+    borderRadius: 13,
     gap: 8,
-    shadowColor: theme.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  primaryActionText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#fff",
+  primaryNeonButtonText: {
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
   },
 
-  // SCHEDULE CARDS
-  scheduleCard: {
+  // SCHEDULE & TIMETABLE
+  scheduleRowCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  scheduleTimeBox: {
-    backgroundColor: theme.surfaceAlt,
+  scheduleTimeBadge: {
     borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
     alignItems: "center",
+    borderWidth: 1,
   },
-  scheduleTimeText: {
-    fontSize: 13,
+  scheduleTimeStart: {
+    fontSize: 12,
     fontWeight: "900",
-    color: theme.primary,
   },
-  scheduleTimeEnd: {
+  scheduleTimeFinish: {
     fontSize: 10,
-    color: theme.muted,
     marginTop: 1,
   },
-  scheduleTitle: {
-    fontSize: 14,
+  scheduleLectureTitle: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  scheduleMeta: {
-    fontSize: 12,
-    color: theme.muted,
+  scheduleLectureMeta: {
+    fontSize: 11,
     marginTop: 2,
   },
-  scheduleArrowBox: {
+  scheduleChevronBox: {
     padding: 4,
   },
-  roomTag: {
-    backgroundColor: theme.primaryPale,
+  roomTagHolo: {
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
+    borderWidth: 1,
   },
-  roomTagText: {
-    fontSize: 11,
+  roomTagHoloText: {
+    fontSize: 10,
     fontWeight: "800",
-    color: theme.primaryLight,
   },
-  horizontalMetricsRow: {
+  teacherMetricsRow: {
     flexDirection: "row",
     gap: 10,
   },
-  teacherMetricCard: {
+  teacherMetricBox: {
     flex: 1,
-    backgroundColor: theme.surface,
     borderRadius: 16,
-    padding: 14,
+    padding: 12,
     borderWidth: 1,
-    borderColor: theme.border,
     alignItems: "center",
   },
-  teacherMetricVal: {
-    fontSize: 20,
+  teacherMetricDigit: {
+    fontSize: 18,
     fontWeight: "900",
-    color: theme.text,
-    marginTop: 6,
+    marginTop: 4,
   },
-  teacherMetricLbl: {
+  teacherMetricLabel: {
     fontSize: 10,
     fontWeight: "700",
-    color: theme.muted,
     marginTop: 2,
     textAlign: "center",
   },
 
-  // STUDENT LOG CARDS
-  studentLogCard: {
+  // STUDENT SESSION CARDS
+  studentSessionCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  studentLogBadge: {
-    width: 38,
-    height: 38,
+  studentSessionIconBadge: {
+    width: 36,
+    height: 36,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  studentLogTitle: {
-    fontSize: 14,
+  studentSessionTitle: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  studentLogMeta: {
-    fontSize: 12,
-    color: theme.textSecondary,
+  studentSessionMeta: {
+    fontSize: 11,
     marginTop: 1,
   },
-  studentLogDate: {
-    fontSize: 11,
-    color: theme.muted,
+  studentSessionDate: {
+    fontSize: 10,
     marginTop: 2,
   },
 
-  // DATE PICKERS & TRIGGERS
-  datePickerTrigger: {
+  // DATE PICKERS
+  datePickerCardHolo: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: theme.surface,
     borderRadius: 14,
-    padding: 14,
+    padding: 13,
     borderWidth: 1,
-    borderColor: theme.border,
     justifyContent: "space-between",
   },
-  datePickerText: {
-    fontSize: 14,
+  datePickerCardText: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
     flex: 1,
     paddingLeft: 10,
   },
 
-  // SEGMENTS
-  segmentContainer: {
+  // SEGMENTED CONTROLS
+  segmentWrapHolo: {
     flexDirection: "row",
-    backgroundColor: theme.surfaceAlt,
     borderRadius: 12,
     padding: 4,
   },
-  segmentTab: {
+  segmentBtnHolo: {
     flex: 1,
     paddingVertical: 8,
     alignItems: "center",
-    borderRadius: 10,
+    borderRadius: 9,
   },
-  segmentTabActive: {
-    backgroundColor: theme.surface,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
+  segmentBtnHoloActive: {
+    borderWidth: 1,
   },
-  segmentTabText: {
-    fontSize: 12,
+  segmentBtnHoloText: {
+    fontSize: 11,
     fontWeight: "700",
-    color: theme.muted,
-  },
-  segmentTabTextActive: {
-    color: theme.primaryLight,
-    fontWeight: "800",
   },
 
   // NOTIFICATIONS
-  markAllBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  markAllBtnHolo: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
     borderRadius: 8,
-    backgroundColor: theme.surfaceAlt,
+    borderWidth: 1,
   },
-  markAllBtnText: {
-    fontSize: 11,
+  markAllBtnHoloText: {
+    fontSize: 10,
     fontWeight: "800",
-    color: theme.primaryLight,
   },
-  notifCard: {
+  notifCardHolo: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: 15,
+    padding: 13,
     borderWidth: 1,
-    borderColor: theme.border,
   },
-  notifCardUnread: {
-    borderColor: theme.primaryLight,
-    backgroundColor: "#F9FBFF",
-  },
-  notifIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+  notifIconCircleHolo: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  notifTitle: {
-    fontSize: 14,
+  notifTitleHolo: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  notifBody: {
-    fontSize: 12,
-    color: theme.textSecondary,
+  notifBodyHolo: {
+    fontSize: 11,
     marginTop: 2,
-    lineHeight: 16,
+    lineHeight: 15,
   },
-  notifTime: {
-    fontSize: 10,
-    color: theme.muted,
+  notifTimeHolo: {
+    fontSize: 9,
     marginTop: 4,
   },
-  unreadPill: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.primaryLight,
+  unreadDotHolo: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     marginTop: 4,
   },
 
   // ACADEMIC HIERARCHY
-  hierarchyCard: {
-    backgroundColor: theme.surface,
+  hierarchyBranchCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: theme.border,
     overflow: "hidden",
   },
-  hierarchyCardHeader: {
+  hierarchyBranchHeader: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 16,
+    padding: 14,
     gap: 10,
   },
-  hierarchySchoolName: {
+  hierarchySchoolTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "900",
-    color: theme.text,
   },
-  hierarchyCountBadge: {
-    backgroundColor: theme.surfaceAlt,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  hierarchyCountPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     borderRadius: 8,
   },
-  hierarchyCountText: {
-    fontSize: 11,
+  hierarchyCountPillText: {
+    fontSize: 10,
     fontWeight: "800",
-    color: theme.muted,
   },
   hierarchyFacultySection: {
     borderTopWidth: 1,
-    borderTopColor: theme.border,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
-  hierarchyFacultyHeader: {
+  hierarchyFacultyBar: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  hierarchyFacultyName: {
+  hierarchyFacultyTitle: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
-    color: theme.text,
   },
-  hierarchyProgramsList: {
+  hierarchyProgramsStack: {
     marginTop: 8,
-    paddingLeft: 26,
-    gap: 6,
+    paddingLeft: 24,
+    gap: 5,
   },
-  hierarchyProgramItem: {
+  hierarchyProgramLine: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 6,
   },
-  hierarchyBullet: {
-    fontSize: 14,
-    color: theme.muted,
+  hierarchyBulletDot: {
+    fontSize: 13,
   },
-  hierarchyProgDept: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.text,
-  },
-  hierarchyProgTitle: {
+  hierarchyDeptName: {
     fontSize: 11,
-    color: theme.muted,
+    fontWeight: "700",
+  },
+  hierarchyProgName: {
+    fontSize: 10,
   },
 
   // PROFILE SCREENS
-  profileHeroCard: {
-    backgroundColor: theme.surface,
+  profileHeroCardHolo: {
     borderRadius: 24,
-    padding: 24,
+    padding: 22,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: theme.border,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 2,
   },
-  profileHeroAvatarWrap: {
+  profileAvatarWrapHolo: {
     position: "relative",
-    marginBottom: 14,
+    marginBottom: 12,
   },
-  profileHeroAvatarImg: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    borderWidth: 3,
-    borderColor: theme.accent,
+  profileAvatarImgHolo: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    borderWidth: 2,
   },
-  profileHeroAvatarFallback: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    backgroundColor: theme.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: theme.accent,
-  },
-  profileHeroAvatarInitial: {
-    fontSize: 32,
-    fontWeight: "900",
-    color: "#fff",
-  },
-  avatarEditPill: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    backgroundColor: theme.primaryLight,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+  profileAvatarFallbackHolo: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: "#fff",
   },
-  profileHeroName: {
-    fontSize: 20,
+  profileAvatarFallbackInitial: {
+    fontSize: 30,
     fontWeight: "900",
-    color: theme.text,
   },
-  profileHeroRoleTag: {
-    backgroundColor: theme.primaryPale,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 10,
-    marginTop: 6,
+  avatarEditPillHolo: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  profileHeroRoleText: {
-    fontSize: 11,
+  profileHeroNameHolo: {
+    fontSize: 19,
     fontWeight: "900",
-    color: theme.primaryLight,
-    letterSpacing: 0.5,
   },
-  profileHeroEmail: {
-    fontSize: 13,
-    color: theme.muted,
-    marginTop: 6,
+  profileRoleBadgeHolo: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginTop: 5,
+    borderWidth: 1,
   },
-  assignedSubjectRow: {
+  profileRoleBadgeText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  profileHeroEmailHolo: {
+    fontSize: 12,
+    marginTop: 5,
+  },
+  assignedCourseRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: theme.border,
   },
-  assignedSubjectTitle: {
-    fontSize: 14,
+  assignedCourseTitle: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  assignedSubjectSub: {
-    fontSize: 12,
-    color: theme.muted,
+  assignedCourseSub: {
+    fontSize: 11,
     marginTop: 1,
   },
-  signOutButton: {
+  signOutBtnHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: theme.dangerPale,
     borderRadius: 14,
-    height: 50,
+    height: 48,
     gap: 8,
     borderWidth: 1,
-    borderColor: theme.dangerBorder,
   },
-  signOutButtonText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: theme.danger,
+  signOutBtnHoloText: {
+    fontSize: 13,
+    fontWeight: "900",
   },
 
   // COMMON HELPERS & MODALS
-  statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
+  statusPillHolo: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
     alignSelf: "flex-start",
   },
-  statusPillText: {
-    fontSize: 11,
+  statusPillHoloText: {
+    fontSize: 10,
     fontWeight: "800",
   },
-  detailRow: {
+  holoDetailRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: theme.border,
   },
-  detailLabel: {
-    fontSize: 13,
-    color: theme.textSecondary,
+  holoDetailLabel: {
+    fontSize: 12,
     fontWeight: "600",
   },
-  detailValue: {
-    fontSize: 13,
+  holoDetailValue: {
+    fontSize: 12,
     fontWeight: "800",
-    color: theme.text,
   },
-  emptyStateCard: {
-    backgroundColor: theme.surface,
+  emptyCardHolo: {
     borderRadius: 20,
-    padding: 32,
+    padding: 28,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: theme.border,
     marginVertical: 10,
   },
-  emptyIconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: theme.surfaceAlt,
+  emptyIconBadgeHolo: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
+    marginBottom: 12,
   },
-  emptyTitle: {
-    fontSize: 16,
+  emptyTitleHolo: {
+    fontSize: 15,
     fontWeight: "900",
-    color: theme.text,
     textAlign: "center",
   },
-  emptyDesc: {
-    fontSize: 13,
-    color: theme.muted,
+  emptyDescHolo: {
+    fontSize: 12,
     textAlign: "center",
-    marginTop: 6,
-    lineHeight: 18,
+    marginTop: 5,
+    lineHeight: 16,
   },
-  emptyActionBtn: {
-    marginTop: 16,
-    backgroundColor: theme.primaryLight,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 12,
+  emptyActionBtnHolo: {
+    marginTop: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 11,
   },
-  emptyActionText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#fff",
+  emptyActionBtnHoloText: {
+    fontSize: 12,
+    fontWeight: "900",
   },
-  selectTrigger: {
+  selectTriggerHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: theme.surfaceAlt,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: theme.border,
-    paddingHorizontal: 14,
-    height: 48,
+    paddingHorizontal: 12,
+    height: 46,
   },
-  selectTriggerDisabled: {
-    opacity: 0.6,
+  selectTriggerHoloDisabled: {
+    opacity: 0.5,
   },
-  selectTriggerText: {
-    fontSize: 14,
+  selectTriggerHoloText: {
+    fontSize: 13,
     fontWeight: "700",
-    color: theme.text,
   },
-  applyFilterButton: {
+  applyFilterBtnHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: theme.primaryLight,
     borderRadius: 12,
-    height: 44,
-    gap: 8,
-    marginTop: 14,
+    height: 42,
+    gap: 6,
+    marginTop: 12,
   },
-  applyFilterButtonText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#fff",
+  applyFilterBtnHoloText: {
+    fontSize: 12,
+    fontWeight: "900",
   },
 
   // MODAL OVERLAYS
-  modalOverlay: {
+  modalBackdropOverlay: {
     flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.6)",
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
   },
-  modalCard: {
+  modalSheetCard: {
     width: "100%",
-    backgroundColor: theme.surface,
     borderRadius: 24,
     padding: 20,
-    shadowColor: theme.primaryDark,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
-    elevation: 8,
+    borderWidth: 1,
   },
-  modalHeader: {
+  modalSheetHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  modalTitle: {
-    fontSize: 17,
+  modalSheetTitle: {
+    fontSize: 16,
     fontWeight: "900",
-    color: theme.text,
   },
-  modalHero: {
+  modalProfileHero: {
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  modalAvatarLarge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: theme.primaryPale,
+  modalAvatarGlow: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 8,
+    borderWidth: 1,
   },
-  modalAvatarText: {
-    fontSize: 26,
+  modalAvatarGlowText: {
+    fontSize: 24,
     fontWeight: "900",
-    color: theme.primaryLight,
   },
-  modalName: {
-    fontSize: 18,
+  modalHeroName: {
+    fontSize: 17,
     fontWeight: "900",
-    color: theme.text,
   },
-  idChip: {
-    backgroundColor: theme.primaryPale,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-    marginTop: 6,
+  modalIdBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginTop: 5,
+    borderWidth: 1,
   },
-  idChipText: {
-    fontSize: 11,
+  modalIdBadgeText: {
+    fontSize: 10,
     fontWeight: "900",
-    color: theme.primaryLight,
   },
-  modalDetailsList: {
-    marginBottom: 18,
+  modalDetailsGroup: {
+    marginBottom: 16,
   },
-  modalCloseButton: {
-    backgroundColor: theme.primary,
-    height: 46,
+  modalDismissBtn: {
+    height: 44,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  modalCloseButtonText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#fff",
+  modalDismissBtnText: {
+    fontSize: 13,
+    fontWeight: "900",
   },
-  modalActionButtonsRow: {
+  modalDualActionsRow: {
     flexDirection: "row",
     gap: 10,
   },
-  dangerButton: {
+  modalDangerBtn: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: theme.dangerPale,
     borderRadius: 12,
-    height: 46,
+    height: 44,
     gap: 6,
     borderWidth: 1,
-    borderColor: theme.dangerBorder,
   },
-  dangerButtonText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: theme.danger,
+  modalDangerBtnText: {
+    fontSize: 12,
+    fontWeight: "900",
   },
-  modalDoneButton: {
+  modalDismissBtnFlex: {
     flex: 1,
-    backgroundColor: theme.primary,
     borderRadius: 12,
-    height: 46,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
   },
-  modalDoneButtonText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#fff",
-  },
 
-  // DROPDOWNS & HIERARCHY CHECKBOXES
-  dropdownModal: {
+  // DROPDOWNS & HIERARCHY SCOPES
+  dropdownModalHolo: {
     width: "100%",
-    backgroundColor: theme.surface,
     borderRadius: 20,
-    padding: 20,
+    padding: 18,
+    borderWidth: 1,
   },
-  dropdownTitle: {
-    fontSize: 16,
+  dropdownModalTitle: {
+    fontSize: 15,
     fontWeight: "900",
-    color: theme.text,
-    marginBottom: 14,
+    marginBottom: 12,
   },
-  dropdownOption: {
+  dropdownOptionHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
+    paddingVertical: 11,
     borderBottomWidth: 1,
-    borderBottomColor: theme.border,
   },
-  dropdownOptionText: {
-    fontSize: 14,
+  dropdownOptionTextHolo: {
+    fontSize: 13,
     fontWeight: "700",
-    color: theme.text,
   },
-  hierarchyCheckboxBox: {
+  hierarchyScopeWrap: {
     marginTop: 10,
   },
-  hierarchyAccessSub: {
-    fontSize: 12,
-    color: theme.muted,
-    marginBottom: 12,
-    lineHeight: 16,
+  hierarchyScopeDesc: {
+    fontSize: 11,
+    marginBottom: 10,
+    lineHeight: 15,
   },
-  phaseLabel: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: theme.textSecondary,
-    marginBottom: 8,
-  },
-  phaseOptionsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  phaseOptionChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.surfaceAlt,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 20,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  phaseOptionChipActive: {
-    backgroundColor: theme.primaryPale,
-    borderColor: theme.primaryLight,
-  },
-  phaseOptionText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: theme.muted,
-  },
-  phaseOptionTextActive: {
-    color: theme.primaryLight,
-  },
-  readOnlyPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: theme.primaryPale,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 4,
-  },
-  readOnlyPillText: {
+  phaseStepLabel: {
     fontSize: 11,
     fontWeight: "800",
-    color: theme.primaryLight,
+    marginBottom: 7,
   },
-  reportSessionRow: {
+  phaseChipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  phasePillChip: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 5,
+    borderWidth: 1,
   },
-  reportSessionIcon: {
-    width: 36,
-    height: 36,
+  phasePillChipActive: {},
+  phasePillText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  readOnlyTagPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     borderRadius: 10,
-    backgroundColor: theme.primaryPale,
+    gap: 4,
+    borderWidth: 1,
+  },
+  readOnlyTagText: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  reportSessionItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+  },
+  reportSessionIconCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  reportSessionTitle: {
-    fontSize: 14,
+  reportSessionItemTitle: {
+    fontSize: 13,
     fontWeight: "800",
-    color: theme.text,
   },
-  reportSessionSub: {
-    fontSize: 11,
-    color: theme.muted,
+  reportSessionItemSub: {
+    fontSize: 10,
     marginTop: 1,
+  },
+  emptySubText: {
+    fontSize: 12,
+    paddingVertical: 10,
   },
 });

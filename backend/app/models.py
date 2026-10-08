@@ -5,12 +5,15 @@ routes should use FaceModel.detect() instead of accessing model internals.
 """
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
 import cv2
 from insightface.app import FaceAnalysis
 import onnxruntime as ort
+
+logger = logging.getLogger("pratyaksh.face_model")
 
 
 class FaceModel:
@@ -22,7 +25,18 @@ class FaceModel:
         native_root = str(Path(__file__).resolve().parents[1])
         self.root = os.getenv("INSIGHTFACE_ROOT", native_root)
         self.max_faces = int(os.getenv("MAX_FACES", "300"))
-        self.det_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.50"))
+        # This is a proposal threshold inside RetinaFace, not a security
+        # confidence setting. Values near 0.8-0.99 starve the landmark and
+        # embedding stages, especially on phone camera frames. High-accuracy
+        # filtering is applied by the API after a face has been detected.
+        requested_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.50"))
+        self.det_threshold = min(max(requested_threshold, 0.20), 0.60)
+        if self.det_threshold != requested_threshold:
+            logger.warning(
+                "FACE_DET_THRESHOLD=%s was clamped to %s; use FACE_MIN_CONFIDENCE for strict acceptance",
+                requested_threshold,
+                self.det_threshold,
+            )
         self.det_size = int(os.getenv("FACE_DET_SIZE", "1600"))
         # Face recognition is GPU-only by default. Set REQUIRE_GPU=0 only for
         # an explicit CPU troubleshooting/development override.

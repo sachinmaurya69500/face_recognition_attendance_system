@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import warnings
 import secrets
 import time
 import os
@@ -21,8 +22,23 @@ from pydantic import BaseModel
 from app.database import get_db_connection
 from app.models import face_model
 
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+warnings.filterwarnings(
+    "ignore",
+    message=r"`rcond` parameter will change to the default",
+    category=FutureWarning,
+    module=r"insightface\.utils\.transform",
+)
+
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
-MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.65"))
+# Keep proposal generation permissive (configured in FaceModel), then enforce
+# strict acceptance at the API boundary. This avoids high detector thresholds
+# preventing InsightFace from producing an embedding at all.
+MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.72"))
+# Detector scores are proposal confidence, not recognition confidence. Phone
+# frames commonly produce valid embeddings around 0.45-0.65.
+MIN_FACE_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.45"))
+MIN_GROUP_FACE_CONFIDENCE = float(os.getenv("GROUP_FACE_MIN_CONFIDENCE", "0.55"))
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 logger = logging.getLogger("pratyaksh.api")
@@ -176,7 +192,10 @@ def ensure_auth_tables():
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
             cur.execute("SELECT COUNT(*) AS count FROM academic_sections")
-            if True:
+            # Seed the bundled catalogue only for an empty database. Running
+            # the bulk upsert on every API restart delayed readiness without
+            # changing an already-populated hierarchy.
+            if cur.fetchone()["count"] == 0:
                 catalog = [
                     ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "B.Sc. Information Technology (Honors)"),
                     ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "Bachelor of Computer Application (Honors)"),
@@ -444,7 +463,15 @@ def read_image_bytes(data: bytes):
         raise HTTPException(400, "Invalid image file format") from exc
     # InsightFace/OpenCV inference expects BGR arrays. Mobile uploads arrive
     # through Pillow as RGB, so convert explicitly before detection.
-    return cv2.cvtColor(np.asarray(pil_image), cv2.COLOR_RGB2BGR)
+    image = cv2.cvtColor(np.asarray(pil_image), cv2.COLOR_RGB2BGR)
+    # Normalize thumbnail-sized uploads before face detection and quality
+    # measurement. Keeping this in the image reader ensures detector boxes and
+    # quality crops use the same working dimensions.
+    height, width = image.shape[:2]
+    if min(height, width) < 640:
+        scale = 640.0 / max(min(height, width), 1)
+        image = cv2.resize(image, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_CUBIC)
+    return image
 
 def embedding_array(value):
     """Convert pgvector's Vector result (or a plain list) to a NumPy array."""
@@ -455,8 +482,21 @@ def embedding_array(value):
     return np.asarray(value, dtype=np.float32)
 
 async def detect(image):
+    # Some phone capture paths and multipart clients upload thumbnails around
+    # 300px wide. RetinaFace is much more reliable when the face proposal is
+    # evaluated at a reasonable pixel size, so enlarge small inputs before
+    # inference. The returned bbox/embedding are intentionally based on this
+    # working image; callers use the same image dimensions for quality checks.
+    height, width = image.shape[:2]
+    minimum_dimension = min(height, width)
+    if minimum_dimension < 640:
+        scale = 640.0 / max(minimum_dimension, 1)
+        working = cv2.resize(image, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_CUBIC)
+        logger.info("face_detection_upscale input=%sx%s working=%sx%s", width, height, working.shape[1], working.shape[0])
+    else:
+        working = image
     # Always prefer the normal recognition detector and preprocessing.
-    faces = await face_model.detect(image)
+    faces = await face_model.detect(working)
     # Use a sensitive proposal threshold for webcam frames, then remove weak
     # proposals. This detects real faces without counting background noise.
     if faces or image.size == 0:
@@ -465,7 +505,7 @@ async def detect(image):
     # Conservative recovery for a genuinely difficult webcam frame. A
     # fallback is accepted only when it finds exactly one strong face; an
     # ambiguous fallback is rejected rather than inventing extra faces.
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    lab = cv2.cvtColor(working, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
     l_channel = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l_channel)
     enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
@@ -487,6 +527,13 @@ def primary_face(image, faces):
         score = float(getattr(face, "det_score", 0.0))
         return area * 2.0 + centrality * .5 + score
     return [max(faces, key=rank)]
+
+def confident_faces(faces, minimum_confidence=MIN_FACE_CONFIDENCE):
+    """Retain only detector results strong enough for biometric processing."""
+    return [
+        face for face in faces
+        if float(getattr(face, "det_score", 0.0)) >= minimum_confidence
+    ]
 
 def face_quality(image, face, target_pose="any"):
     """Return explainable capture guidance for a registration frame.
@@ -559,6 +606,7 @@ def face_quality(image, face, target_pose="any"):
         "target_pose": target_pose,
         "face_bbox": [x1, y1, x2, y2],
         "face_area_ratio": round(area_ratio, 4),
+        "detection_confidence": round(float(getattr(face, "det_score", 0.0)), 4),
         "brightness": round(brightness, 2),
         "contrast": round(contrast, 2),
         "sharpness": round(sharpness, 2),
@@ -585,12 +633,26 @@ def health():
     except Exception as exc:
         raise HTTPException(503, f"Database unavailable: {exc}")
 
+
 @app.get("/model")
 def model_info():
     """Expose the loaded model identity and its on-disk weight files."""
     files = []
     files = face_model.files()
-    return {"name": face_model.name, "root": face_model.root, "loaded": face_model.loaded, "providers": face_model.providers, "files": files}
+    return {
+        "name": face_model.name,
+        "root": face_model.root,
+        "loaded": face_model.loaded,
+        "providers": face_model.providers,
+        "files": files,
+        "parameters": {
+            "detector_proposal_threshold": face_model.det_threshold,
+            "detector_size": face_model.det_size,
+            "registration_min_confidence": MIN_FACE_CONFIDENCE,
+            "group_min_confidence": MIN_GROUP_FACE_CONFIDENCE,
+            "recognition_match_threshold": MATCH_THRESHOLD,
+        },
+    }
 
 @app.post("/validate-face")
 async def validate_face(
@@ -602,11 +664,26 @@ async def validate_face(
     if target_pose not in allowed:
         raise HTTPException(422, f"target_pose must be one of: {', '.join(sorted(allowed))}")
     image = read_image_bytes(await file.read())
-    faces = await detect(image)
-    candidate_count = len(faces)
+    detected_faces = await detect(image)
+    candidate_count = len(detected_faces)
+    faces = confident_faces(detected_faces)
+    logger.info(
+        "face_detection pose=%s candidates=%s accepted=%s scores=%s",
+        target_pose,
+        candidate_count,
+        len(faces),
+        [round(float(getattr(face, "det_score", 0.0)), 4) for face in detected_faces],
+    )
     faces = primary_face(image, faces)
     if len(faces) != 1:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        logger.info(
+            "face_validation pose=%s valid=false candidates=%s accepted=%s scores=%s",
+            target_pose,
+            candidate_count,
+            len(faces),
+            [round(float(getattr(face, "det_score", 0.0)), 4) for face in detected_faces],
+        )
         return {"valid": False, "issues": [f"No reliable primary face was found (detector candidates: {candidate_count})"], "faces_detected": 0, "target_pose": target_pose, "image_width": image.shape[1], "image_height": image.shape[0], "brightness": round(float(gray.mean()), 2), "contrast": round(float(gray.std()), 2)}
     quality = face_quality(image, faces[0], target_pose)
     quality["faces_detected"] = 1
@@ -777,7 +854,7 @@ async def register_student(student_id: str = Form(...), name: str = Form(...), p
     required_poses = ("center", "chin_up", "chin_down", "left", "right")
     for position, upload in enumerate(files, 1):
         image = read_image_bytes(await upload.read())
-        faces = await detect(image)
+        faces = confident_faces(await detect(image))
         if len(faces) != 1: raise HTTPException(400, f"Photo {position}: exactly one face required; found {len(faces)}")
         quality = face_quality(image, faces[0], required_poses[position - 1])
         if not quality["valid"]:
@@ -840,7 +917,7 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     # proposals. Attendance must only process face-sized, confident boxes.
     image_height, image_width = image.shape[:2]
     faces = [face for face in faces if (
-        float(getattr(face, "det_score", 0.0)) >= 0.15 and
+        float(getattr(face, "det_score", 0.0)) >= MIN_GROUP_FACE_CONFIDENCE and
         (float(face.bbox[2]) - float(face.bbox[0])) >= max(16, image_width * 0.008) and
         (float(face.bbox[3]) - float(face.bbox[1])) >= max(16, image_height * 0.008)
     )]
