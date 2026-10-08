@@ -283,9 +283,18 @@ def ensure_auth_tables():
 def login(body: LoginRequest):
     conn = get_db_connection()
     try:
-        with conn.cursor() as cur: cur.execute("SELECT id,username,password_hash,role,student_id FROM users WHERE username=%s", (body.username.strip(),)); user = cur.fetchone()
-    finally: conn.close()
-    if not user or not password_ok(body.password, user["password_hash"]): raise HTTPException(401, "Invalid username or password")
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, username, password_hash, role, student_id FROM users WHERE LOWER(TRIM(username)) = LOWER(%s)",
+                (body.username.strip(),),
+            )
+            user = cur.fetchone()
+    finally:
+        conn.close()
+    if not user:
+        raise HTTPException(401, "Invalid username or password")
+    if not password_ok(body.password, user["password_hash"]) and not password_ok(body.password.strip(), user["password_hash"]):
+        raise HTTPException(401, "Invalid username or password")
     return {"access_token": token_for(user), "user": {k: user[k] for k in ("id", "username", "role", "student_id")}}
 
 @app.get("/auth/me")
@@ -530,7 +539,7 @@ async def detect(image):
     l_channel = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l_channel)
     enhanced = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
     recovered = await face_model.detect(enhanced)
-    if len(recovered) == 1 and float(getattr(recovered[0], "det_score", 0.0)) >= 0.50:
+    if recovered:
         return recovered
     return []
 
@@ -575,19 +584,19 @@ def face_quality(image, face, target_pose="any"):
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var()) if gray.size else 0.0
     issues = []
 
-    if area_ratio < 0.08:
+    if area_ratio < 0.02:
         issues.append("Move closer to the camera")
-    elif area_ratio > 0.62:
+    elif area_ratio > 0.85:
         issues.append("Move farther from the camera")
-    if brightness < 45:
+    if brightness < 25:
         issues.append("Lighting is too dim")
-    elif brightness > 215:
+    elif brightness > 235:
         issues.append("Lighting is too bright")
-    if contrast < 18:
+    if contrast < 10:
         issues.append("Use more even lighting with visible facial detail")
-    if face_width < 90 or face_height < 90:
-        issues.append("Move closer so your face is larger")
-    if sharpness < 35:
+    if face_width < 40 or face_height < 40:
+        issues.append("Move closer so your face is larger in frame")
+    if sharpness < 15:
         issues.append("Hold still so the face is sharp")
 
     pose_values = np.asarray(getattr(face, "pose", []), dtype=np.float32).reshape(-1)
@@ -708,14 +717,14 @@ async def validate_face(
         )
         return {
             "valid": False,
-            "issues": ["No clear face detected in the frame. Please align your face inside the oval guide and ensure good lighting."],
+            "issues": ["No face detected in the frame. Please ensure your face is clearly visible to the camera."],
             "faces_detected": 0,
             "target_pose": target_pose,
             "image_width": image.shape[1],
             "image_height": image.shape[0],
             "brightness": round(float(gray.mean()), 2),
             "contrast": round(float(gray.std()), 2),
-            "user_guidance": "Please face the camera directly in good lighting"
+            "user_guidance": "Please ensure your face is visible within the frame in good lighting."
         }
     quality = face_quality(image, faces[0], target_pose)
     quality["faces_detected"] = 1
@@ -724,6 +733,7 @@ async def validate_face(
     # For general capture or when target_pose is any, valid face detected is accepted
     if target_pose == "any":
         quality["valid"] = True
+        quality["issues"] = []
         quality["user_guidance"] = "Face detected and verified!"
     logger.info(
         "face_validation pose=%s valid=%s candidates=%s image=%sx%s",
@@ -890,9 +900,14 @@ async def register_student(
     date_of_birth: str = Form(""),
     program: str = Form(""),
     section_id: int | None = Form(None),
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
     user=Depends(require_roles("admin", "teacher"))
 ):
+    upload_list = [f for f in files if hasattr(f, "read")] if files else []
+    if file and hasattr(file, "read"):
+        upload_list.append(file)
+    files = upload_list
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name:
         raise HTTPException(422, "student_id and name are required")
@@ -918,7 +933,7 @@ async def register_student(
             faces = detected
         faces = primary_face(image, faces)
         if len(faces) != 1:
-            raise HTTPException(400, f"Photo {position}: Could not detect a clear face. Found {len(faces)} faces. Please ensure your face is clearly visible inside the camera guide.")
+            raise HTTPException(400, f"Photo {position}: Could not detect a clear face. Found {len(faces)} faces in frame. Please ensure your face is clearly visible to the camera.")
         face = faces[0]
         if not hasattr(face, "embedding") or face.embedding is None:
             raise HTTPException(400, f"Photo {position}: Could not extract facial features. Please retake the photo.")
@@ -981,9 +996,14 @@ async def register_student(
 
 @app.post("/student/register-face")
 async def student_register_face(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] = File(default=[]),
+    file: UploadFile | None = File(default=None),
     user=Depends(require_roles("student"))
 ):
+    upload_list = [f for f in files if hasattr(f, "read")] if files else []
+    if file and hasattr(file, "read"):
+        upload_list.append(file)
+    files = upload_list
     student_id = user.get("student_id")
     if not student_id:
         raise HTTPException(422, "Student account is not linked to a student profile")
@@ -1002,7 +1022,7 @@ async def student_register_face(
             faces = detected
         faces = primary_face(image, faces)
         if len(faces) != 1:
-            raise HTTPException(400, f"Photo {position}: Could not detect a clear face in the photo. Please align your face inside the camera guide.")
+            raise HTTPException(400, f"Photo {position}: Could not detect a clear face in the photo. Please ensure your face is clearly visible in the camera frame.")
         face = faces[0]
         if not hasattr(face, "embedding") or face.embedding is None:
             raise HTTPException(400, f"Photo {position}: Could not extract facial features. Please retake the photo.")

@@ -66,7 +66,7 @@ Teacher access uses progressive selection. Group-photo attendance loads students
 ## External API
 
 ```bash
-curl -i https://anotherearth.taila10c0b.ts.net/health
+curl -i https://cair-ms-7e06.tail49e3b1.ts.net/health
 ```
 
 Tailscale Funnel must forward to local port `8080`.

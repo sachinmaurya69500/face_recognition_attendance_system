@@ -9,7 +9,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://anotherearth.taila10c0b.ts.net"
+        "EXPO_PUBLIC_API_URL": "https://cair-ms-7e06.tail49e3b1.ts.net"
       }
     },
     "production": {
@@ -17,7 +17,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://anotherearth.taila10c0b.ts.net"
+        "EXPO_PUBLIC_API_URL": "https://cair-ms-7e06.tail49e3b1.ts.net"
       }
     }
   }

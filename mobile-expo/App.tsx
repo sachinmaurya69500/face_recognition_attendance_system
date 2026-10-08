@@ -37,7 +37,8 @@ import Constants from "expo-constants";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
-const STATUS_BAR_HEIGHT = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
+const STATUS_BAR_HEIGHT =
+  Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
 
 // ---------------------------------------------------------------------------
 // DUAL-ENGINE THEME PALETTES (MIDNIGHT COSMOS DARK  +  CLOUD ATLAS LIGHT)
@@ -128,8 +129,20 @@ export const useAppTheme = () => useContext(ThemeContext);
 
 type Role = "admin" | "teacher" | "student";
 
+const DEFAULT_TUNNEL_URL = "https://cair-ms-7e06.tail49e3b1.ts.net";
+
 export function resolveApiBaseUrl(): string {
-  const envUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || DEFAULT_TUNNEL_URL).replace(/\/+$/, "");
+
+  // Remote tunnel or custom URL (e.g. Tailscale / Cloudflare / Public HTTPS)
+  if (
+    envUrl &&
+    !envUrl.includes("10.0.2.2") &&
+    !envUrl.includes("localhost") &&
+    !envUrl.includes("127.0.0.1")
+  ) {
+    return envUrl;
+  }
 
   // On Web browser, 10.0.2.2 cannot be resolved; use localhost
   if (Platform.OS === "web") {
@@ -149,14 +162,6 @@ export function resolveApiBaseUrl(): string {
   const metroHost = hostUri ? hostUri.split(":")[0] : "";
 
   if (metroHost && metroHost !== "localhost" && metroHost !== "127.0.0.1") {
-    if (
-      envUrl &&
-      !envUrl.includes("10.0.2.2") &&
-      !envUrl.includes("localhost") &&
-      !envUrl.includes("127.0.0.1")
-    ) {
-      return envUrl;
-    }
     return `http://${metroHost}:8000`;
   }
 
@@ -184,8 +189,19 @@ export function updateApiBaseUrl(newUrl: string) {
 AsyncStorage.getItem("custom_api_url")
   .then((stored) => {
     if (stored && stored.trim()) {
-      API = stored.trim();
-      http.defaults.baseURL = API;
+      const val = stored.trim();
+      // Only restore if not a stale dead Wi-Fi IP, old tunnel or emulator placeholder
+      if (
+        !val.includes("10.153.209.171") &&
+        !val.includes("10.0.2.2") &&
+        !val.includes("anotherearth")
+      ) {
+        API = val;
+        http.defaults.baseURL = API;
+      } else {
+        // Clear obsolete stored URLs so default tunnel URL takes effect
+        AsyncStorage.removeItem("custom_api_url").catch(() => {});
+      }
     }
   })
   .catch(() => {});
@@ -259,13 +275,20 @@ export default function App() {
 
   if (loading) {
     return (
-      <SafeAreaView style={[styles.splashContainer, { backgroundColor: theme.bg }]}>
+      <SafeAreaView
+        style={[styles.splashContainer, { backgroundColor: theme.bg }]}
+      >
         <StatusBar style={theme.statusBarStyle} />
-        <View style={[styles.splashGlowBg, { backgroundColor: theme.cyanGlow }]} />
+        <View
+          style={[styles.splashGlowBg, { backgroundColor: theme.cyanGlow }]}
+        />
         <View
           style={[
             styles.splashCard,
-            { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+            },
           ]}
         >
           <Image
@@ -273,12 +296,20 @@ export default function App() {
             style={styles.splashLogo}
             resizeMode="contain"
           />
-          <View style={[styles.splashPulseDot, { backgroundColor: theme.cyan }]} />
-          <Text style={[styles.splashTitle, { color: theme.text }]}>PRATYAKSH</Text>
+          <View
+            style={[styles.splashPulseDot, { backgroundColor: theme.cyan }]}
+          />
+          <Text style={[styles.splashTitle, { color: theme.text }]}>
+            PRATYAKSH
+          </Text>
           <Text style={[styles.splashSubtitle, { color: theme.muted }]}>
             AI Academic Attendance System
           </Text>
-          <ActivityIndicator size="large" color={theme.cyan} style={{ marginTop: 24 }} />
+          <ActivityIndicator
+            size="large"
+            color={theme.cyan}
+            style={{ marginTop: 24 }}
+          />
         </View>
       </SafeAreaView>
     );
@@ -320,7 +351,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   const [error, setError] = useState("");
   const [currentApi, setCurrentApi] = useState(API);
   const [showServerModal, setShowServerModal] = useState(false);
-  const [testStatus, setTestStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [testStatus, setTestStatus] = useState<
+    "checking" | "online" | "offline"
+  >("checking");
   const [customInput, setCustomInput] = useState(API);
   const [testingCustom, setTestingCustom] = useState(false);
 
@@ -358,7 +391,10 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     setBusy(true);
     setError("");
     try {
-      const res = await http.post("/auth/login", { username: username.trim(), password });
+      const res = await http.post("/auth/login", {
+        username: username.trim(),
+        password,
+      });
       const userData = {
         ...res.data.user,
         token: res.data.access_token,
@@ -369,13 +405,20 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     } catch (e: any) {
       if (!e?.response) {
         setError(
-          `Cannot reach backend server at:\n${http.defaults.baseURL}\n\nError: ${e?.message || "Network Error"}.\nTap the server pill below to verify or change the API URL.`
+          `Cannot reach backend server at:\n${http.defaults.baseURL}\n\nError: ${e?.message || "Network Error"}.\nTap the server pill below to verify or change the API URL.`,
         );
       } else {
-        setError(
-          e?.response?.data?.detail ||
-            "Authentication failed. Please verify your credentials."
-        );
+        const status = e.response.status;
+        const detail = e.response.data?.detail;
+        if (status === 401) {
+          setError(
+            detail || "Invalid username or password. Please verify credentials.",
+          );
+        } else {
+          setError(
+            `Server error (HTTP ${status}):\n${detail || e.message || "Request failed"}\nEndpoint: ${http.defaults.baseURL}`,
+          );
+        }
       }
     } finally {
       setBusy(false);
@@ -383,7 +426,12 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT }]}>
+    <SafeAreaView
+      style={[
+        styles.safeArea,
+        { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT },
+      ]}
+    >
       <StatusBar style={theme.statusBarStyle} />
 
       {/* Ambient glow blobs */}
@@ -423,7 +471,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             style={[
               styles.themePillBtn,
               {
-                backgroundColor: isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
+                backgroundColor: isDark
+                  ? "rgba(255,255,255,0.07)"
+                  : "rgba(37,99,235,0.08)",
                 borderColor: theme.border,
               },
             ]}
@@ -433,7 +483,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               size={17}
               color={isDark ? theme.amber : theme.blue}
             />
-            <Text style={[styles.themePillText, { color: theme.textSecondary }]}>
+            <Text
+              style={[styles.themePillText, { color: theme.textSecondary }]}
+            >
               {isDark ? "Light" : "Dark"}
             </Text>
           </Pressable>
@@ -475,7 +527,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           <Text style={[styles.brandTitleText, { color: theme.text }]}>
             PRATYAKSH<Text style={{ color: theme.cyan }}>.AI</Text>
           </Text>
-          <Text style={[styles.loginBrandTagline, { color: theme.textSecondary }]}>
+          <Text
+            style={[styles.loginBrandTagline, { color: theme.textSecondary }]}
+          >
             Intelligent Academic Attendance
           </Text>
 
@@ -483,10 +537,15 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           <View
             style={[
               styles.brandStatusTag,
-              { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+              {
+                backgroundColor: theme.cyanGlow,
+                borderColor: theme.borderAccent,
+              },
             ]}
           >
-            <View style={[styles.brandStatusDot, { backgroundColor: theme.cyan }]} />
+            <View
+              style={[styles.brandStatusDot, { backgroundColor: theme.cyan }]}
+            />
             <Text style={[styles.brandStatusTagText, { color: theme.cyan }]}>
               SECURE INSTITUTION NETWORK ACTIVE
             </Text>
@@ -508,13 +567,19 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             },
           ]}
         >
-          <Text style={[styles.cardHeaderTitle, { color: theme.text }]}>Welcome Back</Text>
-          <Text style={[styles.cardHeaderSubtitle, { color: theme.textSecondary }]}>
+          <Text style={[styles.cardHeaderTitle, { color: theme.text }]}>
+            Welcome Back
+          </Text>
+          <Text
+            style={[styles.cardHeaderSubtitle, { color: theme.textSecondary }]}
+          >
             Sign in to your campus portal
           </Text>
 
           {/* Role Selector */}
-          <View style={[styles.roleTabsWrap, { backgroundColor: theme.bgElevated }]}>
+          <View
+            style={[styles.roleTabsWrap, { backgroundColor: theme.bgElevated }]}
+          >
             {(
               [
                 { id: "admin", label: "Admin", icon: "shield-crown-outline" },
@@ -563,13 +628,16 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
           {/* Username */}
           <View style={styles.formGroup}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>IDENTIFIER</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              IDENTIFIER
+            </Text>
             <View
               style={[
                 styles.inputContainerBox,
                 {
                   backgroundColor: theme.bgElevated,
-                  borderColor: username.length > 0 ? theme.borderAccent : theme.border,
+                  borderColor:
+                    username.length > 0 ? theme.borderAccent : theme.border,
                 },
               ]}
             >
@@ -592,13 +660,16 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
           {/* Password */}
           <View style={styles.formGroup}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PASSWORD</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              PASSWORD
+            </Text>
             <View
               style={[
                 styles.inputContainerBox,
                 {
                   backgroundColor: theme.bgElevated,
-                  borderColor: password.length > 0 ? theme.borderAccent : theme.border,
+                  borderColor:
+                    password.length > 0 ? theme.borderAccent : theme.border,
                 },
               ]}
             >
@@ -616,7 +687,10 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 placeholder="Enter your password"
                 placeholderTextColor={theme.muted}
               />
-              <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
+              <Pressable
+                onPress={() => setShowPassword((v) => !v)}
+                style={styles.eyeBtn}
+              >
                 <MaterialCommunityIcons
                   name={showPassword ? "eye-off-outline" : "eye-outline"}
                   size={19}
@@ -634,8 +708,14 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 { backgroundColor: theme.roseGlow, borderColor: theme.rose },
               ]}
             >
-              <MaterialCommunityIcons name="alert-circle-outline" size={17} color={theme.rose} />
-              <Text style={[styles.errorBannerText, { color: theme.rose }]}>{error}</Text>
+              <MaterialCommunityIcons
+                name="alert-circle-outline"
+                size={17}
+                color={theme.rose}
+              />
+              <Text style={[styles.errorBannerText, { color: theme.rose }]}>
+                {error}
+              </Text>
             </View>
           )}
 
@@ -657,7 +737,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"} />
+              <ActivityIndicator
+                color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"}
+              />
             ) : (
               <View style={styles.submitRow}>
                 <Text
@@ -666,7 +748,11 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     { color: theme.mode === "dark" ? "#070B13" : "#FFFFFF" },
                   ]}
                 >
-                  {role === "admin" ? "SIGN IN AS ADMIN" : role === "teacher" ? "SIGN IN AS FACULTY" : "SIGN IN AS STUDENT"}
+                  {role === "admin"
+                    ? "SIGN IN AS ADMIN"
+                    : role === "teacher"
+                      ? "SIGN IN AS FACULTY"
+                      : "SIGN IN AS STUDENT"}
                 </Text>
                 <MaterialCommunityIcons
                   name="arrow-right"
@@ -698,10 +784,17 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 },
               ]}
             />
-            <Text style={[styles.serverPillText, { color: theme.textSecondary }]} numberOfLines={1}>
+            <Text
+              style={[styles.serverPillText, { color: theme.textSecondary }]}
+              numberOfLines={1}
+            >
               API: {currentApi}
             </Text>
-            <MaterialCommunityIcons name="cog-outline" size={16} color={theme.cyan} />
+            <MaterialCommunityIcons
+              name="cog-outline"
+              size={16}
+              color={theme.cyan}
+            />
           </Pressable>
         </View>
 
@@ -724,7 +817,10 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           <Pressable
             style={[
               styles.modalSheetCard,
-              { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+              {
+                backgroundColor: theme.cardGlass,
+                borderColor: theme.borderBright,
+              },
             ]}
             onPress={(e) => e.stopPropagation()}
           >
@@ -733,24 +829,36 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 Server Connection (Docker)
               </Text>
               <Pressable onPress={() => setShowServerModal(false)}>
-                <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+                <MaterialCommunityIcons
+                  name="close"
+                  size={22}
+                  color={theme.text}
+                />
               </Pressable>
             </View>
 
-            <Text style={[styles.fieldLabelText, { color: theme.muted, marginTop: 10 }]}>
+            <Text
+              style={[
+                styles.fieldLabelText,
+                { color: theme.muted, marginTop: 10 },
+              ]}
+            >
               API ADDRESS (HOST OR LAN IP)
             </Text>
             <View
               style={[
                 styles.inputContainerBox,
-                { backgroundColor: theme.bgElevated, borderColor: theme.borderAccent },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.borderAccent,
+                },
               ]}
             >
               <TextInput
                 style={[styles.textInputBox, { color: theme.text }]}
                 value={customInput}
                 onChangeText={setCustomInput}
-                placeholder="http://10.153.209.171:8000"
+                placeholder="https://cair-ms-7e06.tail49e3b1.ts.net"
                 placeholderTextColor={theme.muted}
                 autoCapitalize="none"
               />
@@ -760,7 +868,12 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               <Pressable
                 style={[
                   styles.smallActionBtn,
-                  { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.cyan, paddingVertical: 12 },
+                  {
+                    flex: 1,
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.cyan,
+                    paddingVertical: 12,
+                  },
                 ]}
                 onPress={async () => {
                   setTestingCustom(true);
@@ -772,13 +885,13 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     if (res.data?.status === "ok") {
                       Alert.alert(
                         "Connection Success ✓",
-                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`
+                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`,
                       );
                     }
                   } catch (err: any) {
                     Alert.alert(
                       "Connection Failed ✗",
-                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`
+                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`,
                     );
                   } finally {
                     setTestingCustom(false);
@@ -790,8 +903,14 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                   <ActivityIndicator size="small" color={theme.cyan} />
                 ) : (
                   <>
-                    <MaterialCommunityIcons name="lan-connect" size={16} color={theme.cyan} />
-                    <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>
+                    <MaterialCommunityIcons
+                      name="lan-connect"
+                      size={16}
+                      color={theme.cyan}
+                    />
+                    <Text
+                      style={[styles.smallActionBtnText, { color: theme.cyan }]}
+                    >
                       TEST PING
                     </Text>
                   </>
@@ -801,7 +920,12 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               <Pressable
                 style={[
                   styles.smallActionBtn,
-                  { flex: 1, backgroundColor: theme.cyan, borderColor: theme.cyan, paddingVertical: 12 },
+                  {
+                    flex: 1,
+                    backgroundColor: theme.cyan,
+                    borderColor: theme.cyan,
+                    paddingVertical: 12,
+                  },
                 ]}
                 onPress={() => {
                   const cleaned = customInput.trim().replace(/\/+$/, "");
@@ -812,27 +936,63 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     .get(`${cleaned}/health`, { timeout: 4000 })
                     .then(() => setTestStatus("online"))
                     .catch(() => setTestStatus("offline"));
-                  Alert.alert("Server Configured", `API URL updated to:\n${cleaned}`);
+                  Alert.alert(
+                    "Server Configured",
+                    `API URL updated to:\n${cleaned}`,
+                  );
                 }}
               >
-                <MaterialCommunityIcons name="content-save-outline" size={16} color="#000" />
-                <Text style={[styles.smallActionBtnText, { color: "#000", fontWeight: "700" }]}>
+                <MaterialCommunityIcons
+                  name="content-save-outline"
+                  size={16}
+                  color="#000"
+                />
+                <Text
+                  style={[
+                    styles.smallActionBtnText,
+                    { color: "#000", fontWeight: "700" },
+                  ]}
+                >
                   SAVE & USE
                 </Text>
               </Pressable>
             </View>
 
-            <Text style={[styles.fieldLabelText, { color: theme.muted, marginTop: 18 }]}>
+            <Text
+              style={[
+                styles.fieldLabelText,
+                { color: theme.muted, marginTop: 18 },
+              ]}
+            >
               QUICK PRESETS
             </Text>
 
             <View style={{ gap: 8, marginTop: 6 }}>
               {[
-                { label: "Host Wi-Fi LAN (Port 8000)", url: "http://10.153.209.171:8000" },
-                { label: "Host Wi-Fi LAN (Nginx 8080)", url: "http://10.153.209.171:8080" },
-                { label: "Localhost (Port 8000)", url: "http://localhost:8000" },
-                { label: "Localhost (Nginx 8080)", url: "http://localhost:8080" },
-                { label: "Android Emulator (Port 8000)", url: "http://10.0.2.2:8000" },
+                {
+                  label: "Tailscale Tunnel (Remote)",
+                  url: "https://cair-ms-7e06.tail49e3b1.ts.net",
+                },
+                {
+                  label: "Host Wi-Fi Direct (Port 8000)",
+                  url: "http://192.168.0.108:8000",
+                },
+                {
+                  label: "Host Wi-Fi Nginx (Port 8080)",
+                  url: "http://192.168.0.108:8080",
+                },
+                {
+                  label: "Localhost Direct (Port 8000)",
+                  url: "http://localhost:8000",
+                },
+                {
+                  label: "Localhost Nginx (Port 8080)",
+                  url: "http://localhost:8080",
+                },
+                {
+                  label: "Android Emulator (Port 8000)",
+                  url: "http://10.0.2.2:8000",
+                },
               ].map((preset) => (
                 <Pressable
                   key={preset.url}
@@ -841,7 +1001,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     {
                       paddingVertical: 10,
                       backgroundColor: theme.bgElevated,
-                      borderColor: currentApi === preset.url ? theme.cyan : theme.border,
+                      borderColor:
+                        currentApi === preset.url ? theme.cyan : theme.border,
                     },
                   ]}
                   onPress={() => {
@@ -856,15 +1017,27 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                   }}
                 >
                   <View style={{ flex: 1 }}>
-                    <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}>
+                    <Text
+                      style={{
+                        color: theme.text,
+                        fontSize: 13,
+                        fontWeight: "600",
+                      }}
+                    >
                       {preset.label}
                     </Text>
-                    <Text style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}>
+                    <Text
+                      style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}
+                    >
                       {preset.url}
                     </Text>
                   </View>
                   {currentApi === preset.url && (
-                    <MaterialCommunityIcons name="check-circle" size={18} color={theme.cyan} />
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={18}
+                      color={theme.cyan}
+                    />
                   )}
                 </Pressable>
               ))}
@@ -921,10 +1094,18 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
   };
 
   const displayName =
-    user.display_name || user.name || user.username || (role === "admin" ? "Admin" : "User");
+    user.display_name ||
+    user.name ||
+    user.username ||
+    (role === "admin" ? "Admin" : "User");
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT }]}>
+    <SafeAreaView
+      style={[
+        styles.safeArea,
+        { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT },
+      ]}
+    >
       <StatusBar style={theme.statusBarStyle} />
 
       {/* ── Premium Frosted Glass Top Bar ── */}
@@ -972,15 +1153,24 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
               <View
                 style={[
                   styles.roleChipPill,
-                  { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+                  {
+                    backgroundColor: theme.cyanGlow,
+                    borderColor: theme.borderAccent,
+                  },
                 ]}
               >
                 <Text style={[styles.roleChipText, { color: theme.cyan }]}>
-                  {role === "admin" ? "ADMIN" : role === "teacher" ? "FACULTY" : "STUDENT"}
+                  {role === "admin"
+                    ? "ADMIN"
+                    : role === "teacher"
+                      ? "FACULTY"
+                      : "STUDENT"}
                 </Text>
               </View>
             </View>
-            <Text style={[styles.greetingHeaderSub, { color: theme.textSecondary }]}>
+            <Text
+              style={[styles.greetingHeaderSub, { color: theme.textSecondary }]}
+            >
               {getGreeting()}, {displayName.split(" ")[0]}
             </Text>
           </View>
@@ -994,7 +1184,9 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             style={[
               styles.topIconBtn,
               {
-                backgroundColor: isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
+                backgroundColor: isDark
+                  ? "rgba(255,255,255,0.07)"
+                  : "rgba(37,99,235,0.08)",
                 borderColor: theme.border,
               },
             ]}
@@ -1012,23 +1204,37 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             style={[
               styles.topIconBtn,
               {
-                backgroundColor: activeTab === "Alerts"
-                  ? theme.cyanGlow
-                  : isDark ? "rgba(255,255,255,0.07)" : "rgba(37,99,235,0.08)",
-                borderColor: activeTab === "Alerts" ? theme.borderAccent : theme.border,
+                backgroundColor:
+                  activeTab === "Alerts"
+                    ? theme.cyanGlow
+                    : isDark
+                      ? "rgba(255,255,255,0.07)"
+                      : "rgba(37,99,235,0.08)",
+                borderColor:
+                  activeTab === "Alerts" ? theme.borderAccent : theme.border,
               },
             ]}
           >
             <MaterialCommunityIcons
               name={unreadCount > 0 ? "bell-badge-outline" : "bell-outline"}
               size={18}
-              color={activeTab === "Alerts" ? theme.cyan : unreadCount > 0 ? theme.amber : theme.textSecondary}
+              color={
+                activeTab === "Alerts"
+                  ? theme.cyan
+                  : unreadCount > 0
+                    ? theme.amber
+                    : theme.textSecondary
+              }
             />
             {unreadCount > 0 && (
               <View
                 style={[
                   styles.badgeDotGlow,
-                  { backgroundColor: theme.rose, borderColor: theme.bg, borderWidth: 1.5 },
+                  {
+                    backgroundColor: theme.rose,
+                    borderColor: theme.bg,
+                    borderWidth: 1.5,
+                  },
                 ]}
               />
             )}
@@ -1040,8 +1246,10 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             style={[
               styles.topAvatarPill,
               {
-                backgroundColor: activeTab === "Profile" ? theme.cyanGlow : theme.card,
-                borderColor: activeTab === "Profile" ? theme.cyan : theme.borderBright,
+                backgroundColor:
+                  activeTab === "Profile" ? theme.cyanGlow : theme.card,
+                borderColor:
+                  activeTab === "Profile" ? theme.cyan : theme.borderBright,
                 shadowColor: theme.cyan,
                 shadowOffset: { width: 0, height: 0 },
                 shadowOpacity: activeTab === "Profile" ? 0.4 : 0,
@@ -1051,7 +1259,10 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             ]}
           >
             {user.profile_photo_base64 ? (
-              <Image source={{ uri: user.profile_photo_base64 }} style={styles.avatarImg} />
+              <Image
+                source={{ uri: user.profile_photo_base64 }}
+                style={styles.avatarImg}
+              />
             ) : (
               <Text style={[styles.avatarInitialText, { color: theme.cyan }]}>
                 {displayName.charAt(0).toUpperCase()}
@@ -1118,9 +1329,11 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                 ]}
               >
                 <MaterialCommunityIcons
-                  name={isActive
-                    ? (iconInfo.name.replace("-outline", "") as any)
-                    : (iconInfo.name as any)}
+                  name={
+                    isActive
+                      ? (iconInfo.name.replace("-outline", "") as any)
+                      : (iconInfo.name as any)
+                  }
                   size={21}
                   color={isActive ? theme.cyan : theme.muted}
                 />
@@ -1158,7 +1371,10 @@ function getTabIcon(tab: string, role: Role) {
       return { name: "layers-outline", label: "Hierarchy" };
     case "Attendance":
       return {
-        name: role === "teacher" ? "camera-enhance-outline" : "calendar-check-outline",
+        name:
+          role === "teacher"
+            ? "camera-enhance-outline"
+            : "calendar-check-outline",
         label: "Attendance",
       };
     case "Classes":
@@ -1204,7 +1420,11 @@ function ScreenRenderer({
       return <FaceRegistration go={go} />;
 
     case "Students":
-      return role === "teacher" ? <TeacherStudentsRoster /> : <AdminStudentsDirectory go={go} />;
+      return role === "teacher" ? (
+        <TeacherStudentsRoster />
+      ) : (
+        <AdminStudentsDirectory go={go} />
+      );
     case "Teachers":
       return <AdminTeachersDirectory go={go} />;
     case "Academic":
@@ -1231,8 +1451,10 @@ function ScreenRenderer({
       return <NotificationsView />;
 
     case "Profile":
-      if (role === "admin") return <AdminProfile user={user} onLogout={onLogout} />;
-      if (role === "teacher") return <TeacherProfile user={user} onLogout={onLogout} />;
+      if (role === "admin")
+        return <AdminProfile user={user} onLogout={onLogout} />;
+      if (role === "teacher")
+        return <TeacherProfile user={user} onLogout={onLogout} />;
       return <StudentProfile user={user} onLogout={onLogout} />;
 
     default:
@@ -1265,7 +1487,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           duration: 1200,
           useNativeDriver: true,
         }),
-      ])
+      ]),
     );
     loop.start();
     return () => loop.stop();
@@ -1299,7 +1521,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
 
   const faculty = users.filter((u) => u.role === "teacher");
   const presentCount = attendance.filter(
-    (x) => String(x.status || "").toUpperCase() === "PRESENT"
+    (x) => String(x.status || "").toUpperCase() === "PRESENT",
   ).length;
   const attendanceRate = attendance.length
     ? Math.round((presentCount / attendance.length) * 100)
@@ -1325,7 +1547,10 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           <View
             style={[
               styles.executiveStatusBadge,
-              { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+              {
+                backgroundColor: theme.cyanGlow,
+                borderColor: theme.borderAccent,
+              },
             ]}
           >
             <Animated.View
@@ -1338,7 +1563,9 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
               ATTENDANCE SYSTEM ACTIVE
             </Text>
           </View>
-          <Text style={[styles.executiveDateText, { color: theme.muted }]}>{todayDate}</Text>
+          <Text style={[styles.executiveDateText, { color: theme.muted }]}>
+            {todayDate}
+          </Text>
         </View>
 
         <Text style={[styles.executiveHeroHeading, { color: theme.text }]}>
@@ -1412,7 +1639,12 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
             { day: "Fri", rate: 86 },
           ].map((bar) => (
             <View key={bar.day} style={styles.sparklineCol}>
-              <View style={[styles.sparklineBarTrack, { backgroundColor: theme.bgElevated }]}>
+              <View
+                style={[
+                  styles.sparklineBarTrack,
+                  { backgroundColor: theme.bgElevated },
+                ]}
+              >
                 <View
                   style={[
                     styles.sparklineBarFill,
@@ -1420,14 +1652,18 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
                   ]}
                 />
               </View>
-              <Text style={[styles.sparklineDayLabel, { color: theme.muted }]}>{bar.day}</Text>
+              <Text style={[styles.sparklineDayLabel, { color: theme.muted }]}>
+                {bar.day}
+              </Text>
             </View>
           ))}
         </View>
       </View>
 
       {/* Rapid Commands Grid */}
-      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>QUICK ACTIONS</Text>
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+        QUICK ACTIONS
+      </Text>
       <View style={styles.rapidCommandsGrid}>
         <RapidCommandButton
           title="Add Student"
@@ -1465,7 +1701,9 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           RECENT ATTENDANCE
         </Text>
         <Pressable onPress={() => go("Attendance")}>
-          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>View All Records</Text>
+          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>
+            View All Records
+          </Text>
         </Pressable>
       </View>
 
@@ -1510,7 +1748,10 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
               />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.streamItemTitle, { color: theme.text }]} numberOfLines={1}>
+              <Text
+                style={[styles.streamItemTitle, { color: theme.text }]}
+                numberOfLines={1}
+              >
                 {log.name || log.student_id || "Student Attendance"}
               </Text>
               <Text style={[styles.streamItemSub, { color: theme.muted }]}>
@@ -1525,7 +1766,11 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
             </View>
             <HoloStatusPill
               label={log.status || "Present"}
-              tone={String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"}
+              tone={
+                String(log.status).toUpperCase() === "PRESENT"
+                  ? "success"
+                  : "danger"
+              }
             />
           </View>
         ))
@@ -1579,10 +1824,17 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
         <View
           style={[
             styles.teacherHeroPillRow,
-            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+            {
+              backgroundColor: theme.cyanGlow,
+              borderColor: theme.borderAccent,
+            },
           ]}
         >
-          <MaterialCommunityIcons name="face-recognition" size={14} color={theme.cyan} />
+          <MaterialCommunityIcons
+            name="face-recognition"
+            size={14}
+            color={theme.cyan}
+          />
           <Text style={[styles.teacherHeroPillText, { color: theme.cyan }]}>
             AUTOMATED RECOGNITION READY
           </Text>
@@ -1591,8 +1843,14 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
         <Text style={[styles.teacherHeroMainHeading, { color: theme.text }]}>
           Take Class Attendance
         </Text>
-        <Text style={[styles.teacherHeroDescription, { color: theme.textSecondary }]}>
-          Capture a classroom photo. Verified student attendance is marked instantly.
+        <Text
+          style={[
+            styles.teacherHeroDescription,
+            { color: theme.textSecondary },
+          ]}
+        >
+          Capture a classroom photo. Verified student attendance is marked
+          instantly.
         </Text>
 
         <Pressable
@@ -1622,7 +1880,9 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
       </View>
 
       {/* Metrics Row */}
-      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>TODAY'S STATS</Text>
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+        TODAY'S STATS
+      </Text>
       <View style={styles.teacherMetricsRow}>
         <View
           style={[
@@ -1630,9 +1890,17 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
           ]}
         >
-          <MaterialCommunityIcons name="calendar-month-outline" size={22} color={theme.cyan} />
-          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>{schedule.length}</Text>
-          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Classes</Text>
+          <MaterialCommunityIcons
+            name="calendar-month-outline"
+            size={22}
+            color={theme.cyan}
+          />
+          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>
+            {schedule.length}
+          </Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>
+            Classes
+          </Text>
         </View>
         <View
           style={[
@@ -1640,9 +1908,17 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
           ]}
         >
-          <MaterialCommunityIcons name="account-check-outline" size={22} color={theme.emerald} />
-          <Text style={[styles.teacherMetricDigit, { color: theme.emerald }]}>{presentCount}</Text>
-          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Present</Text>
+          <MaterialCommunityIcons
+            name="account-check-outline"
+            size={22}
+            color={theme.emerald}
+          />
+          <Text style={[styles.teacherMetricDigit, { color: theme.emerald }]}>
+            {presentCount}
+          </Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>
+            Present
+          </Text>
         </View>
         <View
           style={[
@@ -1650,17 +1926,29 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
           ]}
         >
-          <MaterialCommunityIcons name="layers-outline" size={22} color={theme.amber} />
-          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>{sessionsCount}</Text>
-          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>Sessions</Text>
+          <MaterialCommunityIcons
+            name="layers-outline"
+            size={22}
+            color={theme.amber}
+          />
+          <Text style={[styles.teacherMetricDigit, { color: theme.text }]}>
+            {sessionsCount}
+          </Text>
+          <Text style={[styles.teacherMetricLabel, { color: theme.muted }]}>
+            Sessions
+          </Text>
         </View>
       </View>
 
       {/* Today's Timetable */}
       <View style={styles.sectionTitleRow}>
-        <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>TODAY'S CLASSES</Text>
+        <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+          TODAY'S CLASSES
+        </Text>
         <Pressable onPress={() => go("Attendance")}>
-          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>Take Attendance</Text>
+          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>
+            Take Attendance
+          </Text>
         </Pressable>
       </View>
 
@@ -1683,7 +1971,10 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             <View
               style={[
                 styles.scheduleTimeBadge,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                },
               ]}
             >
               <Text style={[styles.scheduleTimeStart, { color: theme.cyan }]}>
@@ -1694,15 +1985,23 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
               </Text>
             </View>
             <View style={{ flex: 1, paddingLeft: 12 }}>
-              <Text style={[styles.scheduleLectureTitle, { color: theme.text }]}>
+              <Text
+                style={[styles.scheduleLectureTitle, { color: theme.text }]}
+              >
                 {cls.subject || "Class Lecture"}
               </Text>
-              <Text style={[styles.scheduleLectureMeta, { color: theme.muted }]}>
+              <Text
+                style={[styles.scheduleLectureMeta, { color: theme.muted }]}
+              >
                 {cls.room || "Room Assigned"} • {cls.day || "Today"}
               </Text>
             </View>
             <View style={styles.scheduleChevronBox}>
-              <MaterialCommunityIcons name="chevron-right" size={22} color={theme.cyan} />
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={22}
+                color={theme.cyan}
+              />
             </View>
           </Pressable>
         ))
@@ -1763,15 +2062,25 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
               },
             ]}
           >
-            <Text style={[styles.radialDialPercent, { color: theme.text }]}>{rate}%</Text>
-            <Text style={[styles.radialDialTitle, { color: theme.muted }]}>ATTENDANCE</Text>
+            <Text style={[styles.radialDialPercent, { color: theme.text }]}>
+              {rate}%
+            </Text>
+            <Text style={[styles.radialDialTitle, { color: theme.muted }]}>
+              ATTENDANCE
+            </Text>
           </View>
         </View>
 
         <View style={{ flex: 1 }}>
-          <Text style={[styles.studentCardHeading, { color: theme.text }]}>Academic Standing</Text>
+          <Text style={[styles.studentCardHeading, { color: theme.text }]}>
+            Academic Standing
+          </Text>
           <HoloStatusPill
-            label={isGoodStanding ? "In Good Standing (≥ 75%)" : "Attendance Warning (< 75%)"}
+            label={
+              isGoodStanding
+                ? "In Good Standing (≥ 75%)"
+                : "Attendance Warning (< 75%)"
+            }
             tone={isGoodStanding ? "success" : "warning"}
           />
           <Text style={[styles.studentDegreeText, { color: theme.muted }]}>
@@ -1782,7 +2091,9 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
       </View>
 
       {/* Record Tally Grid */}
-      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>RECORD BREAKDOWN</Text>
+      <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
+        RECORD BREAKDOWN
+      </Text>
       <View style={styles.studentBreakdownGrid}>
         <View
           style={[
@@ -1790,8 +2101,12 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
           ]}
         >
-          <Text style={[styles.studentBreakdownVal, { color: theme.text }]}>{attendance.length}</Text>
-          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Sessions</Text>
+          <Text style={[styles.studentBreakdownVal, { color: theme.text }]}>
+            {attendance.length}
+          </Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>
+            Sessions
+          </Text>
         </View>
         <View
           style={[
@@ -1802,7 +2117,9 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
           <Text style={[styles.studentBreakdownVal, { color: theme.emerald }]}>
             {summary.present || 0}
           </Text>
-          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Present</Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>
+            Present
+          </Text>
         </View>
         <View
           style={[
@@ -1813,7 +2130,9 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
           <Text style={[styles.studentBreakdownVal, { color: theme.rose }]}>
             {summary.absent || 0}
           </Text>
-          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>Absent</Text>
+          <Text style={[styles.studentBreakdownLbl, { color: theme.muted }]}>
+            Absent
+          </Text>
         </View>
       </View>
 
@@ -1877,18 +2196,23 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           onPress: async () => {
             try {
               await http.delete(`/admin/students/${studentId}`);
-              setStudents((prev) => prev.filter((s) => s.student_id !== studentId));
+              setStudents((prev) =>
+                prev.filter((s) => s.student_id !== studentId),
+              );
               setSelectedStudent(null);
-              Alert.alert("Student Removed", `Record for ${studentName} was successfully deleted.`);
+              Alert.alert(
+                "Student Removed",
+                `Record for ${studentName} was successfully deleted.`,
+              );
             } catch (e: any) {
               Alert.alert(
                 "Delete Failed",
-                e?.response?.data?.detail || "Could not delete student record."
+                e?.response?.data?.detail || "Could not delete student record.",
               );
             }
           },
         },
-      ]
+      ],
     );
   };
 
@@ -1906,7 +2230,9 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Students Directory</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Students Directory
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             {students.length} students enrolled
           </Text>
@@ -1949,7 +2275,11 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           />
           {!!search && (
             <Pressable onPress={() => setSearch("")}>
-              <MaterialCommunityIcons name="close-circle" size={17} color={theme.muted} />
+              <MaterialCommunityIcons
+                name="close-circle"
+                size={17}
+                color={theme.muted}
+              />
             </Pressable>
           )}
         </View>
@@ -1957,14 +2287,23 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           style={[
             styles.filterToggleBox,
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
-            showFilters && { backgroundColor: theme.cyan, borderColor: theme.cyan },
+            showFilters && {
+              backgroundColor: theme.cyan,
+              borderColor: theme.cyan,
+            },
           ]}
           onPress={() => setShowFilters((v) => !v)}
         >
           <MaterialCommunityIcons
             name={showFilters ? "filter-check" : "tune-variant"}
             size={19}
-            color={showFilters ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.cyan}
+            color={
+              showFilters
+                ? theme.mode === "dark"
+                  ? "#080C14"
+                  : "#FFFFFF"
+                : theme.cyan
+            }
           />
         </Pressable>
       </View>
@@ -1987,7 +2326,11 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
 
       {/* Student Record Cards */}
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="account-search-outline"
@@ -2006,7 +2349,12 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
             ]}
             onPress={() => setSelectedStudent(student)}
           >
-            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+            <View
+              style={[
+                styles.rosterAvatarBox,
+                { backgroundColor: theme.cyanGlow },
+              ]}
+            >
               <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
                 {(student.name || "S").charAt(0).toUpperCase()}
               </Text>
@@ -2022,7 +2370,11 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                 {student.program || "Course"} • {student.semester || "Semester"}
               </Text>
             </View>
-            <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
+            <MaterialCommunityIcons
+              name="chevron-right"
+              size={20}
+              color={theme.muted}
+            />
           </Pressable>
         ))
       )}
@@ -2042,7 +2394,10 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
             <Pressable
               style={[
                 styles.modalSheetCard,
-                { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.borderBright,
+                },
               ]}
               onPress={(e) => e.stopPropagation()}
             >
@@ -2051,7 +2406,11 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                   Student Details
                 </Text>
                 <Pressable onPress={() => setSelectedStudent(null)}>
-                  <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+                  <MaterialCommunityIcons
+                    name="close"
+                    size={22}
+                    color={theme.text}
+                  />
                 </Pressable>
               </View>
 
@@ -2059,10 +2418,15 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                 <View
                   style={[
                     styles.modalAvatarGlow,
-                    { backgroundColor: theme.cyanGlow, borderColor: theme.cyan },
+                    {
+                      backgroundColor: theme.cyanGlow,
+                      borderColor: theme.cyan,
+                    },
                   ]}
                 >
-                  <Text style={[styles.modalAvatarGlowText, { color: theme.cyan }]}>
+                  <Text
+                    style={[styles.modalAvatarGlowText, { color: theme.cyan }]}
+                  >
                     {(selectedStudent.name || "S").charAt(0).toUpperCase()}
                   </Text>
                 </View>
@@ -2072,42 +2436,76 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                 <View
                   style={[
                     styles.modalIdBadge,
-                    { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+                    {
+                      backgroundColor: theme.cyanGlow,
+                      borderColor: theme.borderAccent,
+                    },
                   ]}
                 >
-                  <Text style={[styles.modalIdBadgeText, { color: theme.cyan }]}>
+                  <Text
+                    style={[styles.modalIdBadgeText, { color: theme.cyan }]}
+                  >
                     {selectedStudent.student_id}
                   </Text>
                 </View>
               </View>
 
               <View style={styles.modalDetailsGroup}>
-                <HoloDetailRow label="University Email" value={selectedStudent.email || "Not registered"} />
-                <HoloDetailRow label="Program" value={selectedStudent.program || "Not registered"} />
-                <HoloDetailRow label="Department" value={selectedStudent.department || "Not registered"} />
-                <HoloDetailRow label="Semester" value={selectedStudent.semester || "Not specified"} />
-                <HoloDetailRow label="Face Verification" value="Active & Profile Registered" />
+                <HoloDetailRow
+                  label="University Email"
+                  value={selectedStudent.email || "Not registered"}
+                />
+                <HoloDetailRow
+                  label="Program"
+                  value={selectedStudent.program || "Not registered"}
+                />
+                <HoloDetailRow
+                  label="Department"
+                  value={selectedStudent.department || "Not registered"}
+                />
+                <HoloDetailRow
+                  label="Semester"
+                  value={selectedStudent.semester || "Not specified"}
+                />
+                <HoloDetailRow
+                  label="Face Verification"
+                  value="Active & Profile Registered"
+                />
               </View>
 
               <View style={styles.modalFooterTwoBtnsRow}>
                 <Pressable
                   style={[
                     styles.modalDangerBtn,
-                    { borderColor: theme.rose, backgroundColor: theme.roseGlow },
+                    {
+                      borderColor: theme.rose,
+                      backgroundColor: theme.roseGlow,
+                    },
                   ]}
                   onPress={() =>
                     handleDeleteStudent(
                       selectedStudent.student_id,
-                      selectedStudent.name || "Student"
+                      selectedStudent.name || "Student",
                     )
                   }
                 >
-                  <MaterialCommunityIcons name="trash-can-outline" size={17} color={theme.rose} />
-                  <Text style={[styles.modalDangerBtnText, { color: theme.rose }]}>DELETE</Text>
+                  <MaterialCommunityIcons
+                    name="trash-can-outline"
+                    size={17}
+                    color={theme.rose}
+                  />
+                  <Text
+                    style={[styles.modalDangerBtnText, { color: theme.rose }]}
+                  >
+                    DELETE
+                  </Text>
                 </Pressable>
 
                 <Pressable
-                  style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyan }]}
+                  style={[
+                    styles.modalDismissBtnFlex,
+                    { backgroundColor: theme.cyan },
+                  ]}
                   onPress={() => setSelectedStudent(null)}
                 >
                   <Text
@@ -2146,14 +2544,16 @@ function TeacherStudentsRoster() {
   }, []);
 
   const visible = students.filter((x) =>
-    JSON.stringify(x).toLowerCase().includes(search.toLowerCase())
+    JSON.stringify(x).toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Assigned Roster</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Assigned Roster
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Students in your assigned courses
           </Text>
@@ -2161,11 +2561,16 @@ function TeacherStudentsRoster() {
         <View
           style={[
             styles.readOnlyTagPill,
-            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+            {
+              backgroundColor: theme.cyanGlow,
+              borderColor: theme.borderAccent,
+            },
           ]}
         >
           <MaterialCommunityIcons name="lock" size={13} color={theme.cyan} />
-          <Text style={[styles.readOnlyTagText, { color: theme.cyan }]}>ROSTER</Text>
+          <Text style={[styles.readOnlyTagText, { color: theme.cyan }]}>
+            ROSTER
+          </Text>
         </View>
       </View>
 
@@ -2186,7 +2591,11 @@ function TeacherStudentsRoster() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="account-group"
@@ -2202,7 +2611,12 @@ function TeacherStudentsRoster() {
               { backgroundColor: theme.cardGlass, borderColor: theme.border },
             ]}
           >
-            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+            <View
+              style={[
+                styles.rosterAvatarBox,
+                { backgroundColor: theme.cyanGlow },
+              ]}
+            >
               <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
                 {(student.name || "S").charAt(0).toUpperCase()}
               </Text>
@@ -2239,7 +2653,9 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
     http
       .get("/admin/users")
       .then((r) =>
-        setTeachers((r.data?.users || []).filter((u: any) => u.role === "teacher"))
+        setTeachers(
+          (r.data?.users || []).filter((u: any) => u.role === "teacher"),
+        ),
       )
       .catch(() => setTeachers([]))
       .finally(() => setBusy(false));
@@ -2260,23 +2676,28 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
               setTeachers((v) => v.filter((t) => t.id !== teacher.id));
               setSelected(null);
             } catch (e: any) {
-              Alert.alert("Error", e?.response?.data?.detail || "Could not delete instructor.");
+              Alert.alert(
+                "Error",
+                e?.response?.data?.detail || "Could not delete instructor.",
+              );
             }
           },
         },
-      ]
+      ],
     );
   };
 
   const visible = teachers.filter((t) =>
-    JSON.stringify(t).toLowerCase().includes(search.toLowerCase())
+    JSON.stringify(t).toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Faculty Directory</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Faculty Directory
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             {teachers.length} academic instructors
           </Text>
@@ -2318,7 +2739,11 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="account-tie"
@@ -2337,8 +2762,17 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
             ]}
             onPress={() => setSelected(teacher)}
           >
-            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.amberGlow }]}>
-              <MaterialCommunityIcons name="account-tie" size={22} color={theme.amber} />
+            <View
+              style={[
+                styles.rosterAvatarBox,
+                { backgroundColor: theme.amberGlow },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="account-tie"
+                size={22}
+                color={theme.amber}
+              />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
               <Text style={[styles.rosterItemName, { color: theme.text }]}>
@@ -2351,7 +2785,11 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                 {teacher.email || "University Faculty"}
               </Text>
             </View>
-            <MaterialCommunityIcons name="chevron-right" size={20} color={theme.muted} />
+            <MaterialCommunityIcons
+              name="chevron-right"
+              size={20}
+              color={theme.muted}
+            />
           </Pressable>
         ))
       )}
@@ -2371,7 +2809,10 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
             <Pressable
               style={[
                 styles.modalSheetCard,
-                { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.borderBright,
+                },
               ]}
               onPress={(e) => e.stopPropagation()}
             >
@@ -2380,13 +2821,26 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                   Faculty Details
                 </Text>
                 <Pressable onPress={() => setSelected(null)}>
-                  <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+                  <MaterialCommunityIcons
+                    name="close"
+                    size={22}
+                    color={theme.text}
+                  />
                 </Pressable>
               </View>
 
               <View style={styles.modalProfileHero}>
-                <View style={[styles.modalAvatarGlow, { backgroundColor: theme.amberGlow }]}>
-                  <MaterialCommunityIcons name="account-tie" size={36} color={theme.amber} />
+                <View
+                  style={[
+                    styles.modalAvatarGlow,
+                    { backgroundColor: theme.amberGlow },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="account-tie"
+                    size={36}
+                    color={theme.amber}
+                  />
                 </View>
                 <Text style={[styles.modalHeroName, { color: theme.text }]}>
                   {selected.display_name || selected.username}
@@ -2394,10 +2848,15 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                 <View
                   style={[
                     styles.modalIdBadge,
-                    { backgroundColor: theme.amberGlow, borderColor: theme.amber },
+                    {
+                      backgroundColor: theme.amberGlow,
+                      borderColor: theme.amber,
+                    },
                   ]}
                 >
-                  <Text style={[styles.modalIdBadgeText, { color: theme.amber }]}>
+                  <Text
+                    style={[styles.modalIdBadgeText, { color: theme.amber }]}
+                  >
                     FACULTY • {selected.username}
                   </Text>
                 </View>
@@ -2405,7 +2864,10 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
 
               <View style={styles.modalDetailsGroup}>
                 <HoloDetailRow label="Username" value={selected.username} />
-                <HoloDetailRow label="Email Address" value={selected.email || "Not specified"} />
+                <HoloDetailRow
+                  label="Email Address"
+                  value={selected.email || "Not specified"}
+                />
                 <HoloDetailRow label="System Role" value="Faculty Instructor" />
               </View>
 
@@ -2413,15 +2875,29 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                 <Pressable
                   style={[
                     styles.modalDangerBtn,
-                    { backgroundColor: theme.roseGlow, borderColor: theme.rose },
+                    {
+                      backgroundColor: theme.roseGlow,
+                      borderColor: theme.rose,
+                    },
                   ]}
                   onPress={() => deleteTeacher(selected)}
                 >
-                  <MaterialCommunityIcons name="trash-can-outline" size={17} color={theme.rose} />
-                  <Text style={[styles.modalDangerBtnText, { color: theme.rose }]}>Delete</Text>
+                  <MaterialCommunityIcons
+                    name="trash-can-outline"
+                    size={17}
+                    color={theme.rose}
+                  />
+                  <Text
+                    style={[styles.modalDangerBtnText, { color: theme.rose }]}
+                  >
+                    Delete
+                  </Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyan }]}
+                  style={[
+                    styles.modalDismissBtnFlex,
+                    { backgroundColor: theme.cyan },
+                  ]}
                   onPress={() => setSelected(null)}
                 >
                   <Text
@@ -2448,7 +2924,8 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
 interface BiometricCameraModalProps {
   visible: boolean;
   onClose: () => void;
-  onCaptureSuccess: (photoUri: string, validationData?: any) => void;
+  onCaptureSuccess?: (photoUri: string, validationData?: any) => void;
+  onCapture?: (photoUri: string, validationData?: any) => void;
   title?: string;
   subtitle?: string;
 }
@@ -2457,13 +2934,14 @@ function BiometricCameraModal({
   visible,
   onClose,
   onCaptureSuccess,
-  title = "Biometric Face Capture",
-  subtitle = "Align face in guide and tap shutter",
+  onCapture,
+  title = "Student Face Capture",
+  subtitle = "Position yourself in frame and tap shutter",
 }: BiometricCameraModalProps) {
   const { theme } = useAppTheme();
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<"front" | "back">("front");
-  const [camera, setCamera] = useState<any>(null);
+  const cameraRef = useRef<any>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2471,50 +2949,28 @@ function BiometricCameraModal({
   const [validationInfo, setValidationInfo] = useState<any>(null);
   const [statusMessage, setStatusMessage] = useState("");
 
-  // Animated Laser Scanner Bar
-  const scanAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (!visible) return;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanAnim, {
-          toValue: 1,
-          duration: 1800,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(scanAnim, {
-          toValue: 0,
-          duration: 1800,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [visible]);
-
-  const laserTranslateY = scanAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-110, 110],
-  });
-
   const handleCapture = async () => {
-    if (!camera || busy) return;
+    if (!cameraRef.current || busy || !cameraReady) return;
     setBusy(true);
-    setStatusMessage("Capturing frame & detecting face...");
+    setStatusMessage("Capturing frame & analyzing photo...");
     try {
-      const photo = await camera.takePictureAsync({
-        quality: 0.85,
-        skipProcessing: false,
-      });
-      if (!photo?.uri) throw new Error("No photo captured from camera");
+      let photo: any;
+      try {
+        photo = await cameraRef.current.takePictureAsync({
+          quality: 0.9,
+          skipProcessing: true,
+        });
+      } catch {
+        photo = await cameraRef.current.takePictureAsync({
+          quality: 0.9,
+          skipProcessing: false,
+        });
+      }
+      if (!photo?.uri) throw new Error("Could not capture image from camera");
 
       setCapturedPhoto(photo.uri);
 
-      // Run detection & embedding pipeline check
+      // Run detection & embedding pipeline check on complete frame
       const data = new FormData();
       data.append("file", {
         uri: photo.uri,
@@ -2523,7 +2979,7 @@ function BiometricCameraModal({
       } as any);
       data.append("target_pose", "any");
 
-      setStatusMessage("Extracting facial features & verifying...");
+      setStatusMessage("Analyzing complete frame for face...");
       const res = await http.post("/validate-face", data, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -2536,14 +2992,14 @@ function BiometricCameraModal({
         setStatusMessage(
           res.data?.user_guidance ||
             res.data?.issues?.[0] ||
-            "No clear face detected. Please ensure good lighting and face camera."
+            "No clear face detected in photo. Please ensure good lighting.",
         );
       }
     } catch (e: any) {
       setStatusMessage(
         e?.response?.data?.detail ||
           e?.message ||
-          "Could not detect face in frame. Please retake photo."
+          "Could not detect face in frame. Please retake photo.",
       );
     } finally {
       setBusy(false);
@@ -2552,7 +3008,20 @@ function BiometricCameraModal({
 
   const handleConfirm = () => {
     if (!capturedPhoto) return;
-    onCaptureSuccess(capturedPhoto, validationInfo);
+    if (!validationInfo?.valid) {
+      Alert.alert(
+        "Face Verification Required",
+        statusMessage ||
+          "Could not detect a clear face in this photo. Please retake the photo with your face inside the guide.",
+        [
+          { text: "Retake Photo", onPress: handleRetake },
+          { text: "Cancel", style: "cancel" },
+        ],
+      );
+      return;
+    }
+    const cb = onCaptureSuccess || onCapture;
+    if (cb) cb(capturedPhoto, validationInfo);
     handleReset();
     onClose();
   };
@@ -2596,11 +3065,15 @@ function BiometricCameraModal({
           setStatusMessage("Face verified! Ready to register.");
         } else {
           setValidationInfo(null);
-          setStatusMessage(vRes.data?.issues?.[0] || "No clear face found in image.");
+          setStatusMessage(
+            vRes.data?.issues?.[0] || "No clear face found in image.",
+          );
         }
       }
     } catch (e: any) {
-      setStatusMessage("Validation error: " + (e?.message || "Please choose another image"));
+      setStatusMessage(
+        "Validation error: " + (e?.message || "Please choose another image"),
+      );
     } finally {
       setBusy(false);
     }
@@ -2609,48 +3082,93 @@ function BiometricCameraModal({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
-      <SafeAreaView style={[styles.biometricModalContainer, { backgroundColor: theme.bg }]}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent={false}
+      onRequestClose={onClose}
+    >
+      <SafeAreaView
+        style={[styles.biometricModalContainer, { backgroundColor: theme.bg }]}
+      >
         {/* Header Bar */}
-        <View style={[styles.biometricModalHeader, { borderBottomColor: theme.border }]}>
+        <View
+          style={[
+            styles.biometricModalHeader,
+            { borderBottomColor: theme.border },
+          ]}
+        >
           <Pressable
             onPress={() => {
               handleReset();
               onClose();
             }}
-            style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+            style={[
+              styles.backBtnCircle,
+              { backgroundColor: theme.card, borderColor: theme.border },
+            ]}
           >
             <MaterialCommunityIcons name="close" size={20} color={theme.text} />
           </Pressable>
           <View style={{ flex: 1, paddingHorizontal: 12 }}>
-            <Text style={[styles.biometricHeaderTitle, { color: theme.text }]} numberOfLines={1}>
+            <Text
+              style={[styles.biometricHeaderTitle, { color: theme.text }]}
+              numberOfLines={1}
+            >
               {title}
             </Text>
-            <Text style={[styles.biometricHeaderSub, { color: theme.muted }]} numberOfLines={1}>
+            <Text
+              style={[styles.biometricHeaderSub, { color: theme.muted }]}
+              numberOfLines={1}
+            >
               {subtitle}
             </Text>
           </View>
           <Pressable
-            onPress={() => setFacing((prev) => (prev === "front" ? "back" : "front"))}
-            style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+            onPress={() =>
+              setFacing((prev) => (prev === "front" ? "back" : "front"))
+            }
+            style={[
+              styles.backBtnCircle,
+              { backgroundColor: theme.card, borderColor: theme.border },
+            ]}
           >
-            <MaterialCommunityIcons name="camera-flip" size={20} color={theme.cyan} />
+            <MaterialCommunityIcons
+              name="camera-flip"
+              size={20}
+              color={theme.cyan}
+            />
           </Pressable>
         </View>
 
         {/* Viewfinder Content */}
         {!permission?.granted ? (
           <View style={styles.biometricPermWrap}>
-            <MaterialCommunityIcons name="camera-off" size={48} color={theme.cyan} />
-            <Text style={[styles.permTitleHolo, { color: theme.text }]}>Camera Access Required</Text>
+            <MaterialCommunityIcons
+              name="camera-off"
+              size={48}
+              color={theme.cyan}
+            />
+            <Text style={[styles.permTitleHolo, { color: theme.text }]}>
+              Camera Access Required
+            </Text>
             <Text style={[styles.permDescHolo, { color: theme.muted }]}>
-              Please grant camera permission to capture and register facial biometrics.
+              Please grant camera permission to capture and register facial
+              biometrics.
             </Text>
             <Pressable
-              style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
+              style={[
+                styles.primaryNeonButton,
+                { backgroundColor: theme.cyan },
+              ]}
               onPress={requestPermission}
             >
-              <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+              <Text
+                style={[
+                  styles.primaryNeonButtonText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
                 GRANT CAMERA ACCESS
               </Text>
             </Pressable>
@@ -2658,13 +3176,89 @@ function BiometricCameraModal({
         ) : capturedPhoto ? (
           /* Preview Mode with Confirmation */
           <View style={styles.biometricPreviewContainer}>
-            <View style={[styles.biometricPreviewCard, { borderColor: validationInfo?.valid ? theme.emerald : theme.amber }]}>
-              <Image source={{ uri: capturedPhoto }} style={styles.biometricPreviewImg} resizeMode="cover" />
-              {validationInfo?.valid && (
-                <View style={[styles.biometricVerifiedBadge, { backgroundColor: theme.emeraldGlow, borderColor: theme.emerald }]}>
-                  <MaterialCommunityIcons name="check-circle" size={18} color={theme.emerald} />
-                  <Text style={[styles.biometricVerifiedText, { color: theme.emerald }]}>
+            <View
+              style={[
+                styles.biometricPreviewCard,
+                {
+                  borderColor: busy
+                    ? theme.cyan
+                    : validationInfo?.valid
+                      ? theme.emerald
+                      : theme.amber,
+                },
+              ]}
+            >
+              <Image
+                source={{ uri: capturedPhoto }}
+                style={styles.biometricPreviewImg}
+                resizeMode="cover"
+              />
+              {busy ? (
+                <View
+                  style={[
+                    styles.biometricVerifiedBadge,
+                    {
+                      backgroundColor: theme.cyanGlow,
+                      borderColor: theme.cyan,
+                    },
+                  ]}
+                >
+                  <ActivityIndicator size="small" color={theme.cyan} />
+                  <Text
+                    style={[
+                      styles.biometricVerifiedText,
+                      { color: theme.cyan, marginLeft: 6 },
+                    ]}
+                  >
+                    ANALYZING FACE...
+                  </Text>
+                </View>
+              ) : validationInfo?.valid ? (
+                <View
+                  style={[
+                    styles.biometricVerifiedBadge,
+                    {
+                      backgroundColor: theme.emeraldGlow,
+                      borderColor: theme.emerald,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="check-circle"
+                    size={18}
+                    color={theme.emerald}
+                  />
+                  <Text
+                    style={[
+                      styles.biometricVerifiedText,
+                      { color: theme.emerald, marginLeft: 6 },
+                    ]}
+                  >
                     FACE DETECTED & VERIFIED
+                  </Text>
+                </View>
+              ) : (
+                <View
+                  style={[
+                    styles.biometricVerifiedBadge,
+                    {
+                      backgroundColor: theme.amberGlow,
+                      borderColor: theme.amber,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="alert-circle"
+                    size={18}
+                    color={theme.amber}
+                  />
+                  <Text
+                    style={[
+                      styles.biometricVerifiedText,
+                      { color: theme.amber, marginLeft: 6 },
+                    ]}
+                  >
+                    NO FACE DETECTED
                   </Text>
                 </View>
               )}
@@ -2676,20 +3270,46 @@ function BiometricCameraModal({
                 style={[
                   styles.biometricStatusBox,
                   {
-                    backgroundColor: validationInfo?.valid ? theme.emeraldGlow : theme.amberGlow,
-                    borderColor: validationInfo?.valid ? theme.emerald : theme.amber,
+                    backgroundColor: busy
+                      ? theme.cyanGlow
+                      : validationInfo?.valid
+                        ? theme.emeraldGlow
+                        : theme.amberGlow,
+                    borderColor: busy
+                      ? theme.cyan
+                      : validationInfo?.valid
+                        ? theme.emerald
+                        : theme.amber,
                   },
                 ]}
               >
                 <MaterialCommunityIcons
-                  name={validationInfo?.valid ? "check-circle-outline" : "alert-circle-outline"}
+                  name={
+                    busy
+                      ? "information-outline"
+                      : validationInfo?.valid
+                        ? "check-circle-outline"
+                        : "alert-circle-outline"
+                  }
                   size={18}
-                  color={validationInfo?.valid ? theme.emerald : theme.amber}
+                  color={
+                    busy
+                      ? theme.cyan
+                      : validationInfo?.valid
+                        ? theme.emerald
+                        : theme.amber
+                  }
                 />
                 <Text
                   style={[
                     styles.biometricStatusBoxText,
-                    { color: validationInfo?.valid ? theme.emerald : theme.amber },
+                    {
+                      color: busy
+                        ? theme.cyan
+                        : validationInfo?.valid
+                          ? theme.emerald
+                          : theme.amber,
+                    },
                   ]}
                 >
                   {statusMessage}
@@ -2700,106 +3320,180 @@ function BiometricCameraModal({
             {/* Actions: Confirm or Retake */}
             <View style={styles.biometricActionsRow}>
               <Pressable
-                style={[styles.biometricRetakeBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+                style={[
+                  styles.biometricRetakeBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                  },
+                ]}
                 onPress={handleRetake}
               >
-                <MaterialCommunityIcons name="camera-retake-outline" size={18} color={theme.text} />
-                <Text style={[styles.biometricRetakeBtnText, { color: theme.text }]}>Retake Photo</Text>
+                <MaterialCommunityIcons
+                  name="camera-retake-outline"
+                  size={18}
+                  color={theme.text}
+                />
+                <Text
+                  style={[styles.biometricRetakeBtnText, { color: theme.text }]}
+                >
+                  Retake Photo
+                </Text>
               </Pressable>
 
               <Pressable
                 style={[
                   styles.biometricConfirmBtn,
-                  { backgroundColor: theme.cyan, shadowColor: theme.cyan },
+                  {
+                    backgroundColor: validationInfo?.valid
+                      ? theme.emerald
+                      : theme.muted,
+                  },
+                  (busy || !validationInfo?.valid) && { opacity: 0.6 },
                 ]}
                 onPress={handleConfirm}
+                disabled={busy}
               >
-                <MaterialCommunityIcons name="check-bold" size={18} color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
-                <Text style={[styles.biometricConfirmBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
-                  USE THIS PHOTO
+                <MaterialCommunityIcons
+                  name={validationInfo?.valid ? "check-bold" : "camera-retake"}
+                  size={18}
+                  color="#FFFFFF"
+                />
+                <Text
+                  style={[
+                    styles.biometricConfirmBtnText,
+                    { color: "#FFFFFF" },
+                  ]}
+                >
+                  {validationInfo?.valid ? "USE THIS PHOTO" : "RETAKE REQUIRED"}
                 </Text>
               </Pressable>
             </View>
           </View>
         ) : (
-          /* Live Camera Viewfinder (NO AUTO CAPTURE - User taps shutter) */
-          <View style={styles.biometricCameraViewport}>
-            <CameraView
-              ref={setCamera}
-              style={StyleSheet.absoluteFillObject}
-              facing={facing}
-              onCameraReady={() => setCameraReady(true)}
-              onMountError={() => setCameraError("Camera unavailable")}
-            />
-
-            {/* Target Reticles */}
-            <View style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]} />
-
-            {/* Oval Face Guide */}
-            <View style={[styles.hudBiometricEllipse, { borderColor: busy ? theme.amber : theme.cyan }]}>
-              <Animated.View
-                style={[
-                  styles.animatedLaserLine,
-                  {
-                    backgroundColor: busy ? theme.amber : theme.cyan,
-                    transform: [{ translateY: laserTranslateY }],
-                  },
-                ]}
+          /* Live Camera Viewfinder & Fixed Bottom Controls */
+          <View style={styles.biometricCameraFullFrame}>
+            {/* Viewfinder area (Full Frame) */}
+            <View style={styles.biometricViewfinderArea}>
+              <CameraView
+                ref={cameraRef}
+                style={StyleSheet.absoluteFillObject}
+                facing={facing}
+                onCameraReady={() => setCameraReady(true)}
+                onMountError={() => setCameraError("Camera unavailable")}
               />
-            </View>
 
-            {/* Telemetry Status Bar */}
-            <View style={[styles.hudLiveTelemetryBar, { borderColor: theme.borderAccent }]}>
+              {/* Viewfinder frame corner markers */}
+              <View
+                style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]}
+              />
+              <View
+                style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]}
+              />
+              <View
+                style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]}
+              />
+              <View
+                style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]}
+              />
+
+              {/* Telemetry Status Bar */}
               <View
                 style={[
-                  styles.hudTelemetryDot,
-                  { backgroundColor: busy ? theme.amber : cameraReady ? theme.emerald : theme.cyan },
+                  styles.hudLiveTelemetryBar,
+                  { borderColor: theme.borderAccent },
                 ]}
-              />
-              <Text style={styles.hudTelemetryLabel}>
-                {busy
-                  ? "PROCESSING BIOMETRICS..."
-                  : cameraReady
-                    ? "CENTER FACE & TAP SHUTTER"
-                    : "STARTING CAMERA..."}
-              </Text>
+              >
+                <View
+                  style={[
+                    styles.hudTelemetryDot,
+                    {
+                      backgroundColor: busy
+                        ? theme.amber
+                        : cameraReady
+                          ? theme.emerald
+                          : theme.cyan,
+                    },
+                  ]}
+                />
+                <Text style={styles.hudTelemetryLabel}>
+                  {busy
+                    ? "ANALYZING BIOMETRICS..."
+                    : cameraReady
+                      ? "FRAME READY • TAP SHUTTER TO CAPTURE"
+                      : "STARTING CAMERA..."}
+                </Text>
+              </View>
             </View>
 
-            {/* Bottom Controls Bar: Gallery + Tactile Shutter */}
-            <View style={styles.biometricBottomControlBar}>
+            {/* Bottom Controls Bar: Pinned Below Viewfinder */}
+            <View
+              style={[
+                styles.biometricBottomControlBar,
+                { backgroundColor: theme.bgElevated, borderTopColor: theme.border },
+              ]}
+            >
               <Pressable
                 onPress={pickFromGallery}
-                style={[styles.galleryIconBtn, { backgroundColor: theme.cardGlass, borderColor: theme.border }]}
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.galleryIconBtn,
+                  {
+                    backgroundColor: theme.card,
+                    borderColor: theme.border,
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
               >
-                <MaterialCommunityIcons name="image-multiple-outline" size={22} color={theme.text} />
+                <MaterialCommunityIcons
+                  name="image-multiple-outline"
+                  size={22}
+                  color={theme.text}
+                />
               </Pressable>
 
               {/* Shutter Button (Manual Photo Capture) */}
               <Pressable
                 onPress={handleCapture}
-                disabled={busy}
+                disabled={busy || !cameraReady}
                 style={({ pressed }) => [
                   styles.shutterOuterRing,
                   { borderColor: theme.cyan },
                   pressed && { transform: [{ scale: 0.94 }] },
-                  busy && { opacity: 0.6 },
+                  (busy || !cameraReady) && { opacity: 0.6 },
                 ]}
               >
                 {busy ? (
                   <ActivityIndicator color={theme.cyan} />
                 ) : (
-                  <View style={[styles.shutterInnerCircle, { backgroundColor: theme.cyan }]} />
+                  <View
+                    style={[
+                      styles.shutterInnerCircle,
+                      { backgroundColor: theme.cyan },
+                    ]}
+                  />
                 )}
               </Pressable>
 
               <Pressable
-                onPress={() => setFacing((prev) => (prev === "front" ? "back" : "front"))}
-                style={[styles.galleryIconBtn, { backgroundColor: theme.cardGlass, borderColor: theme.border }]}
+                onPress={() =>
+                  setFacing((prev) => (prev === "front" ? "back" : "front"))
+                }
+                disabled={busy}
+                style={({ pressed }) => [
+                  styles.galleryIconBtn,
+                  {
+                    backgroundColor: theme.card,
+                    borderColor: theme.border,
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
               >
-                <MaterialCommunityIcons name="camera-flip-outline" size={22} color={theme.text} />
+                <MaterialCommunityIcons
+                  name="camera-flip-outline"
+                  size={22}
+                  color={theme.text}
+                />
               </Pressable>
             </View>
           </View>
@@ -2814,7 +3508,9 @@ function BiometricCameraModal({
 // ---------------------------------------------------------------------------
 function AddStudent({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
-  const [studentId, setStudentId] = useState(`STU-${Date.now().toString().slice(-6)}`);
+  const [studentId, setStudentId] = useState(
+    `STU-${Date.now().toString().slice(-6)}`,
+  );
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -2822,6 +3518,8 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   const [program, setProgram] = useState("");
   const [sectionId, setSectionId] = useState<number | null>(null);
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
+  const [photoValidation, setPhotoValidation] = useState<any>(null);
+  const [isValidatingPhoto, setIsValidatingPhoto] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -2831,7 +3529,10 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       if (val) {
         try {
           const arr = JSON.parse(val);
-          if (Array.isArray(arr) && arr.length > 0) setCapturedPhoto(arr[0]);
+          if (Array.isArray(arr) && arr.length > 0) {
+            setCapturedPhoto(arr[0]);
+            setPhotoValidation({ valid: true });
+          }
         } catch {}
       }
     });
@@ -2844,20 +3545,56 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         quality: 0.85,
       });
       if (!res.canceled && res.assets?.[0]?.uri) {
-        setCapturedPhoto(res.assets[0].uri);
+        const uri = res.assets[0].uri;
+        setCapturedPhoto(uri);
+        setIsValidatingPhoto(true);
+        try {
+          const data = new FormData();
+          data.append("file", {
+            uri,
+            name: "gallery.jpg",
+            type: "image/jpeg",
+          } as any);
+          data.append("target_pose", "any");
+          const vRes = await http.post("/validate-face", data, {
+            headers: { "Content-Type": "multipart/form-data" },
+          });
+          setPhotoValidation(vRes.data);
+        } catch (err: any) {
+          setPhotoValidation({
+            valid: false,
+            issues: [
+              err?.response?.data?.detail || "Could not validate face in selected photo.",
+            ],
+          });
+        } finally {
+          setIsValidatingPhoto(false);
+        }
       }
     } catch {}
   };
 
   const saveStudent = async () => {
     if (!name.trim()) {
-      Alert.alert("Missing Name", "Please enter the student's legal full name.");
+      Alert.alert(
+        "Missing Name",
+        "Please enter the student's legal full name.",
+      );
       return;
     }
     if (!capturedPhoto) {
       Alert.alert(
         "Face Photo Required",
-        "Please take or upload a face photo to generate biometric embeddings for attendance."
+        "Please take or upload a face photo to generate biometric embeddings for attendance.",
+      );
+      return;
+    }
+    if (photoValidation && !photoValidation.valid) {
+      Alert.alert(
+        "Face Verification Required",
+        photoValidation?.user_guidance ||
+          photoValidation?.issues?.[0] ||
+          "The selected photo does not contain a clear face. Please retake the photo.",
       );
       return;
     }
@@ -2889,12 +3626,13 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       Alert.alert(
         "Student Enrolled",
         `Student ${name.trim()} (${sid}) was successfully registered with biometric face profile!`,
-        [{ text: "View Students", onPress: () => go("Students") }]
+        [{ text: "View Students", onPress: () => go("Students") }],
       );
     } catch (e: any) {
       Alert.alert(
         "Enrollment Failed",
-        e?.response?.data?.detail || "Could not register student. Please check inputs and retry."
+        e?.response?.data?.detail ||
+          "Could not register student. Please check inputs and retry.",
       );
     } finally {
       setBusy(false);
@@ -2907,12 +3645,21 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       <View style={styles.formTopHeaderRow}>
         <Pressable
           onPress={() => go("Students")}
-          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+          style={[
+            styles.backBtnCircle,
+            { backgroundColor: theme.card, borderColor: theme.border },
+          ]}
         >
-          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
+          <MaterialCommunityIcons
+            name="arrow-left"
+            size={19}
+            color={theme.text}
+          />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Enroll Student</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Enroll Student
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Credentials & facial biometric registration
           </Text>
@@ -2925,16 +3672,25 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>STUDENT CREDENTIALS</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          STUDENT CREDENTIALS
+        </Text>
 
         {/* Student ID */}
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>STUDENT IDENTIFIER</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            STUDENT IDENTIFIER
+          </Text>
           <View style={styles.twoColumnGridRow}>
             <TextInput
               style={[
                 styles.textInputHoloPlain,
-                { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+                {
+                  flex: 1,
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
               ]}
               value={studentId}
               onChangeText={setStudentId}
@@ -2942,22 +3698,42 @@ function AddStudent({ go }: { go: (x: string) => void }) {
               placeholderTextColor={theme.muted}
             />
             <Pressable
-              style={[styles.generateIdBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
-              onPress={() => setStudentId(`STU-${Date.now().toString().slice(-6)}`)}
+              style={[
+                styles.generateIdBtn,
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                },
+              ]}
+              onPress={() =>
+                setStudentId(`STU-${Date.now().toString().slice(-6)}`)
+              }
             >
-              <MaterialCommunityIcons name="refresh" size={18} color={theme.cyan} />
-              <Text style={[styles.generateIdBtnText, { color: theme.cyan }]}>New ID</Text>
+              <MaterialCommunityIcons
+                name="refresh"
+                size={18}
+                color={theme.cyan}
+              />
+              <Text style={[styles.generateIdBtnText, { color: theme.cyan }]}>
+                New ID
+              </Text>
             </Pressable>
           </View>
         </View>
 
         {/* Full Name */}
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME *</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            FULL LEGAL NAME *
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={name}
             onChangeText={setName}
@@ -2968,11 +3744,17 @@ function AddStudent({ go }: { go: (x: string) => void }) {
 
         {/* University Email */}
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>UNIVERSITY EMAIL</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            UNIVERSITY EMAIL
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={email}
             onChangeText={setEmail}
@@ -2986,11 +3768,17 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         {/* Date of Birth and Phone */}
         <View style={styles.twoColumnGridRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>DATE OF BIRTH (YYYY-MM-DD)</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              DATE OF BIRTH (YYYY-MM-DD)
+            </Text>
             <TextInput
               style={[
                 styles.textInputHoloPlain,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
               ]}
               value={dateOfBirth}
               onChangeText={setDateOfBirth}
@@ -2999,11 +3787,17 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             />
           </View>
           <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PHONE NUMBER</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              PHONE NUMBER
+            </Text>
             <TextInput
               style={[
                 styles.textInputHoloPlain,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
               ]}
               value={phone}
               onChangeText={setPhone}
@@ -3022,7 +3816,12 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         />
 
         {/* BIOMETRIC FACE PROFILE SECTION */}
-        <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 22 }]}>
+        <Text
+          style={[
+            styles.formGroupHeading,
+            { color: theme.muted, marginTop: 22 },
+          ]}
+        >
           BIOMETRIC FACE PROFILE
         </Text>
 
@@ -3031,32 +3830,100 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           <View
             style={[
               styles.photoVerifiedCard,
-              { backgroundColor: theme.bgElevated, borderColor: theme.emerald },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: isValidatingPhoto
+                  ? theme.cyan
+                  : photoValidation?.valid
+                    ? theme.emerald
+                    : theme.amber,
+              },
             ]}
           >
-            <Image source={{ uri: capturedPhoto }} style={styles.photoVerifiedThumb} resizeMode="cover" />
+            <Image
+              source={{ uri: capturedPhoto }}
+              style={styles.photoVerifiedThumb}
+              resizeMode="cover"
+            />
             <View style={{ flex: 1, paddingLeft: 14 }}>
-              <View style={styles.verifiedRow}>
-                <MaterialCommunityIcons name="check-circle" size={18} color={theme.emerald} />
-                <Text style={[styles.verifiedTitle, { color: theme.emerald }]}>Face Photo Ready</Text>
-              </View>
-              <Text style={[styles.verifiedSub, { color: theme.muted }]}>
-                Face detected. Biometric embeddings will be extracted and saved to database.
-              </Text>
+              {isValidatingPhoto ? (
+                <View style={styles.verifiedRow}>
+                  <ActivityIndicator size="small" color={theme.cyan} />
+                  <Text style={[styles.verifiedTitle, { color: theme.cyan, marginLeft: 6 }]}>
+                    Validating Face...
+                  </Text>
+                </View>
+              ) : photoValidation?.valid ? (
+                <>
+                  <View style={styles.verifiedRow}>
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={18}
+                      color={theme.emerald}
+                    />
+                    <Text style={[styles.verifiedTitle, { color: theme.emerald, marginLeft: 6 }]}>
+                      Face Photo Verified
+                    </Text>
+                  </View>
+                  <Text style={[styles.verifiedSub, { color: theme.muted }]}>
+                    Face detected. Biometric embeddings ready for enrollment.
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <View style={styles.verifiedRow}>
+                    <MaterialCommunityIcons
+                      name="alert-circle"
+                      size={18}
+                      color={theme.amber}
+                    />
+                    <Text style={[styles.verifiedTitle, { color: theme.amber, marginLeft: 6 }]}>
+                      Face Not Verified
+                    </Text>
+                  </View>
+                  <Text style={[styles.verifiedSub, { color: theme.amber }]}>
+                    {photoValidation?.user_guidance ||
+                      photoValidation?.issues?.[0] ||
+                      "Could not detect a clear face in this photo. Please retake."}
+                  </Text>
+                </>
+              )}
               <View style={styles.retakeActionsRow}>
                 <Pressable
-                  style={[styles.smallActionBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                  style={[
+                    styles.smallActionBtn,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
                   onPress={() => setIsCameraOpen(true)}
                 >
-                  <MaterialCommunityIcons name="camera" size={14} color={theme.cyan} />
-                  <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>Retake</Text>
+                  <MaterialCommunityIcons
+                    name="camera"
+                    size={14}
+                    color={theme.cyan}
+                  />
+                  <Text
+                    style={[styles.smallActionBtnText, { color: theme.cyan }]}
+                  >
+                    Retake
+                  </Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.smallActionBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                  style={[
+                    styles.smallActionBtn,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
                   onPress={pickFromGallery}
                 >
-                  <MaterialCommunityIcons name="image" size={14} color={theme.text} />
-                  <Text style={[styles.smallActionBtnText, { color: theme.text }]}>Gallery</Text>
+                  <MaterialCommunityIcons
+                    name="image"
+                    size={14}
+                    color={theme.text}
+                  />
+                  <Text
+                    style={[styles.smallActionBtnText, { color: theme.text }]}
+                  >
+                    Gallery
+                  </Text>
                 </Pressable>
               </View>
             </View>
@@ -3066,15 +3933,29 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           <View
             style={[
               styles.biometricPromptCardEnhanced,
-              { backgroundColor: theme.bgElevated, borderColor: theme.cyanGlow },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.cyanGlow,
+              },
             ]}
           >
             <View style={styles.biometricPromptInfoRow}>
-              <View style={[styles.biometricIconBadge, { backgroundColor: theme.card }]}>
-                <MaterialCommunityIcons name="face-recognition" size={28} color={theme.cyan} />
+              <View
+                style={[
+                  styles.biometricIconBadge,
+                  { backgroundColor: theme.card },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="face-recognition"
+                  size={28}
+                  color={theme.cyan}
+                />
               </View>
               <View style={{ flex: 1, paddingLeft: 12 }}>
-                <Text style={[styles.biometricCardTitle, { color: theme.text }]}>
+                <Text
+                  style={[styles.biometricCardTitle, { color: theme.text }]}
+                >
                   Biometric Face Capture
                 </Text>
                 <Text style={[styles.biometricCardSub, { color: theme.muted }]}>
@@ -3085,21 +3966,44 @@ function AddStudent({ go }: { go: (x: string) => void }) {
 
             <View style={styles.biometricButtonsRow}>
               <Pressable
-                style={[styles.openCameraBtnPrimary, { backgroundColor: theme.cyan }]}
+                style={[
+                  styles.openCameraBtnPrimary,
+                  { backgroundColor: theme.cyan },
+                ]}
                 onPress={() => setIsCameraOpen(true)}
               >
-                <MaterialCommunityIcons name="camera" size={19} color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
-                <Text style={[styles.openCameraBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                <MaterialCommunityIcons
+                  name="camera"
+                  size={19}
+                  color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                />
+                <Text
+                  style={[
+                    styles.openCameraBtnText,
+                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                  ]}
+                >
                   TAKE FACE PHOTO
                 </Text>
               </Pressable>
 
               <Pressable
-                style={[styles.chooseGalleryBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+                style={[
+                  styles.chooseGalleryBtn,
+                  { backgroundColor: theme.card, borderColor: theme.border },
+                ]}
                 onPress={pickFromGallery}
               >
-                <MaterialCommunityIcons name="image-plus" size={18} color={theme.text} />
-                <Text style={[styles.chooseGalleryBtnText, { color: theme.text }]}>Gallery</Text>
+                <MaterialCommunityIcons
+                  name="image-plus"
+                  size={18}
+                  color={theme.text}
+                />
+                <Text
+                  style={[styles.chooseGalleryBtnText, { color: theme.text }]}
+                >
+                  Gallery
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -3108,10 +4012,17 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         {/* Submit Actions */}
         <View style={styles.formActionButtonsRow}>
           <Pressable
-            style={[styles.formCancelBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+            style={[
+              styles.formCancelBtn,
+              { backgroundColor: theme.bgElevated, borderColor: theme.border },
+            ]}
             onPress={() => go("Students")}
           >
-            <Text style={[styles.formCancelBtnText, { color: theme.textSecondary }]}>Cancel</Text>
+            <Text
+              style={[styles.formCancelBtnText, { color: theme.textSecondary }]}
+            >
+              Cancel
+            </Text>
           </Pressable>
           <Pressable
             style={[
@@ -3123,9 +4034,16 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+              <ActivityIndicator
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
             ) : (
-              <Text style={[styles.formSubmitBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+              <Text
+                style={[
+                  styles.formSubmitBtnText,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                ]}
+              >
                 ENROLL STUDENT
               </Text>
             )}
@@ -3137,11 +4055,12 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       <BiometricCameraModal
         visible={isCameraOpen}
         onClose={() => setIsCameraOpen(false)}
-        onCaptureSuccess={(uri) => {
+        onCaptureSuccess={(uri, validationData) => {
           setCapturedPhoto(uri);
+          setPhotoValidation(validationData || { valid: true });
         }}
         title="Student Face Capture"
-        subtitle="Align student face in oval and click shutter"
+        subtitle="Position student in frame and tap shutter"
       />
     </View>
   );
@@ -3163,7 +4082,10 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
 
   const save = async () => {
     if (!form.name || !form.username || !form.password) {
-      Alert.alert("Missing Fields", "Please complete name, employee ID, and password.");
+      Alert.alert(
+        "Missing Fields",
+        "Please complete name, employee ID, and password.",
+      );
       return;
     }
     setBusy(true);
@@ -3176,11 +4098,16 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         email: form.email,
         academic_section_ids: selectedSections,
       });
-      Alert.alert("Faculty Created", `Teacher ${form.name} created successfully.`, [
-        { text: "View Faculty", onPress: () => go("Teachers") },
-      ]);
+      Alert.alert(
+        "Faculty Created",
+        `Teacher ${form.name} created successfully.`,
+        [{ text: "View Faculty", onPress: () => go("Teachers") }],
+      );
     } catch (e: any) {
-      Alert.alert("Creation Failed", e?.response?.data?.detail || "Please check inputs.");
+      Alert.alert(
+        "Creation Failed",
+        e?.response?.data?.detail || "Please check inputs.",
+      );
     } finally {
       setBusy(false);
     }
@@ -3191,12 +4118,21 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
       <View style={styles.formTopHeaderRow}>
         <Pressable
           onPress={() => go("Teachers")}
-          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+          style={[
+            styles.backBtnCircle,
+            { backgroundColor: theme.card, borderColor: theme.border },
+          ]}
         >
-          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
+          <MaterialCommunityIcons
+            name="arrow-left"
+            size={19}
+            color={theme.text}
+          />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Add Faculty</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Add Faculty
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Register instructor & department assignment
           </Text>
@@ -3213,11 +4149,17 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
           INSTRUCTOR PROFILE
         </Text>
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>FULL LEGAL NAME</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            FULL LEGAL NAME
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.name}
             onChangeText={(v) => setForm((p) => ({ ...p, name: v }))}
@@ -3227,11 +4169,17 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>UNIVERSITY EMAIL</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            UNIVERSITY EMAIL
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.email}
             onChangeText={(v) => setForm((p) => ({ ...p, email: v }))}
@@ -3249,7 +4197,11 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.username}
             onChangeText={(v) => setForm((p) => ({ ...p, username: v }))}
@@ -3260,11 +4212,17 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>PASSWORD</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            PASSWORD
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.password}
             onChangeText={(v) => setForm((p) => ({ ...p, password: v }))}
@@ -3287,7 +4245,11 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             ]}
             onPress={() => go("Teachers")}
           >
-            <Text style={[styles.formCancelBtnText, { color: theme.textSecondary }]}>Cancel</Text>
+            <Text
+              style={[styles.formCancelBtnText, { color: theme.textSecondary }]}
+            >
+              Cancel
+            </Text>
           </Pressable>
           <Pressable
             style={[
@@ -3299,7 +4261,9 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+              <ActivityIndicator
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
             ) : (
               <Text
                 style={[
@@ -3325,51 +4289,44 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [step, setStep] = useState(0);
   const [captured, setCaptured] = useState<string[]>([]);
-  const [camera, setCamera] = useState<any>(null);
+  const cameraRef = useRef<any>(null);
   const [busy, setBusy] = useState(false);
   const [facing, setFacing] = useState<"front" | "back">("front");
   const [faceDetected, setFaceDetected] = useState(false);
-  const [faceBox, setFaceBox] = useState<[number, number, number, number] | null>(null);
+  const [faceBox, setFaceBox] = useState<
+    [number, number, number, number] | null
+  >(null);
   const [frameSize, setFrameSize] = useState({ width: 1, height: 1 });
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
 
-  // Animated Laser Scanner Bar
-  const scanAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanAnim, {
-          toValue: 1,
-          duration: 1800,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(scanAnim, {
-          toValue: 0,
-          duration: 1800,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, []);
-
-  const laserTranslateY = scanAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-110, 110],
-  });
-
   const steps = [
-    { short: "Center", title: "Center View", guide: "Position face directly inside the oval guide and click photo." },
-    { short: "Chin Up", title: "Tilt Chin Up", guide: "Gently tilt chin upward toward camera and click photo." },
-    { short: "Chin Down", title: "Tilt Chin Down", guide: "Gently tilt chin downward toward camera and click photo." },
-    { short: "Left", title: "Turn Left", guide: "Turn face slightly left and click photo." },
-    { short: "Right", title: "Turn Right", guide: "Turn face slightly right and click photo." },
+    {
+      short: "Center",
+      title: "Center View",
+      guide: "Position face naturally in the frame and click photo.",
+    },
+    {
+      short: "Chin Up",
+      title: "Tilt Chin Up",
+      guide: "Gently tilt chin upward toward camera and click photo.",
+    },
+    {
+      short: "Chin Down",
+      title: "Tilt Chin Down",
+      guide: "Gently tilt chin downward toward camera and click photo.",
+    },
+    {
+      short: "Left",
+      title: "Turn Left",
+      guide: "Turn face slightly left and click photo.",
+    },
+    {
+      short: "Right",
+      title: "Turn Right",
+      guide: "Turn face slightly right and click photo.",
+    },
   ];
 
   useEffect(() => {
@@ -3399,14 +4356,30 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       const bbox = res.data?.face_bbox;
       const imageWidth = Number(res.data?.image_width);
       const imageHeight = Number(res.data?.image_height);
-      if (Array.isArray(bbox) && bbox.length === 4 && imageWidth > 0 && imageHeight > 0) {
+      if (
+        Array.isArray(bbox) &&
+        bbox.length === 4 &&
+        imageWidth > 0 &&
+        imageHeight > 0
+      ) {
         setFaceBox(bbox as [number, number, number, number]);
         setFrameSize({ width: imageWidth, height: imageHeight });
       }
 
-      if (res.data?.face_detected === false) {
-        setStatusMsg("No face detected. Please ensure your face is well-lit and centered.");
-        Alert.alert("Face Not Detected", "No clear face found in frame. Please reposition and click again.");
+      const isValid =
+        res.data?.valid === true ||
+        Number(res.data?.faces_detected) > 0;
+
+      if (!isValid) {
+        const issuesMsg =
+          res.data?.issues?.[0] ||
+          res.data?.user_guidance ||
+          "No clear face found in frame. Please reposition and click again.";
+        setStatusMsg(issuesMsg);
+        Alert.alert(
+          "Face Not Detected",
+          issuesMsg,
+        );
         return;
       }
 
@@ -3418,11 +4391,14 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       if (step < 4) {
         setStep(step + 1);
       } else {
-        await AsyncStorage.setItem("face_registration_photos", JSON.stringify(nextPhotos));
+        await AsyncStorage.setItem(
+          "face_registration_photos",
+          JSON.stringify(nextPhotos),
+        );
         Alert.alert(
           "Biometric Scanning Complete",
           "All 5 face angles were recorded and validated.",
-          [{ text: "Continue Enrollment", onPress: () => go("Add Student") }]
+          [{ text: "Continue Enrollment", onPress: () => go("Add Student") }],
         );
       }
     } catch (e: any) {
@@ -3439,16 +4415,34 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   };
 
   const capturePhoto = async () => {
-    if (!camera || busy) return;
+    if (!cameraRef.current || busy) return;
     try {
-      const photo = await camera.takePictureAsync({
-        quality: 0.88,
-        skipProcessing: true,
-      });
-      if (!photo?.uri) throw new Error("No photo captured");
-      await validateAndAddPhoto(photo.uri);
+      setBusy(true);
+      setStatusMsg("Capturing photo from frame...");
+      let photoUri: string | null = null;
+      try {
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.9,
+          skipProcessing: true,
+        });
+        if (photo?.uri) photoUri = photo.uri;
+      } catch (err: any) {
+        console.warn("Primary capture fallback:", err);
+      }
+      if (!photoUri) {
+        const fallback = await cameraRef.current.takePictureAsync({
+          quality: 0.9,
+        });
+        if (fallback?.uri) photoUri = fallback.uri;
+      }
+      if (!photoUri) throw new Error("Could not acquire image from camera");
+      await validateAndAddPhoto(photoUri);
     } catch (e: any) {
-      Alert.alert("Camera Error", e?.message || "Failed to capture photo from sensor.");
+      setBusy(false);
+      Alert.alert(
+        "Camera Error",
+        e?.message || "Failed to capture photo from sensor.",
+      );
     }
   };
 
@@ -3464,14 +4458,20 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 
   const saveAndFinishEarly = async () => {
     if (captured.length === 0) {
-      Alert.alert("No Photos Captured", "Please capture at least one face photo before saving.");
+      Alert.alert(
+        "No Photos Captured",
+        "Please capture at least one face photo before saving.",
+      );
       return;
     }
-    await AsyncStorage.setItem("face_registration_photos", JSON.stringify(captured));
+    await AsyncStorage.setItem(
+      "face_registration_photos",
+      JSON.stringify(captured),
+    );
     Alert.alert(
       "Biometrics Saved",
       `${captured.length} photo${captured.length > 1 ? "s" : ""} saved for enrollment.`,
-      [{ text: "Continue Enrollment", onPress: () => go("Add Student") }]
+      [{ text: "Continue Enrollment", onPress: () => go("Add Student") }],
     );
   };
 
@@ -3484,7 +4484,11 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
             { backgroundColor: theme.cardGlass, borderColor: theme.border },
           ]}
         >
-          <MaterialCommunityIcons name="camera-off" size={44} color={theme.cyan} />
+          <MaterialCommunityIcons
+            name="camera-off"
+            size={44}
+            color={theme.cyan}
+          />
           <Text style={[styles.permTitleHolo, { color: theme.text }]}>
             Camera Permission Required
           </Text>
@@ -3516,12 +4520,21 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       <View style={styles.formTopHeaderRow}>
         <Pressable
           onPress={() => go("Add Student")}
-          style={[styles.backBtnCircle, { backgroundColor: theme.card, borderColor: theme.border }]}
+          style={[
+            styles.backBtnCircle,
+            { backgroundColor: theme.card, borderColor: theme.border },
+          ]}
         >
-          <MaterialCommunityIcons name="arrow-left" size={19} color={theme.text} />
+          <MaterialCommunityIcons
+            name="arrow-left"
+            size={19}
+            color={theme.text}
+          />
         </Pressable>
         <View style={{ flex: 1, paddingLeft: 12 }}>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Biometric Scan</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Biometric Scan
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Pose {step + 1} of 5: {current.title}
           </Text>
@@ -3561,7 +4574,9 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       </View>
 
       {/* Viewfinder with Animated Laser Beam & Camera Switch */}
-      <View style={[styles.hudCameraViewport, { borderColor: theme.borderAccent }]}>
+      <View
+        style={[styles.hudCameraViewport, { borderColor: theme.borderAccent }]}
+      >
         {cameraError ? (
           <View style={styles.hudCameraErrorWrap}>
             <Text style={{ color: theme.rose }}>Camera Feed Interrupted</Text>
@@ -3569,7 +4584,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         ) : (
           <View style={styles.cameraFrameWrapper}>
             <CameraView
-              ref={setCamera}
+              ref={cameraRef}
               style={StyleSheet.absoluteFillObject}
               facing={facing}
               onCameraReady={() => setCameraReady(true)}
@@ -3578,10 +4593,22 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 
             {/* Camera Flip Overlay Button */}
             <Pressable
-              style={[styles.cameraFlipBtn, { backgroundColor: "rgba(0,0,0,0.6)", borderColor: theme.borderAccent }]}
-              onPress={() => setFacing((f) => (f === "front" ? "back" : "front"))}
+              style={[
+                styles.cameraFlipBtn,
+                {
+                  backgroundColor: "rgba(0,0,0,0.6)",
+                  borderColor: theme.borderAccent,
+                },
+              ]}
+              onPress={() =>
+                setFacing((f) => (f === "front" ? "back" : "front"))
+              }
             >
-              <MaterialCommunityIcons name="camera-flip" size={20} color="#FFFFFF" />
+              <MaterialCommunityIcons
+                name="camera-flip"
+                size={20}
+                color="#FFFFFF"
+              />
             </Pressable>
 
             {faceDetected && faceBox && (
@@ -3600,31 +4627,18 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
             )}
 
             {/* Target Reticles */}
-            <View style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]} />
-            <View style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]} />
-
-            {/* Biometric Ellipse */}
             <View
-              style={[
-                styles.hudBiometricEllipse,
-                faceDetected && [styles.hudBiometricEllipseDone, { borderColor: theme.emerald }],
-                busy && [styles.hudBiometricEllipseScanning, { borderColor: theme.amber }],
-              ]}
-            >
-              {/* Animated Laser Scanning Beam */}
-              <Animated.View
-                style={[
-                  styles.animatedLaserLine,
-                  {
-                    backgroundColor: theme.cyan,
-                    shadowColor: theme.cyan,
-                    transform: [{ translateY: laserTranslateY }],
-                  },
-                ]}
-              />
-            </View>
+              style={[styles.hudCornerTopLeft, { borderColor: theme.cyan }]}
+            />
+            <View
+              style={[styles.hudCornerTopRight, { borderColor: theme.cyan }]}
+            />
+            <View
+              style={[styles.hudCornerBottomLeft, { borderColor: theme.cyan }]}
+            />
+            <View
+              style={[styles.hudCornerBottomRight, { borderColor: theme.cyan }]}
+            />
 
             {/* Telemetry Status Bar */}
             <View
@@ -3636,7 +4650,13 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
               <View
                 style={[
                   styles.hudTelemetryDot,
-                  { backgroundColor: busy ? theme.amber : faceDetected ? theme.emerald : theme.cyan },
+                  {
+                    backgroundColor: busy
+                      ? theme.amber
+                      : faceDetected
+                        ? theme.emerald
+                        : theme.cyan,
+                  },
                 ]}
               />
               <Text style={styles.hudTelemetryLabel} numberOfLines={1}>
@@ -3656,7 +4676,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       {captured.length > 0 && (
         <View style={styles.capturedThumbsRow}>
           {captured.map((uri, i) => (
-            <View key={i} style={[styles.capturedThumbWrap, { borderColor: theme.emerald }]}>
+            <View
+              key={i}
+              style={[styles.capturedThumbWrap, { borderColor: theme.emerald }]}
+            >
               <Image source={{ uri }} style={styles.capturedThumbImg} />
             </View>
           ))}
@@ -3673,7 +4696,9 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         <Text style={[styles.hudInstructionTitle, { color: theme.text }]}>
           Step {step + 1}: {current.title}
         </Text>
-        <Text style={[styles.hudInstructionDesc, { color: theme.textSecondary }]}>
+        <Text
+          style={[styles.hudInstructionDesc, { color: theme.textSecondary }]}
+        >
           {current.guide}
         </Text>
 
@@ -3688,7 +4713,9 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
           disabled={busy}
         >
           {busy ? (
-            <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+            <ActivityIndicator
+              color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+            />
           ) : (
             <View style={styles.submitRow}>
               <MaterialCommunityIcons
@@ -3731,7 +4758,8 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
                   { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
                 ]}
               >
-                SAVE & FINISH ({captured.length} PHOTO{captured.length > 1 ? "S" : ""})
+                SAVE & FINISH ({captured.length} PHOTO
+                {captured.length > 1 ? "S" : ""})
               </Text>
             </View>
           </Pressable>
@@ -3748,8 +4776,14 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
           disabled={busy}
         >
           <View style={styles.submitRow}>
-            <MaterialCommunityIcons name="image-multiple" size={17} color={theme.text} />
-            <Text style={[styles.secondaryHoloButtonText, { color: theme.text }]}>
+            <MaterialCommunityIcons
+              name="image-multiple"
+              size={17}
+              color={theme.text}
+            />
+            <Text
+              style={[styles.secondaryHoloButtonText, { color: theme.text }]}
+            >
               CHOOSE FROM GALLERY
             </Text>
           </View>
@@ -3795,7 +4829,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     if (!scope?.id || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
-        "Please select an academic section and specify course and title."
+        "Please select an academic section and specify course and title.",
       );
       return;
     }
@@ -3814,10 +4848,13 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       setScope({ ...scope, session_id: res.data.session_id });
       Alert.alert(
         "Session Created",
-        "Attendance session created. You may now capture or upload the classroom photo."
+        "Attendance session created. You may now capture or upload the classroom photo.",
       );
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.detail || "Could not initialize session.");
+      Alert.alert(
+        "Error",
+        e?.response?.data?.detail || "Could not initialize session.",
+      );
     } finally {
       setBusy(false);
     }
@@ -3843,15 +4880,22 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       });
 
       if (res.data) {
-        await AsyncStorage.setItem("latest_recognition_result", JSON.stringify(res.data));
-        await AsyncStorage.setItem("active_attendance_session_id", scope.session_id);
+        await AsyncStorage.setItem(
+          "latest_recognition_result",
+          JSON.stringify(res.data),
+        );
+        await AsyncStorage.setItem(
+          "active_attendance_session_id",
+          scope.session_id,
+        );
       }
 
       go("Recognition Results");
     } catch (e: any) {
       Alert.alert(
         "Processing Failed",
-        e?.response?.data?.detail || "Could not process classroom photo. Please retry."
+        e?.response?.data?.detail ||
+          "Could not process classroom photo. Please retry.",
       );
     } finally {
       setBusy(false);
@@ -3887,7 +4931,9 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Take Attendance</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Take Attendance
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Classroom group photo attendance
           </Text>
@@ -3905,11 +4951,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         </Text>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>LECTURE TITLE</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            LECTURE TITLE
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.title}
             onChangeText={(v) => setForm((p) => ({ ...p, title: v }))}
@@ -3919,11 +4971,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>COURSE CODE & TITLE</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            COURSE CODE & TITLE
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.course}
             onChangeText={(v) => setForm((p) => ({ ...p, course: v }))}
@@ -3939,19 +4997,25 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             setAcademicScope(next);
             const found = sections.find((s) =>
               Object.entries(next).every(
-                ([k, v]: any) => !v.length || v.includes(s[k])
-              )
+                ([k, v]: any) => !v.length || v.includes(s[k]),
+              ),
             );
             if (found) setScope(found);
           }}
         />
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>LOCATION / ROOM</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            LOCATION / ROOM
+          </Text>
           <TextInput
             style={[
               styles.textInputHoloPlain,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
             ]}
             value={form.room}
             onChangeText={(v) => setForm((p) => ({ ...p, room: v }))}
@@ -3962,11 +5026,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 
         <View style={styles.twoColumnGridRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>STARTS</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              STARTS
+            </Text>
             <TextInput
               style={[
                 styles.textInputHoloPlain,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
               ]}
               value={form.starts_at}
               onChangeText={(v) => setForm((p) => ({ ...p, starts_at: v }))}
@@ -3975,11 +5045,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             />
           </View>
           <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>ENDS</Text>
+            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+              ENDS
+            </Text>
             <TextInput
               style={[
                 styles.textInputHoloPlain,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
               ]}
               value={form.ends_at}
               onChangeText={(v) => setForm((p) => ({ ...p, ends_at: v }))}
@@ -3993,7 +5069,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         <View
           style={[
             styles.sectionSelectedCard,
-            { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+            {
+              backgroundColor: theme.cyanGlow,
+              borderColor: theme.borderAccent,
+            },
           ]}
         >
           <MaterialCommunityIcons name="layers" size={20} color={theme.cyan} />
@@ -4003,7 +5082,12 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
                 ? `${scope.department} • ${scope.program}`
                 : "Select an academic section above"}
             </Text>
-            <Text style={[styles.sectionSelectedSub, { color: theme.textSecondary }]}>
+            <Text
+              style={[
+                styles.sectionSelectedSub,
+                { color: theme.textSecondary },
+              ]}
+            >
               {scope?.session_id
                 ? `Active Session: #${scope.session_id}`
                 : "Ready to create attendance session"}
@@ -4022,7 +5106,9 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             disabled={busy}
           >
             {busy ? (
-              <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+              <ActivityIndicator
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
             ) : (
               <View style={styles.submitRow}>
                 <MaterialCommunityIcons
@@ -4068,7 +5154,12 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
               <Text
                 style={[
                   styles.captureHeroBtnSub,
-                  { color: theme.mode === "dark" ? "rgba(8,12,20,0.75)" : "rgba(255,255,255,0.85)" },
+                  {
+                    color:
+                      theme.mode === "dark"
+                        ? "rgba(8,12,20,0.75)"
+                        : "rgba(255,255,255,0.85)",
+                  },
                 ]}
               >
                 Capture students with camera
@@ -4078,13 +5169,20 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             <Pressable
               style={[
                 styles.galleryHeroBtn,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                },
                 busy && { opacity: 0.7 },
               ]}
               onPress={pickFromGallery}
               disabled={busy}
             >
-              <MaterialCommunityIcons name="image-multiple" size={24} color={theme.text} />
+              <MaterialCommunityIcons
+                name="image-multiple"
+                size={24}
+                color={theme.text}
+              />
               <Text style={[styles.galleryHeroBtnTitle, { color: theme.text }]}>
                 UPLOAD FROM GALLERY
               </Text>
@@ -4143,7 +5241,11 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
   const detectedCount = result?.total_faces_detected ?? items.length;
   const recognizedCount =
     result?.recognized_count ??
-    items.filter((x: any) => String(x.status || "").toLowerCase().includes("present")).length;
+    items.filter((x: any) =>
+      String(x.status || "")
+        .toLowerCase()
+        .includes("present"),
+    ).length;
   const unrecognizedCount = Math.max(0, detectedCount - recognizedCount);
 
   return (
@@ -4154,7 +5256,8 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
             Recognition Results
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            {detectedCount} face{detectedCount === 1 ? "" : "s"} detected • {recognizedCount} matched
+            {detectedCount} face{detectedCount === 1 ? "" : "s"} detected •{" "}
+            {recognizedCount} matched
           </Text>
         </View>
         <Pressable
@@ -4190,9 +5293,25 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
             style={styles.annotatedPreviewImg}
             resizeMode="contain"
           />
-          <View style={[styles.annotatedOverlayBadge, { backgroundColor: "rgba(0,0,0,0.7)" }]}>
-            <MaterialCommunityIcons name="face-recognition" size={16} color={theme.emerald} />
-            <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "700", marginLeft: 6 }}>
+          <View
+            style={[
+              styles.annotatedOverlayBadge,
+              { backgroundColor: "rgba(0,0,0,0.7)" },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="face-recognition"
+              size={16}
+              color={theme.emerald}
+            />
+            <Text
+              style={{
+                color: "#FFF",
+                fontSize: 11,
+                fontWeight: "700",
+                marginLeft: 6,
+              }}
+            >
               {recognizedCount} MATCHED • {unrecognizedCount} UNKNOWN
             </Text>
           </View>
@@ -4204,28 +5323,50 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
         <View
           style={[
             styles.metricCardHolo,
-            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+            {
+              flex: 1,
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.border,
+            },
           ]}
         >
-          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>DETECTED</Text>
-          <Text style={[styles.metricCardValue, { color: theme.cyan }]}>{detectedCount}</Text>
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>
+            DETECTED
+          </Text>
+          <Text style={[styles.metricCardValue, { color: theme.cyan }]}>
+            {detectedCount}
+          </Text>
         </View>
         <View
           style={[
             styles.metricCardHolo,
-            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+            {
+              flex: 1,
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.border,
+            },
           ]}
         >
-          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>RECOGNIZED</Text>
-          <Text style={[styles.metricCardValue, { color: theme.emerald }]}>{recognizedCount}</Text>
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>
+            RECOGNIZED
+          </Text>
+          <Text style={[styles.metricCardValue, { color: theme.emerald }]}>
+            {recognizedCount}
+          </Text>
         </View>
         <View
           style={[
             styles.metricCardHolo,
-            { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.border },
+            {
+              flex: 1,
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.border,
+            },
           ]}
         >
-          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>UNIDENTIFIED</Text>
+          <Text style={[styles.metricCardLabel, { color: theme.muted }]}>
+            UNIDENTIFIED
+          </Text>
           <Text
             style={[
               styles.metricCardValue,
@@ -4243,9 +5384,14 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
         ]}
       >
-        <MaterialCommunityIcons name="information" size={18} color={theme.cyan} />
+        <MaterialCommunityIcons
+          name="information"
+          size={18}
+          color={theme.cyan}
+        />
         <Text style={[styles.resultsNoticeText, { color: theme.cyan }]}>
-          Review initial face detections below. You can toggle Present / Absent status in the verification checklist.
+          Review initial face detections below. You can toggle Present / Absent
+          status in the verification checklist.
         </Text>
       </View>
 
@@ -4262,20 +5408,31 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
           {items.map((rec, i) => {
             const isPresent =
               rec.confidence !== undefined ||
-              String(rec.status || "").toLowerCase().includes("present");
-            const confPercent = rec.confidence ? Math.round(rec.confidence * 100) : null;
+              String(rec.status || "")
+                .toLowerCase()
+                .includes("present");
+            const confPercent = rec.confidence
+              ? Math.round(rec.confidence * 100)
+              : null;
             return (
               <View
                 key={rec.student_id || i}
                 style={[
                   styles.resultItemCardHolo,
-                  { backgroundColor: theme.cardGlass, borderColor: theme.border },
+                  {
+                    backgroundColor: theme.cardGlass,
+                    borderColor: theme.border,
+                  },
                 ]}
               >
                 <View
                   style={[
                     styles.resultAvatarCircleHolo,
-                    { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
+                    {
+                      backgroundColor: isPresent
+                        ? theme.emeraldGlow
+                        : theme.roseGlow,
+                    },
                   ]}
                 >
                   <MaterialCommunityIcons
@@ -4284,7 +5441,10 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
                     color={isPresent ? theme.emerald : theme.rose}
                   />
                 </View>
-                <Text style={[styles.resultItemNameText, { color: theme.text }]} numberOfLines={1}>
+                <Text
+                  style={[styles.resultItemNameText, { color: theme.text }]}
+                  numberOfLines={1}
+                >
                   {rec.name || rec.student_id || "Student"}
                 </Text>
                 <Text style={[styles.resultItemIdText, { color: theme.muted }]}>
@@ -4335,8 +5495,12 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
 function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
-  const [statusMap, setStatusMap] = useState<Record<string, "PRESENT" | "ABSENT">>({});
-  const [activeFilter, setActiveFilter] = useState<"ALL" | "PRESENT" | "ABSENT">("ALL");
+  const [statusMap, setStatusMap] = useState<
+    Record<string, "PRESENT" | "ABSENT">
+  >({});
+  const [activeFilter, setActiveFilter] = useState<
+    "ALL" | "PRESENT" | "ABSENT"
+  >("ALL");
   const [sessionId, setSessionId] = useState("");
   const [busy, setBusy] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -4344,8 +5508,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const storedSession = await AsyncStorage.getItem("active_attendance_session_id");
-        const storedResult = await AsyncStorage.getItem("latest_recognition_result");
+        const storedSession = await AsyncStorage.getItem(
+          "active_attendance_session_id",
+        );
+        const storedResult = await AsyncStorage.getItem(
+          "latest_recognition_result",
+        );
         let activeId = storedSession || "";
         let recognizedStudents: any[] = [];
 
@@ -4373,7 +5541,11 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
         try {
           const rep = await http.get("/teacher/attendance/report");
           reportRecords = rep.data?.records || [];
-          if (!activeId && reportRecords.length > 0 && reportRecords[0].session_id) {
+          if (
+            !activeId &&
+            reportRecords.length > 0 &&
+            reportRecords[0].session_id
+          ) {
             setSessionId(reportRecords[0].session_id);
           }
         } catch {}
@@ -4382,9 +5554,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           roster = reportRecords;
         }
 
-        const recognizedIds = new Set(recognizedStudents.map((s) => s.student_id));
+        const recognizedIds = new Set(
+          recognizedStudents.map((s) => s.student_id),
+        );
         reportRecords.forEach((r) => {
-          if (String(r.status || "").toUpperCase() === "PRESENT") recognizedIds.add(r.student_id);
+          if (String(r.status || "").toUpperCase() === "PRESENT")
+            recognizedIds.add(r.student_id);
         });
 
         const initialMap: Record<string, "PRESENT" | "ABSENT"> = {};
@@ -4422,12 +5597,13 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const finalizeAttendance = async () => {
     let currentSession = sessionId;
     if (!currentSession) {
-      currentSession = (await AsyncStorage.getItem("active_attendance_session_id")) || "";
+      currentSession =
+        (await AsyncStorage.getItem("active_attendance_session_id")) || "";
     }
     if (!currentSession) {
       Alert.alert(
         "Missing Session",
-        "Session identifier not found. Please create an attendance session first."
+        "Session identifier not found. Please create an attendance session first.",
       );
       return;
     }
@@ -4446,12 +5622,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       Alert.alert(
         "Attendance Confirmed",
         "The finalized attendance records have been successfully submitted to the database.",
-        [{ text: "View History", onPress: () => go("History") }]
+        [{ text: "View History", onPress: () => go("History") }],
       );
     } catch (e: any) {
       Alert.alert(
         "Submission Failed",
-        e?.response?.data?.detail || "Could not finalize attendance records."
+        e?.response?.data?.detail || "Could not finalize attendance records.",
       );
     } finally {
       setSubmitting(false);
@@ -4469,9 +5645,15 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     );
   }
 
-  const presentCount = Object.values(statusMap).filter((s) => s === "PRESENT").length;
-  const absentCount = Object.values(statusMap).filter((s) => s === "ABSENT").length;
-  const ratio = items.length ? Math.round((presentCount / items.length) * 100) : 0;
+  const presentCount = Object.values(statusMap).filter(
+    (s) => s === "PRESENT",
+  ).length;
+  const absentCount = Object.values(statusMap).filter(
+    (s) => s === "ABSENT",
+  ).length;
+  const ratio = items.length
+    ? Math.round((presentCount / items.length) * 100)
+    : 0;
 
   const filteredItems = items.filter((student) => {
     if (activeFilter === "ALL") return true;
@@ -4483,7 +5665,9 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Verify Roster</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Verify Roster
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Review and adjust student status
           </Text>
@@ -4499,23 +5683,44 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       >
         <View style={styles.tallyStatsRow}>
           <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>{presentCount}</Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
+              {presentCount}
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+              Present
+            </Text>
           </View>
-          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View
+            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
+          />
           <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.rose }]}>{absentCount}</Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+            <Text style={[styles.tallyDigit, { color: theme.rose }]}>
+              {absentCount}
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+              Absent
+            </Text>
           </View>
-          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View
+            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
+          />
           <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.text }]}>{items.length}</Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Total</Text>
+            <Text style={[styles.tallyDigit, { color: theme.text }]}>
+              {items.length}
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+              Total
+            </Text>
           </View>
         </View>
 
         {/* Attendance Ratio Bar */}
-        <View style={[styles.tallyProgressBarTrack, { backgroundColor: theme.bgElevated }]}>
+        <View
+          style={[
+            styles.tallyProgressBarTrack,
+            { backgroundColor: theme.bgElevated },
+          ]}
+        >
           <View
             style={[
               styles.tallyProgressBarFill,
@@ -4530,7 +5735,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
 
       {/* Quick Filter Segment Pills & Bulk Button */}
       <View style={styles.verifyToolbarRow}>
-        <View style={[styles.filterSegmentPillWrap, { backgroundColor: theme.bgElevated }]}>
+        <View
+          style={[
+            styles.filterSegmentPillWrap,
+            { backgroundColor: theme.bgElevated },
+          ]}
+        >
           {(["ALL", "PRESENT", "ABSENT"] as const).map((filterKey) => {
             const active = activeFilter === filterKey;
             return (
@@ -4540,7 +5750,10 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
                   styles.filterSegmentBtn,
                   active && [
                     styles.filterSegmentBtnActive,
-                    { backgroundColor: theme.card, borderColor: theme.borderAccent },
+                    {
+                      backgroundColor: theme.card,
+                      borderColor: theme.borderAccent,
+                    },
                   ],
                 ]}
                 onPress={() => setActiveFilter(filterKey)}
@@ -4570,8 +5783,14 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           ]}
           onPress={markAllPresent}
         >
-          <MaterialCommunityIcons name="check-all" size={16} color={theme.cyan} />
-          <Text style={[styles.quickBulkBtnText, { color: theme.cyan }]}>All Present</Text>
+          <MaterialCommunityIcons
+            name="check-all"
+            size={16}
+            color={theme.cyan}
+          />
+          <Text style={[styles.quickBulkBtnText, { color: theme.cyan }]}>
+            All Present
+          </Text>
         </Pressable>
       </View>
 
@@ -4590,7 +5809,11 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
             <View
               style={[
                 styles.rosterAvatarBox,
-                { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
+                {
+                  backgroundColor: isPresent
+                    ? theme.emeraldGlow
+                    : theme.roseGlow,
+                },
               ]}
             >
               <Text
@@ -4616,8 +5839,20 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
               style={[
                 styles.togglePillHolo,
                 isPresent
-                  ? [styles.togglePillHoloPresent, { backgroundColor: theme.emeraldGlow, borderColor: theme.emerald }]
-                  : [styles.togglePillHoloAbsent, { backgroundColor: theme.roseGlow, borderColor: theme.rose }],
+                  ? [
+                      styles.togglePillHoloPresent,
+                      {
+                        backgroundColor: theme.emeraldGlow,
+                        borderColor: theme.emerald,
+                      },
+                    ]
+                  : [
+                      styles.togglePillHoloAbsent,
+                      {
+                        backgroundColor: theme.roseGlow,
+                        borderColor: theme.rose,
+                      },
+                    ],
               ]}
               onPress={() => toggleStatus(student.student_id)}
             >
@@ -4649,7 +5884,9 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
         disabled={submitting}
       >
         {submitting ? (
-          <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+          <ActivityIndicator
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
         ) : (
           <View style={styles.submitRow}>
             <MaterialCommunityIcons
@@ -4691,17 +5928,19 @@ function AdminAttendanceView() {
   }, []);
 
   const dayLogs = items.filter(
-    (x) => new Date(x.timestamp).toDateString() === date.toDateString()
+    (x) => new Date(x.timestamp).toDateString() === date.toDateString(),
   );
   const presentCount = dayLogs.filter(
-    (x) => String(x.status || "PRESENT").toUpperCase() === "PRESENT"
+    (x) => String(x.status || "PRESENT").toUpperCase() === "PRESENT",
   ).length;
 
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Attendance Audit</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Attendance Audit
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Verified attendance records by date
           </Text>
@@ -4725,7 +5964,11 @@ function AdminAttendanceView() {
             year: "numeric",
           })}
         </Text>
-        <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
+        <MaterialCommunityIcons
+          name="chevron-down"
+          size={19}
+          color={theme.muted}
+        />
       </Pressable>
 
       {showPicker && (
@@ -4749,20 +5992,33 @@ function AdminAttendanceView() {
       >
         <View style={styles.tallyStatsRow}>
           <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>{presentCount}</Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
+              {presentCount}
+            </Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+              Present
+            </Text>
           </View>
-          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View
+            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
+          />
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.rose }]}>
               {dayLogs.length - presentCount}
             </Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+              Absent
+            </Text>
           </View>
-          <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+          <View
+            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
+          />
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.text }]}>
-              {dayLogs.length ? Math.round((presentCount / dayLogs.length) * 100) : 0}%
+              {dayLogs.length
+                ? Math.round((presentCount / dayLogs.length) * 100)
+                : 0}
+              %
             </Text>
             <Text style={[styles.tallyMeta, { color: theme.muted }]}>Rate</Text>
           </View>
@@ -4770,7 +6026,11 @@ function AdminAttendanceView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : dayLogs.length === 0 ? (
         <HoloEmptyState
           icon="calendar-remove-outline"
@@ -4786,8 +6046,17 @@ function AdminAttendanceView() {
               { backgroundColor: theme.cardGlass, borderColor: theme.border },
             ]}
           >
-            <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
-              <MaterialCommunityIcons name="account" size={20} color={theme.cyan} />
+            <View
+              style={[
+                styles.rosterAvatarBox,
+                { backgroundColor: theme.cyanGlow },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="account"
+                size={20}
+                color={theme.cyan}
+              />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
               <Text style={[styles.rosterItemName, { color: theme.text }]}>
@@ -4799,7 +6068,11 @@ function AdminAttendanceView() {
             </View>
             <HoloStatusPill
               label={log.status || "Present"}
-              tone={String(log.status).toUpperCase() === "PRESENT" ? "success" : "danger"}
+              tone={
+                String(log.status).toUpperCase() === "PRESENT"
+                  ? "success"
+                  : "danger"
+              }
             />
           </View>
         ))
@@ -4828,7 +6101,9 @@ function StudentAttendanceView() {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>My Attendance</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            My Attendance
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Verified personal attendance records
           </Text>
@@ -4836,7 +6111,11 @@ function StudentAttendanceView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : items.length === 0 ? (
         <HoloEmptyState
           icon="calendar-check-outline"
@@ -4857,7 +6136,11 @@ function StudentAttendanceView() {
               <View
                 style={[
                   styles.studentSessionIconBadge,
-                  { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow },
+                  {
+                    backgroundColor: isPresent
+                      ? theme.emeraldGlow
+                      : theme.roseGlow,
+                  },
                 ]}
               >
                 <MaterialCommunityIcons
@@ -4867,13 +6150,22 @@ function StudentAttendanceView() {
                 />
               </View>
               <View style={{ flex: 1, paddingLeft: 12 }}>
-                <Text style={[styles.studentSessionTitle, { color: theme.text }]}>
+                <Text
+                  style={[styles.studentSessionTitle, { color: theme.text }]}
+                >
                   {sess.title || sess.course}
                 </Text>
-                <Text style={[styles.studentSessionMeta, { color: theme.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.studentSessionMeta,
+                    { color: theme.textSecondary },
+                  ]}
+                >
                   {sess.course} • {sess.department || "Academic Dept"}
                 </Text>
-                <Text style={[styles.studentSessionDate, { color: theme.muted }]}>
+                <Text
+                  style={[styles.studentSessionDate, { color: theme.muted }]}
+                >
                   {sess.event_date} • {String(sess.starts_at).slice(0, 5)} -{" "}
                   {String(sess.ends_at).slice(0, 5)}
                   {sess.room ? ` • ${sess.room}` : ""}
@@ -4911,7 +6203,9 @@ function StudentClassesView() {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Class Schedule</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Class Schedule
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Course lectures & room assignments
           </Text>
@@ -4919,7 +6213,11 @@ function StudentClassesView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : items.length === 0 ? (
         <HoloEmptyState
           icon="book-open-outline"
@@ -4938,7 +6236,10 @@ function StudentClassesView() {
             <View
               style={[
                 styles.scheduleTimeBadge,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                },
               ]}
             >
               <Text style={[styles.scheduleTimeStart, { color: theme.cyan }]}>
@@ -4949,17 +6250,24 @@ function StudentClassesView() {
               </Text>
             </View>
             <View style={{ flex: 1, paddingLeft: 12 }}>
-              <Text style={[styles.scheduleLectureTitle, { color: theme.text }]}>
+              <Text
+                style={[styles.scheduleLectureTitle, { color: theme.text }]}
+              >
                 {cls.title || cls.course}
               </Text>
-              <Text style={[styles.scheduleLectureMeta, { color: theme.muted }]}>
+              <Text
+                style={[styles.scheduleLectureMeta, { color: theme.muted }]}
+              >
                 {cls.room || "Room 101"} • {cls.program} • {cls.semester}
               </Text>
             </View>
             <View
               style={[
                 styles.roomTagHolo,
-                { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
+                {
+                  backgroundColor: theme.cyanGlow,
+                  borderColor: theme.borderAccent,
+                },
               ]}
             >
               <Text style={[styles.roomTagHoloText, { color: theme.cyan }]}>
@@ -4988,18 +6296,24 @@ function AttendanceHistoryView() {
     setBusy(true);
     http
       .get("/teacher/attendance/report", { params: { month: monthStr } })
-      .then((r) => setRecords(Array.isArray(r.data?.records) ? r.data.records : []))
+      .then((r) =>
+        setRecords(Array.isArray(r.data?.records) ? r.data.records : []),
+      )
       .catch(() => setRecords([]))
       .finally(() => setBusy(false));
   }, [month]);
 
-  const sessions = Array.from(new Map(records.map((x) => [x.session_id, x])).values());
+  const sessions = Array.from(
+    new Map(records.map((x) => [x.session_id, x])).values(),
+  );
 
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Session History</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Session History
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Review past attendance events
           </Text>
@@ -5013,11 +6327,22 @@ function AttendanceHistoryView() {
         ]}
         onPress={() => setShowPicker(true)}
       >
-        <MaterialCommunityIcons name="calendar-month" size={20} color={theme.cyan} />
+        <MaterialCommunityIcons
+          name="calendar-month"
+          size={20}
+          color={theme.cyan}
+        />
         <Text style={[styles.datePickerCardText, { color: theme.text }]}>
-          {month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+          {month.toLocaleDateString(undefined, {
+            month: "long",
+            year: "numeric",
+          })}
         </Text>
-        <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
+        <MaterialCommunityIcons
+          name="chevron-down"
+          size={19}
+          color={theme.muted}
+        />
       </Pressable>
 
       {showPicker && (
@@ -5033,7 +6358,11 @@ function AttendanceHistoryView() {
       )}
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : sessions.length === 0 ? (
         <HoloEmptyState
           icon="history"
@@ -5042,7 +6371,9 @@ function AttendanceHistoryView() {
         />
       ) : (
         sessions.map((sess: any, i) => {
-          const count = records.filter((r) => r.session_id === sess.session_id).length;
+          const count = records.filter(
+            (r) => r.session_id === sess.session_id,
+          ).length;
           return (
             <View
               key={sess.session_id || i}
@@ -5051,8 +6382,17 @@ function AttendanceHistoryView() {
                 { backgroundColor: theme.cardGlass, borderColor: theme.border },
               ]}
             >
-              <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
-                <MaterialCommunityIcons name="calendar-check" size={20} color={theme.cyan} />
+              <View
+                style={[
+                  styles.rosterAvatarBox,
+                  { backgroundColor: theme.cyanGlow },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="calendar-check"
+                  size={20}
+                  color={theme.cyan}
+                />
               </View>
               <View style={{ flex: 1, paddingHorizontal: 12 }}>
                 <Text style={[styles.rosterItemName, { color: theme.text }]}>
@@ -5090,23 +6430,35 @@ function ReportsView() {
   const [busy, setBusy] = useState(true);
 
   useEffect(() => {
-    const month = period === "This Month" ? new Date().toISOString().slice(0, 7) : undefined;
+    const month =
+      period === "This Month"
+        ? new Date().toISOString().slice(0, 7)
+        : undefined;
     setBusy(true);
     http
-      .get("/teacher/attendance/report", month ? { params: { month } } : undefined)
-      .then((r) => setRecords(Array.isArray(r.data?.records) ? r.data.records : []))
+      .get(
+        "/teacher/attendance/report",
+        month ? { params: { month } } : undefined,
+      )
+      .then((r) =>
+        setRecords(Array.isArray(r.data?.records) ? r.data.records : []),
+      )
       .catch(() => setRecords([]))
       .finally(() => setBusy(false));
   }, [period]);
 
-  const sessions = Array.from(new Map(records.map((x) => [x.session_id, x])).values());
+  const sessions = Array.from(
+    new Map(records.map((x) => [x.session_id, x])).values(),
+  );
   const uniqueStudents = new Set(records.map((x) => x.student_id)).size;
 
   return (
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Attendance Reports</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Attendance Reports
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Departmental attendance overview
           </Text>
@@ -5114,7 +6466,9 @@ function ReportsView() {
       </View>
 
       {/* Segment Switcher */}
-      <View style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}>
+      <View
+        style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}
+      >
         {["This Month", "This Week", "All Time"].map((tab) => (
           <Pressable
             key={tab}
@@ -5122,7 +6476,10 @@ function ReportsView() {
               styles.segmentBtnHolo,
               period === tab && [
                 styles.segmentBtnHoloActive,
-                { backgroundColor: theme.card, borderColor: theme.borderAccent },
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.borderAccent,
+                },
               ],
             ]}
             onPress={() => setPeriod(tab)}
@@ -5176,7 +6533,11 @@ function ReportsView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : sessions.length === 0 ? (
         <HoloEmptyState
           icon="chart-bar"
@@ -5187,25 +6548,46 @@ function ReportsView() {
         <View
           style={[
             styles.glassFormCard,
-            { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+            },
           ]}
         >
-          <Text style={[styles.formGroupHeading, { color: theme.muted }]}>SESSIONS IN PERIOD</Text>
+          <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+            SESSIONS IN PERIOD
+          </Text>
           {sessions.map((sess: any, i) => (
             <View
               key={sess.session_id || i}
-              style={[styles.reportSessionItemRow, { borderBottomColor: theme.border }]}
+              style={[
+                styles.reportSessionItemRow,
+                { borderBottomColor: theme.border },
+              ]}
             >
               <View
-                style={[styles.reportSessionIconCircle, { backgroundColor: theme.cyanGlow }]}
+                style={[
+                  styles.reportSessionIconCircle,
+                  { backgroundColor: theme.cyanGlow },
+                ]}
               >
-                <MaterialCommunityIcons name="calendar-check" size={18} color={theme.cyan} />
+                <MaterialCommunityIcons
+                  name="calendar-check"
+                  size={18}
+                  color={theme.cyan}
+                />
               </View>
               <View style={{ flex: 1, paddingLeft: 10 }}>
-                <Text style={[styles.reportSessionItemTitle, { color: theme.text }]}>
-                  {sess.timestamp ? new Date(sess.timestamp).toLocaleDateString() : "Session"}
+                <Text
+                  style={[styles.reportSessionItemTitle, { color: theme.text }]}
+                >
+                  {sess.timestamp
+                    ? new Date(sess.timestamp).toLocaleDateString()
+                    : "Session"}
                 </Text>
-                <Text style={[styles.reportSessionItemSub, { color: theme.muted }]}>
+                <Text
+                  style={[styles.reportSessionItemSub, { color: theme.muted }]}
+                >
                   Session #{sess.session_id}
                 </Text>
               </View>
@@ -5234,7 +6616,11 @@ function NotificationsView() {
     setBusy(true);
     http
       .get("/notifications")
-      .then((r) => setItems(Array.isArray(r.data?.notifications) ? r.data.notifications : []))
+      .then((r) =>
+        setItems(
+          Array.isArray(r.data?.notifications) ? r.data.notifications : [],
+        ),
+      )
       .catch(() => setItems([]))
       .finally(() => setBusy(false));
   };
@@ -5251,7 +6637,9 @@ function NotificationsView() {
   const markOne = async (id: number) => {
     try {
       await http.post(`/notifications/${id}/read`);
-      setItems((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
+      setItems((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+      );
     } catch {}
   };
 
@@ -5261,7 +6649,9 @@ function NotificationsView() {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Notifications</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Notifications
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Academic alerts & updates
           </Text>
@@ -5273,11 +6663,15 @@ function NotificationsView() {
           ]}
           onPress={markAllRead}
         >
-          <Text style={[styles.markAllBtnHoloText, { color: theme.cyan }]}>Mark all read</Text>
+          <Text style={[styles.markAllBtnHoloText, { color: theme.cyan }]}>
+            Mark all read
+          </Text>
         </Pressable>
       </View>
 
-      <View style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}>
+      <View
+        style={[styles.segmentWrapHolo, { backgroundColor: theme.bgElevated }]}
+      >
         <Pressable
           style={[
             styles.segmentBtnHolo,
@@ -5321,7 +6715,11 @@ function NotificationsView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="bell-check-outline"
@@ -5347,7 +6745,9 @@ function NotificationsView() {
                 styles.notifIconCircleHolo,
                 {
                   backgroundColor:
-                    notif.category === "alert" ? theme.roseGlow : theme.cyanGlow,
+                    notif.category === "alert"
+                      ? theme.roseGlow
+                      : theme.cyanGlow,
                 },
               ]}
             >
@@ -5364,16 +6764,24 @@ function NotificationsView() {
               />
             </View>
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={[styles.notifTitleHolo, { color: theme.text }]}>{notif.title}</Text>
-              <Text style={[styles.notifBodyHolo, { color: theme.textSecondary }]}>
+              <Text style={[styles.notifTitleHolo, { color: theme.text }]}>
+                {notif.title}
+              </Text>
+              <Text
+                style={[styles.notifBodyHolo, { color: theme.textSecondary }]}
+              >
                 {notif.body}
               </Text>
               <Text style={[styles.notifTimeHolo, { color: theme.muted }]}>
-                {notif.created_at ? new Date(notif.created_at).toLocaleString() : ""}
+                {notif.created_at
+                  ? new Date(notif.created_at).toLocaleString()
+                  : ""}
               </Text>
             </View>
             {!notif.is_read && (
-              <View style={[styles.unreadDotHolo, { backgroundColor: theme.cyan }]} />
+              <View
+                style={[styles.unreadDotHolo, { backgroundColor: theme.cyan }]}
+              />
             )}
           </Pressable>
         ))
@@ -5401,7 +6809,7 @@ function AcademicHierarchyView() {
   }, []);
 
   const visible = sections.filter((s) =>
-    JSON.stringify(s).toLowerCase().includes(search.toLowerCase())
+    JSON.stringify(s).toLowerCase().includes(search.toLowerCase()),
   );
   const schools = Array.from(new Set(visible.map((s) => s.school)));
 
@@ -5409,7 +6817,9 @@ function AcademicHierarchyView() {
     <View style={styles.screenLayout}>
       <View style={styles.screenTopHeader}>
         <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>Academic Structure</Text>
+          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+            Academic Structure
+          </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
             Schools, Faculties, and Departments
           </Text>
@@ -5433,7 +6843,11 @@ function AcademicHierarchyView() {
       </View>
 
       {busy ? (
-        <ActivityIndicator size="large" color={theme.cyan} style={{ margin: 30 }} />
+        <ActivityIndicator
+          size="large"
+          color={theme.cyan}
+          style={{ margin: 30 }}
+        />
       ) : schools.length === 0 ? (
         <HoloEmptyState
           icon="layers-outline"
@@ -5442,9 +6856,12 @@ function AcademicHierarchyView() {
         />
       ) : (
         schools.map((school) => {
-          const isSchoolOpen = expandedSchool === school || (!!search && schools.length === 1);
+          const isSchoolOpen =
+            expandedSchool === school || (!!search && schools.length === 1);
           const faculties = Array.from(
-            new Set(visible.filter((x) => x.school === school).map((x) => x.faculty))
+            new Set(
+              visible.filter((x) => x.school === school).map((x) => x.faculty),
+            ),
           );
           return (
             <View
@@ -5458,12 +6875,28 @@ function AcademicHierarchyView() {
                 style={styles.hierarchyBranchHeader}
                 onPress={() => setExpandedSchool(isSchoolOpen ? null : school)}
               >
-                <MaterialCommunityIcons name="school" size={20} color={theme.cyan} />
-                <Text style={[styles.hierarchySchoolTitle, { color: theme.text }]}>
+                <MaterialCommunityIcons
+                  name="school"
+                  size={20}
+                  color={theme.cyan}
+                />
+                <Text
+                  style={[styles.hierarchySchoolTitle, { color: theme.text }]}
+                >
                   {school}
                 </Text>
-                <View style={[styles.hierarchyCountPill, { backgroundColor: theme.bgElevated }]}>
-                  <Text style={[styles.hierarchyCountPillText, { color: theme.muted }]}>
+                <View
+                  style={[
+                    styles.hierarchyCountPill,
+                    { backgroundColor: theme.bgElevated },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.hierarchyCountPillText,
+                      { color: theme.muted },
+                    ]}
+                  >
                     {faculties.length} Depts
                   </Text>
                 </View>
@@ -5477,23 +6910,37 @@ function AcademicHierarchyView() {
               {isSchoolOpen &&
                 faculties.map((fac) => {
                   const key = `${school}:${fac}`;
-                  const isFacOpen = expandedFaculty === key || (!!search && faculties.length === 1);
-                  const programs = visible.filter((x) => x.school === school && x.faculty === fac);
+                  const isFacOpen =
+                    expandedFaculty === key ||
+                    (!!search && faculties.length === 1);
+                  const programs = visible.filter(
+                    (x) => x.school === school && x.faculty === fac,
+                  );
                   return (
                     <View
                       key={fac}
-                      style={[styles.hierarchyFacultySection, { borderTopColor: theme.border }]}
+                      style={[
+                        styles.hierarchyFacultySection,
+                        { borderTopColor: theme.border },
+                      ]}
                     >
                       <Pressable
                         style={styles.hierarchyFacultyBar}
-                        onPress={() => setExpandedFaculty(isFacOpen ? null : key)}
+                        onPress={() =>
+                          setExpandedFaculty(isFacOpen ? null : key)
+                        }
                       >
                         <MaterialCommunityIcons
                           name="folder-outline"
                           size={17}
                           color={theme.text}
                         />
-                        <Text style={[styles.hierarchyFacultyTitle, { color: theme.text }]}>
+                        <Text
+                          style={[
+                            styles.hierarchyFacultyTitle,
+                            { color: theme.text },
+                          ]}
+                        >
                           {fac}
                         </Text>
                         <MaterialCommunityIcons
@@ -5506,18 +6953,32 @@ function AcademicHierarchyView() {
                       {isFacOpen && (
                         <View style={styles.hierarchyProgramsStack}>
                           {programs.map((prog, pIdx) => (
-                            <View key={pIdx} style={styles.hierarchyProgramLine}>
-                              <Text style={[styles.hierarchyBulletDot, { color: theme.muted }]}>
+                            <View
+                              key={pIdx}
+                              style={styles.hierarchyProgramLine}
+                            >
+                              <Text
+                                style={[
+                                  styles.hierarchyBulletDot,
+                                  { color: theme.muted },
+                                ]}
+                              >
                                 •
                               </Text>
                               <View style={{ flex: 1 }}>
                                 <Text
-                                  style={[styles.hierarchyDeptName, { color: theme.text }]}
+                                  style={[
+                                    styles.hierarchyDeptName,
+                                    { color: theme.text },
+                                  ]}
                                 >
                                   {prog.department}
                                 </Text>
                                 <Text
-                                  style={[styles.hierarchyProgName, { color: theme.muted }]}
+                                  style={[
+                                    styles.hierarchyProgName,
+                                    { color: theme.muted },
+                                  ]}
                                 >
                                   {prog.program} • {prog.semester}
                                 </Text>
@@ -5553,7 +7014,11 @@ function AdminProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
 
   return (
     <View style={styles.screenLayout}>
-      <ProfileHeroCard profile={profile} role="ADMINISTRATOR" setProfile={setProfile} />
+      <ProfileHeroCard
+        profile={profile}
+        role="ADMINISTRATOR"
+        setProfile={setProfile}
+      />
 
       <View
         style={[
@@ -5561,10 +7026,15 @@ function AdminProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACCOUNT PRIVILEGES</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          ACCOUNT PRIVILEGES
+        </Text>
         <HoloDetailRow label="Role Access" value="University Superuser" />
         <HoloDetailRow label="Username" value={profile.username || "admin"} />
-        <HoloDetailRow label="Email" value={profile.email || "admin@pratyaksh.edu"} />
+        <HoloDetailRow
+          label="Email"
+          value={profile.email || "admin@pratyaksh.edu"}
+        />
         <HoloDetailRow label="Security" value="Encrypted Profile" />
       </View>
 
@@ -5584,7 +7054,13 @@ function AdminProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
   );
 }
 
-function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
+function TeacherProfile({
+  user,
+  onLogout,
+}: {
+  user: any;
+  onLogout: () => void;
+}) {
   const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
   const [assignments, setAssignments] = useState<any[]>([]);
@@ -5601,7 +7077,11 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
 
   return (
     <View style={styles.screenLayout}>
-      <ProfileHeroCard profile={profile} role="FACULTY INSTRUCTOR" setProfile={setProfile} />
+      <ProfileHeroCard
+        profile={profile}
+        role="FACULTY INSTRUCTOR"
+        setProfile={setProfile}
+      />
 
       <View
         style={[
@@ -5609,7 +7089,9 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ASSIGNED COURSES</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          ASSIGNED COURSES
+        </Text>
         {assignments.length === 0 ? (
           <Text style={[styles.emptySubText, { color: theme.muted }]}>
             No course sections assigned yet.
@@ -5618,14 +7100,25 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
           assignments.map((item, i) => (
             <View
               key={i}
-              style={[styles.assignedCourseRow, { borderBottomColor: theme.border }]}
+              style={[
+                styles.assignedCourseRow,
+                { borderBottomColor: theme.border },
+              ]}
             >
-              <MaterialCommunityIcons name="book-outline" size={19} color={theme.cyan} />
+              <MaterialCommunityIcons
+                name="book-outline"
+                size={19}
+                color={theme.cyan}
+              />
               <View style={{ flex: 1, paddingLeft: 10 }}>
-                <Text style={[styles.assignedCourseTitle, { color: theme.text }]}>
+                <Text
+                  style={[styles.assignedCourseTitle, { color: theme.text }]}
+                >
                   {item.subject}
                 </Text>
-                <Text style={[styles.assignedCourseSub, { color: theme.muted }]}>
+                <Text
+                  style={[styles.assignedCourseSub, { color: theme.muted }]}
+                >
                   {item.semester || "Semester"} • {item.students || 0} Students
                 </Text>
               </View>
@@ -5642,13 +7135,21 @@ function TeacherProfile({ user, onLogout }: { user: any; onLogout: () => void })
         onPress={onLogout}
       >
         <MaterialCommunityIcons name="logout" size={19} color={theme.rose} />
-        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>Sign Out Account</Text>
+        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>
+          Sign Out Account
+        </Text>
       </Pressable>
     </View>
   );
 }
 
-function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void }) {
+function StudentProfile({
+  user,
+  onLogout,
+}: {
+  user: any;
+  onLogout: () => void;
+}) {
   const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -5666,7 +7167,7 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
     setRegistering(true);
     try {
       const data = new FormData();
-      data.append("file", {
+      data.append("files", {
         uri,
         name: "student-face.jpg",
         type: "image/jpeg",
@@ -5678,13 +7179,15 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
 
       Alert.alert(
         "Biometrics Registered",
-        res.data?.message || "Your biometric face profile was successfully registered and activated."
+        res.data?.message ||
+          "Your biometric face profile was successfully registered and activated.",
       );
       setProfile((p: any) => ({ ...p, face_registered: true }));
     } catch (e: any) {
       Alert.alert(
         "Registration Failed",
-        e?.response?.data?.detail || "Could not register face biometrics. Please ensure proper lighting and retry."
+        e?.response?.data?.detail ||
+          "Could not register face biometrics. Please ensure proper lighting and retry.",
       );
     } finally {
       setRegistering(false);
@@ -5693,7 +7196,11 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
 
   return (
     <View style={styles.screenLayout}>
-      <ProfileHeroCard profile={profile} role="STUDENT SCHOLAR" setProfile={setProfile} />
+      <ProfileHeroCard
+        profile={profile}
+        role="STUDENT SCHOLAR"
+        setProfile={setProfile}
+      />
 
       <View
         style={[
@@ -5701,15 +7208,34 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACADEMIC ENROLLMENT</Text>
-        <HoloDetailRow label="Student ID" value={profile.student_id || "STU-2026"} />
-        <HoloDetailRow label="Department" value={profile.department || "Engineering"} />
-        <HoloDetailRow label="Program" value={profile.program || "Computer Science"} />
-        <HoloDetailRow label="Semester" value={profile.semester || "Semester 4"} />
-        <HoloDetailRow label="Current GPA" value={String(profile.gpa || "3.85")} />
+        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+          ACADEMIC ENROLLMENT
+        </Text>
+        <HoloDetailRow
+          label="Student ID"
+          value={profile.student_id || "STU-2026"}
+        />
+        <HoloDetailRow
+          label="Department"
+          value={profile.department || "Engineering"}
+        />
+        <HoloDetailRow
+          label="Program"
+          value={profile.program || "Computer Science"}
+        />
+        <HoloDetailRow
+          label="Semester"
+          value={profile.semester || "Semester 4"}
+        />
+        <HoloDetailRow
+          label="Current GPA"
+          value={String(profile.gpa || "3.85")}
+        />
         <HoloDetailRow
           label="Face Biometrics"
-          value={profile.face_registered ? "Active & Verified" : "Not Registered"}
+          value={
+            profile.face_registered ? "Active & Verified" : "Not Registered"
+          }
         />
       </View>
 
@@ -5718,7 +7244,9 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
         style={[
           styles.primaryNeonButton,
           {
-            backgroundColor: profile.face_registered ? theme.emerald : theme.cyan,
+            backgroundColor: profile.face_registered
+              ? theme.emerald
+              : theme.cyan,
             marginBottom: 16,
           },
           registering && { opacity: 0.7 },
@@ -5727,7 +7255,9 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
         disabled={registering}
       >
         {registering ? (
-          <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+          <ActivityIndicator
+            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+          />
         ) : (
           <View style={styles.submitRow}>
             <MaterialCommunityIcons
@@ -5741,7 +7271,9 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
                 { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
               ]}
             >
-              {profile.face_registered ? "UPDATE FACE BIOMETRICS" : "REGISTER FACE BIOMETRICS"}
+              {profile.face_registered
+                ? "UPDATE FACE BIOMETRICS"
+                : "REGISTER FACE BIOMETRICS"}
             </Text>
           </View>
         )}
@@ -5761,7 +7293,9 @@ function StudentProfile({ user, onLogout }: { user: any; onLogout: () => void })
         onPress={onLogout}
       >
         <MaterialCommunityIcons name="logout" size={19} color={theme.rose} />
-        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>Sign Out Account</Text>
+        <Text style={[styles.signOutBtnHoloText, { color: theme.rose }]}>
+          Sign Out Account
+        </Text>
       </Pressable>
     </View>
   );
@@ -5808,7 +7342,10 @@ function ProfileHeroCard({
   };
 
   const name =
-    profile.display_name || profile.name || profile.username || "University Member";
+    profile.display_name ||
+    profile.name ||
+    profile.username ||
+    "University Member";
 
   return (
     <View
@@ -5830,12 +7367,19 @@ function ProfileHeroCard({
               { backgroundColor: theme.card, borderColor: theme.cyan },
             ]}
           >
-            <Text style={[styles.profileAvatarFallbackInitial, { color: theme.cyan }]}>
+            <Text
+              style={[
+                styles.profileAvatarFallbackInitial,
+                { color: theme.cyan },
+              ]}
+            >
               {name.charAt(0).toUpperCase()}
             </Text>
           </View>
         )}
-        <View style={[styles.avatarEditPillHolo, { backgroundColor: theme.cyan }]}>
+        <View
+          style={[styles.avatarEditPillHolo, { backgroundColor: theme.cyan }]}
+        >
           <MaterialCommunityIcons
             name="camera"
             size={12}
@@ -5844,14 +7388,18 @@ function ProfileHeroCard({
         </View>
       </Pressable>
 
-      <Text style={[styles.profileHeroNameHolo, { color: theme.text }]}>{name}</Text>
+      <Text style={[styles.profileHeroNameHolo, { color: theme.text }]}>
+        {name}
+      </Text>
       <View
         style={[
           styles.profileRoleBadgeHolo,
           { backgroundColor: theme.cyanGlow, borderColor: theme.borderAccent },
         ]}
       >
-        <Text style={[styles.profileRoleBadgeText, { color: theme.cyan }]}>{role}</Text>
+        <Text style={[styles.profileRoleBadgeText, { color: theme.cyan }]}>
+          {role}
+        </Text>
       </View>
       <Text style={[styles.profileHeroEmailHolo, { color: theme.muted }]}>
         {profile.email || `${profile.username || "user"}@university.edu`}
@@ -5887,7 +7435,9 @@ function HoloMetricCard({
         <MaterialCommunityIcons name={icon as any} size={20} color={color} />
       </View>
       <Text style={[styles.kpiValueHolo, { color: theme.text }]}>{value}</Text>
-      <Text style={[styles.kpiLabelHolo, { color: theme.textSecondary }]}>{label}</Text>
+      <Text style={[styles.kpiLabelHolo, { color: theme.textSecondary }]}>
+        {label}
+      </Text>
       <Text style={[styles.kpiDeltaHolo, { color: theme.muted }]}>{delta}</Text>
     </View>
   );
@@ -5915,11 +7465,17 @@ function RapidCommandButton({
       ]}
       onPress={onPress}
     >
-      <View style={[styles.rapidCmdIconBadge, { backgroundColor: `${color}18` }]}>
+      <View
+        style={[styles.rapidCmdIconBadge, { backgroundColor: `${color}18` }]}
+      >
         <MaterialCommunityIcons name={icon as any} size={22} color={color} />
       </View>
-      <Text style={[styles.rapidCmdTitleHolo, { color: theme.text }]}>{title}</Text>
-      <Text style={[styles.rapidCmdDescHolo, { color: theme.muted }]}>{desc}</Text>
+      <Text style={[styles.rapidCmdTitleHolo, { color: theme.text }]}>
+        {title}
+      </Text>
+      <Text style={[styles.rapidCmdDescHolo, { color: theme.muted }]}>
+        {desc}
+      </Text>
     </Pressable>
   );
 }
@@ -5963,8 +7519,12 @@ function HoloDetailRow({ label, value }: { label: string; value: string }) {
   const { theme } = useAppTheme();
   return (
     <View style={[styles.holoDetailRow, { borderBottomColor: theme.border }]}>
-      <Text style={[styles.holoDetailLabel, { color: theme.muted }]}>{label}</Text>
-      <Text style={[styles.holoDetailValue, { color: theme.text }]}>{value}</Text>
+      <Text style={[styles.holoDetailLabel, { color: theme.muted }]}>
+        {label}
+      </Text>
+      <Text style={[styles.holoDetailValue, { color: theme.text }]}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -5990,10 +7550,18 @@ function HoloEmptyState({
         { backgroundColor: theme.cardGlass, borderColor: theme.border },
       ]}
     >
-      <View style={[styles.emptyIconBadgeHolo, { backgroundColor: theme.cyanGlow }]}>
-        <MaterialCommunityIcons name={icon as any} size={32} color={theme.cyan} />
+      <View
+        style={[styles.emptyIconBadgeHolo, { backgroundColor: theme.cyanGlow }]}
+      >
+        <MaterialCommunityIcons
+          name={icon as any}
+          size={32}
+          color={theme.cyan}
+        />
       </View>
-      <Text style={[styles.emptyTitleHolo, { color: theme.text }]}>{title}</Text>
+      <Text style={[styles.emptyTitleHolo, { color: theme.text }]}>
+        {title}
+      </Text>
       <Text style={[styles.emptyDescHolo, { color: theme.muted }]}>{desc}</Text>
       {!!actionText && !!onAction && (
         <Pressable
@@ -6041,20 +7609,27 @@ function AcademicCascade({
         sections
           .filter((x) =>
             Object.entries(filters).every(
-              ([k, v]: any) => !v?.length || v.includes(x[k])
-            )
+              ([k, v]: any) => !v?.length || v.includes(x[k]),
+            ),
           )
           .map((x) => x[key])
-          .filter(Boolean)
-      )
+          .filter(Boolean),
+      ),
     ) as string[];
   };
 
-  const renderSelect = (label: string, fieldKey: string, options: string[], disabled = false) => {
+  const renderSelect = (
+    label: string,
+    fieldKey: string,
+    options: string[],
+    disabled = false,
+  ) => {
     const selectedValue = selection[fieldKey] || `Select ${label}`;
     return (
       <View key={fieldKey} style={styles.formGroup}>
-        <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
+        <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+          {label}
+        </Text>
         <Pressable
           disabled={disabled || !options.length}
           style={[
@@ -6087,29 +7662,48 @@ function AcademicCascade({
             animationType="fade"
             onRequestClose={() => setModalOpen(null)}
           >
-            <Pressable style={styles.modalBackdropOverlay} onPress={() => setModalOpen(null)}>
+            <Pressable
+              style={styles.modalBackdropOverlay}
+              onPress={() => setModalOpen(null)}
+            >
               <Pressable
                 style={[
                   styles.dropdownModalHolo,
-                  { backgroundColor: theme.card, borderColor: theme.borderBright },
+                  {
+                    backgroundColor: theme.card,
+                    borderColor: theme.borderBright,
+                  },
                 ]}
                 onPress={(e) => e.stopPropagation()}
               >
-                <Text style={[styles.dropdownModalTitle, { color: theme.text }]}>
+                <Text
+                  style={[styles.dropdownModalTitle, { color: theme.text }]}
+                >
                   Select {label}
                 </Text>
-                <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled">
+                <ScrollView
+                  style={{ maxHeight: 250 }}
+                  keyboardShouldPersistTaps="handled"
+                >
                   {options.map((opt) => (
                     <Pressable
                       key={opt}
-                      style={[styles.dropdownOptionHolo, { borderBottomColor: theme.border }]}
+                      style={[
+                        styles.dropdownOptionHolo,
+                        { borderBottomColor: theme.border },
+                      ]}
                       onPress={() => {
                         setSelection((prev: any) => {
                           const next = {
                             ...prev,
                             [fieldKey]: opt,
                             ...(fieldKey === "school"
-                              ? { faculty: "", department: "", program: "", semester: "" }
+                              ? {
+                                  faculty: "",
+                                  department: "",
+                                  program: "",
+                                  semester: "",
+                                }
                               : fieldKey === "faculty"
                                 ? { department: "", program: "", semester: "" }
                                 : fieldKey === "department"
@@ -6118,12 +7712,14 @@ function AcademicCascade({
                                     ? { semester: "" }
                                     : {}),
                           };
-                          const matched = sections.find((s) =>
-                            (!next.school || s.school === next.school) &&
-                            (!next.faculty || s.faculty === next.faculty) &&
-                            (!next.department || s.department === next.department) &&
-                            (!next.program || s.program === next.program) &&
-                            (!next.semester || s.semester === next.semester)
+                          const matched = sections.find(
+                            (s) =>
+                              (!next.school || s.school === next.school) &&
+                              (!next.faculty || s.faculty === next.faculty) &&
+                              (!next.department ||
+                                s.department === next.department) &&
+                              (!next.program || s.program === next.program) &&
+                              (!next.semester || s.semester === next.semester),
                           );
                           if (onChange) onChange(next, matched);
                           return next;
@@ -6131,11 +7727,20 @@ function AcademicCascade({
                         setModalOpen(null);
                       }}
                     >
-                      <Text style={[styles.dropdownOptionTextHolo, { color: theme.text }]}>
+                      <Text
+                        style={[
+                          styles.dropdownOptionTextHolo,
+                          { color: theme.text },
+                        ]}
+                      >
                         {opt}
                       </Text>
                       {selection[fieldKey] === opt && (
-                        <MaterialCommunityIcons name="check" size={17} color={theme.cyan} />
+                        <MaterialCommunityIcons
+                          name="check"
+                          size={17}
+                          color={theme.cyan}
+                        />
                       )}
                     </Pressable>
                   ))}
@@ -6152,19 +7757,24 @@ function AcademicCascade({
 
   return (
     <View style={{ marginTop: 14 }}>
-      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>ACADEMIC PLACEMENT</Text>
+      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+        ACADEMIC PLACEMENT
+      </Text>
       {renderSelect("School", "school", getOptions("school"))}
       {renderSelect(
         "Faculty",
         "faculty",
         getOptions("faculty", { school: selection.school }),
-        !selection.school
+        !selection.school,
       )}
       {renderSelect(
         "Department",
         "department",
-        getOptions("department", { school: selection.school, faculty: selection.faculty }),
-        !selection.faculty
+        getOptions("department", {
+          school: selection.school,
+          faculty: selection.faculty,
+        }),
+        !selection.faculty,
       )}
       {renderSelect(
         "Program",
@@ -6174,7 +7784,7 @@ function AcademicCascade({
           faculty: selection.faculty,
           department: selection.department,
         }),
-        !selection.department
+        !selection.department,
       )}
       {renderSelect(
         "Semester",
@@ -6185,7 +7795,7 @@ function AcademicCascade({
           department: selection.department,
           program: selection.program,
         }),
-        !selection.program
+        !selection.program,
       )}
 
       {onApply && (
@@ -6251,12 +7861,12 @@ function TeacherHierarchyCheckboxes({
         sections
           .filter((x) =>
             Object.entries(filters).every(
-              ([k, v]: any) => !v?.length || v.includes(x[k])
-            )
+              ([k, v]: any) => !v?.length || v.includes(x[k]),
+            ),
           )
           .map((x) => x[key])
-          .filter(Boolean)
-      )
+          .filter(Boolean),
+      ),
     ) as string[];
   };
 
@@ -6267,17 +7877,25 @@ function TeacherHierarchyCheckboxes({
         ? selection[key].filter((v: string) => v !== val)
         : [...selection[key], val],
     };
-    if (key === "school") Object.assign(next, { faculty: [], department: [], program: [], semester: [] });
-    if (key === "faculty") Object.assign(next, { department: [], program: [], semester: [] });
-    if (key === "department") Object.assign(next, { program: [], semester: [] });
+    if (key === "school")
+      Object.assign(next, {
+        faculty: [],
+        department: [],
+        program: [],
+        semester: [],
+      });
+    if (key === "faculty")
+      Object.assign(next, { department: [], program: [], semester: [] });
+    if (key === "department")
+      Object.assign(next, { program: [], semester: [] });
     if (key === "program") next.semester = [];
     setSelection(next);
     onScopeChange?.(next);
     const ids = sections
       .filter((s) =>
         Object.entries(next).every(
-          ([k, v]: any) => !v?.length || v.includes(s[k])
-        )
+          ([k, v]: any) => !v?.length || v.includes(s[k]),
+        ),
       )
       .map((s) => s.id);
     onChange(ids);
@@ -6285,7 +7903,9 @@ function TeacherHierarchyCheckboxes({
 
   const renderPhase = (label: string, fieldKey: string, opts: string[]) => (
     <View key={fieldKey} style={{ marginBottom: 12 }}>
-      <Text style={[styles.phaseStepLabel, { color: theme.muted }]}>{label}</Text>
+      <Text style={[styles.phaseStepLabel, { color: theme.muted }]}>
+        {label}
+      </Text>
       <View style={styles.phaseChipsRow}>
         {opts.map((opt) => {
           const isSelected = selection[fieldKey].includes(opt);
@@ -6294,7 +7914,10 @@ function TeacherHierarchyCheckboxes({
               key={opt}
               style={[
                 styles.phasePillChip,
-                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                },
                 isSelected && {
                   backgroundColor: theme.cyanGlow,
                   borderColor: theme.cyan,
@@ -6303,7 +7926,11 @@ function TeacherHierarchyCheckboxes({
               onPress={() => toggle(fieldKey, opt)}
             >
               <MaterialCommunityIcons
-                name={isSelected ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"}
+                name={
+                  isSelected
+                    ? "checkbox-marked-circle"
+                    : "checkbox-blank-circle-outline"
+                }
                 size={15}
                 color={isSelected ? theme.cyan : theme.muted}
               />
@@ -6325,18 +7952,27 @@ function TeacherHierarchyCheckboxes({
 
   return (
     <View style={styles.hierarchyScopeWrap}>
-      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>DEPARTMENT PERMISSIONS</Text>
+      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
+        DEPARTMENT PERMISSIONS
+      </Text>
       <Text style={[styles.hierarchyScopeDesc, { color: theme.muted }]}>
         Select the academic programs this instructor can manage:
       </Text>
       {renderPhase("1. Select School", "school", getOptions("school"))}
       {selection.school.length > 0 &&
-        renderPhase("2. Select Faculty", "faculty", getOptions("faculty", { school: selection.school }))}
+        renderPhase(
+          "2. Select Faculty",
+          "faculty",
+          getOptions("faculty", { school: selection.school }),
+        )}
       {selection.faculty.length > 0 &&
         renderPhase(
           "3. Select Department",
           "department",
-          getOptions("department", { school: selection.school, faculty: selection.faculty })
+          getOptions("department", {
+            school: selection.school,
+            faculty: selection.faculty,
+          }),
         )}
       {selection.department.length > 0 &&
         renderPhase(
@@ -6346,7 +7982,7 @@ function TeacherHierarchyCheckboxes({
             school: selection.school,
             faculty: selection.faculty,
             department: selection.department,
-          })
+          }),
         )}
       {selection.program.length > 0 &&
         renderPhase(
@@ -6357,7 +7993,7 @@ function TeacherHierarchyCheckboxes({
             faculty: selection.faculty,
             department: selection.department,
             program: selection.program,
-          })
+          }),
         )}
     </View>
   );
@@ -7339,6 +8975,7 @@ const styles = StyleSheet.create({
   hudLiveTelemetryBar: {
     position: "absolute",
     bottom: 16,
+    alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "rgba(8, 12, 20, 0.9)",
@@ -8324,6 +9961,30 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
   },
+  biometricCameraFullFrame: {
+    flex: 1,
+    flexDirection: "column",
+    backgroundColor: "#000",
+  },
+  biometricViewfinderArea: {
+    flex: 1,
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: "#000",
+  },
+  hudCenteredGuideContainer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  hudCenteredGuideHint: {
+    color: "rgba(255, 255, 255, 0.75)",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginTop: 14,
+    textTransform: "uppercase",
+  },
   biometricCameraViewport: {
     flex: 1,
     position: "relative",
@@ -8333,9 +9994,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
-    paddingVertical: 24,
+    paddingVertical: 20,
     paddingHorizontal: 20,
-    backgroundColor: "#050811",
+    borderTopWidth: 1,
   },
   cameraFlipBtn: {
     position: "absolute",
@@ -8573,27 +10234,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     marginTop: 16,
-  },
-  modalDangerBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  modalDangerBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  modalDismissBtnFlex: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-    borderRadius: 10,
   },
   capturedThumbsRow: {
     flexDirection: "row",

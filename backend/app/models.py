@@ -29,15 +29,11 @@ class FaceModel:
         # confidence setting. Values near 0.8-0.99 starve the landmark and
         # embedding stages, especially on phone camera frames. High-accuracy
         # filtering is applied by the API after a face has been detected.
-        requested_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.50"))
-        self.det_threshold = min(max(requested_threshold, 0.20), 0.60)
-        if self.det_threshold != requested_threshold:
-            logger.warning(
-                "FACE_DET_THRESHOLD=%s was clamped to %s; use FACE_MIN_CONFIDENCE for strict acceptance",
-                requested_threshold,
-                self.det_threshold,
-            )
-        self.det_size = int(os.getenv("FACE_DET_SIZE", "1600"))
+        requested_threshold = float(os.getenv("FACE_DET_THRESHOLD", "0.35"))
+        self.det_threshold = min(max(requested_threshold, 0.15), 0.45)
+        raw_det_size = int(os.getenv("FACE_DET_SIZE", "640"))
+        # 640 is standard RetinaFace resolution for phone & webcam frames.
+        self.det_size = 640 if raw_det_size > 1000 else raw_det_size
         # Face recognition is GPU-only by default. Set REQUIRE_GPU=0 only for
         # an explicit CPU troubleshooting/development override.
         self.require_gpu = os.getenv("REQUIRE_GPU", "1").lower() in {"1", "true", "yes"}
@@ -91,14 +87,48 @@ class FaceModel:
         if self.app is None:
             raise RuntimeError("Face model is not loaded")
         async with self._lock:
+            det_model = getattr(self.app, "det_model", None)
+
+            # 1. Standard detection at 640x640 native scale
+            if det_model is not None:
+                det_model.input_size = (640, 640)
             faces = await asyncio.to_thread(self.app.get, image, max_num=self.max_faces)
             if faces:
                 return faces
-            # InsightFace builds differ in whether the detector receives BGR
-            # or RGB arrays. Retry the alternate channel order for camera
-            # uploads so a valid face is not rejected solely by that detail.
+
+            # 2. Try alternate color order (BGR <-> RGB)
             alternate = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            return await asyncio.to_thread(self.app.get, alternate, max_num=self.max_faces)
+            faces = await asyncio.to_thread(self.app.get, alternate, max_num=self.max_faces)
+            if faces:
+                return faces
+
+            # 3. Multi-scale fallback (1280x1280 for distant / high-res / group faces)
+            if det_model is not None:
+                det_model.input_size = (1280, 1280)
+                faces = await asyncio.to_thread(self.app.get, image, max_num=self.max_faces)
+                if faces:
+                    det_model.input_size = (640, 640)
+                    return faces
+                faces = await asyncio.to_thread(self.app.get, alternate, max_num=self.max_faces)
+                if faces:
+                    det_model.input_size = (640, 640)
+                    return faces
+
+                # 4. Multi-scale fallback (320x320 for tight selfie / cropped webcam frames)
+                det_model.input_size = (320, 320)
+                faces = await asyncio.to_thread(self.app.get, image, max_num=self.max_faces)
+                if faces:
+                    det_model.input_size = (640, 640)
+                    return faces
+                faces = await asyncio.to_thread(self.app.get, alternate, max_num=self.max_faces)
+                if faces:
+                    det_model.input_size = (640, 640)
+                    return faces
+
+                # Restore standard scale
+                det_model.input_size = (640, 640)
+
+            return []
 
     @property
     def loaded(self):
