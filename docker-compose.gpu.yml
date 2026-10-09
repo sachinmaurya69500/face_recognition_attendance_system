@@ -26,6 +26,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
@@ -33,6 +35,7 @@ services:
       INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - insightface_models:/workspace/models
       - ./backend/app:/workspace/app
@@ -42,6 +45,19 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 15s
       timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: attendance_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
 
   nginx:
@@ -60,3 +76,4 @@ services:
 volumes:
   pgdata:
   insightface_models:
+  redisdata:

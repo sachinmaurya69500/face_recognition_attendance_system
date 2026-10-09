@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.database import get_db_connection
+from app.cache import cache_delete, cache_get, cache_set
 from app.models import face_model
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -833,11 +834,16 @@ def create_academic_section(body: AcademicSectionRequest, _=Depends(require_role
 
 @app.get("/academic/sections")
 def list_academic_sections(_=Depends(current_user)):
+    cached = cache_get("academic:sections")
+    if cached is not None:
+        return {"sections": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM academic_sections ORDER BY school, faculty, department, program, semester, section")
-            return {"sections": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set("academic:sections", rows, ttl=300)
+            return {"sections": rows}
     finally: conn.close()
 
 @app.post("/teacher/attendance-sessions")
@@ -866,17 +872,24 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
                 body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip(), json.dumps(body.academic_scope)))
             result = cur.fetchone()
         conn.commit()
+        cache_delete("academic:sections")
         return result
     finally:
         conn.close()
 
 @app.get("/teacher/attendance-sessions")
 def teacher_attendance_sessions(user=Depends(require_roles("teacher"))):
+    cache_key = f"teacher:{user['sub']}:attendance-sessions"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"sessions": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM attendance_sessions WHERE teacher_id=%s ORDER BY event_date DESC, starts_at DESC", (user["sub"],))
-            return {"sessions": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set(cache_key, rows, ttl=30)
+            return {"sessions": rows}
     finally:
         conn.close()
 
@@ -1187,6 +1200,7 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
                         (f'Attendance recorded for {st["name"]} in session {session_id}.', st["student_id"]))
                 cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your attendance submission for session {session_id} was processed successfully.'))
             conn.commit()
+            cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         finally: conn.close()
     ok, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
     encoded = base64.b64encode(buffer).decode() if ok else None
@@ -1227,6 +1241,7 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
         with conn.cursor() as cur:
             cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your submission for {body.session_id} was verified successfully.'))
         conn.commit()
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
     finally:
         conn.close()

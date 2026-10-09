@@ -18,3 +18,4 @@ insightface>=0.7.3
 # Database
 psycopg2-binary>=2.9.9
 pgvector>=0.2.5
+redis>=5.0.0,<6.0.0

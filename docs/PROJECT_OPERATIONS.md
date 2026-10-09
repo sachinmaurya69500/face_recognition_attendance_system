@@ -74,3 +74,28 @@ Tailscale Funnel must forward to local port `8080`.
 ## Security
 
 Never commit `backend/.env`. Do not expose ports `5432` or `8000` publicly. Keep secrets and EAS credentials private.
+# Frontend lazy screen mounting
+
+The Expo frontend defers mounting of the heaviest interactive screens until
+the navigation transition has completed. `DeferredScreen` uses React Native's
+`InteractionManager`, so camera, recognition-results, and report screens do
+not compete with the initial dashboard transition for rendering time.
+
+This is intentionally mount deferral rather than native dynamic imports:
+Metro remains compatible with Android, iOS, and web, while screen behavior and
+navigation state remain unchanged. The loading indicator is shown briefly if a
+screen is opened before the interaction queue is idle.
+
+## Redis caching
+
+The backend includes an optional Redis cache at `redis://redis:6379/0`.
+Academic-section data is cached for five minutes and faculty session lists for
+30 seconds. Attendance writes invalidate the related faculty-session cache.
+Redis is best-effort: if Redis is unavailable, requests fall back to
+PostgreSQL automatically and attendance remains fully functional.
+
+Start the stack with:
+
+```bash
+docker compose -f docker-compose.gpu.yml up -d --build
+```

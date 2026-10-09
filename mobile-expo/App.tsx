@@ -14,6 +14,7 @@ import {
   Dimensions,
   Easing,
   Image,
+  InteractionManager,
   Modal,
   Platform,
   Pressable,
@@ -1083,6 +1084,17 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
 
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [unreadCount, setUnreadCount] = useState(0);
+  const screenOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    screenOpacity.setValue(0.96);
+    Animated.timing(screenOpacity, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.ease),
+      useNativeDriver: true,
+    }).start();
+  }, [activeTab, screenOpacity]);
 
   useEffect(() => {
     http
@@ -1286,13 +1298,15 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <ScreenRenderer
-          screen={activeTab}
-          role={role}
-          user={user}
-          go={setActiveTab}
-          onLogout={onLogout}
-        />
+        <Animated.View style={{ opacity: screenOpacity }}>
+          <ScreenRenderer
+            screen={activeTab}
+            role={role}
+            user={user}
+            go={setActiveTab}
+            onLogout={onLogout}
+          />
+        </Animated.View>
       </ScrollView>
 
       {/* ── Premium Floating Island Bottom Navigation ── */}
@@ -1398,6 +1412,21 @@ function getTabIcon(tab: string, role: Role) {
   }
 }
 
+// Mount heavy screens after navigation animations complete. This keeps the
+// login/dashboard transition responsive on low-end devices without changing
+// screen behavior or introducing fragile native dynamic imports.
+function DeferredScreen({ children }: { children: React.ReactNode }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => setReady(true));
+    return () => task.cancel();
+  }, []);
+  if (!ready) {
+    return <View style={styles.screenCenterLoader}><ActivityIndicator size="large" color={darkTheme.cyan} /></View>;
+  }
+  return <>{children}</>;
+}
+
 // ---------------------------------------------------------------------------
 // ROUTER & SCREEN DISPATCHER
 // ---------------------------------------------------------------------------
@@ -1440,11 +1469,11 @@ function ScreenRenderer({
 
     case "Attendance":
       if (role === "admin") return <AttendanceHistoryView />;
-      if (role === "teacher") return <TeacherTakeAttendance go={go} />;
+      if (role === "teacher") return <DeferredScreen><TeacherTakeAttendance go={go} /></DeferredScreen>;
       return <StudentAttendanceView />;
 
     case "Recognition Results":
-      return <RecognitionResultsView go={go} />;
+      return <DeferredScreen><RecognitionResultsView go={go} /></DeferredScreen>;
     case "Verify Attendance":
       return <VerifyAttendanceView go={go} />;
 
@@ -1453,7 +1482,7 @@ function ScreenRenderer({
     case "History":
       return <AttendanceHistoryView />;
     case "Reports":
-      return <ReportsView />;
+      return <DeferredScreen><ReportsView /></DeferredScreen>;
     case "Alerts":
     case "Notifications":
       return <NotificationsView />;
