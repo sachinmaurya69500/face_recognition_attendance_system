@@ -407,9 +407,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
       onLogin(userData);
     } catch (e: any) {
       if (!e?.response) {
-        setError(
-          `Cannot reach backend server at:\n${http.defaults.baseURL}\n\nError: ${e?.message || "Network Error"}.\nTap the server pill below to verify or change the API URL.`,
-        );
+        setError("Unable to connect to the server. Please try again later.");
       } else {
         const status = e.response.status;
         const detail = e.response.data?.detail;
@@ -419,7 +417,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           );
         } else {
           setError(
-            `Server error (HTTP ${status}):\n${detail || e.message || "Request failed"}\nEndpoint: ${http.defaults.baseURL}`,
+            detail || "The server could not complete the request. Please try again later.",
           );
         }
       }
@@ -766,39 +764,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             )}
           </Pressable>
 
-          {/* Server Connection Indicator & Quick Switch */}
-          <Pressable
-            style={[
-              styles.serverPillBtn,
-              { backgroundColor: theme.bgElevated, borderColor: theme.border },
-            ]}
-            onPress={() => setShowServerModal(true)}
-          >
-            <View
-              style={[
-                styles.serverStatusDot,
-                {
-                  backgroundColor:
-                    testStatus === "online"
-                      ? theme.emerald
-                      : testStatus === "offline"
-                        ? theme.rose
-                        : theme.amber,
-                },
-              ]}
-            />
-            <Text
-              style={[styles.serverPillText, { color: theme.textSecondary }]}
-              numberOfLines={1}
-            >
-              API: {currentApi}
-            </Text>
-            <MaterialCommunityIcons
-              name="cog-outline"
-              size={16}
-              color={theme.cyan}
-            />
-          </Pressable>
         </View>
 
         <Text style={[styles.loginFootnote, { color: theme.muted }]}>
@@ -2178,6 +2143,7 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
   const [filters, setFilters] = useState<any>({});
   const [busy, setBusy] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
+  const [editingStudent, setEditingStudent] = useState<any>(null);
 
   useEffect(() => {
     http
@@ -2459,16 +2425,44 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                   value={selectedStudent.email || "Not registered"}
                 />
                 <HoloDetailRow
+                  label="Phone"
+                  value={selectedStudent.phone || "Not registered"}
+                />
+                <HoloDetailRow
+                  label="Date of Birth"
+                  value={selectedStudent.date_of_birth || "Not specified"}
+                />
+                <HoloDetailRow
+                  label="Roll Number"
+                  value={selectedStudent.roll_number || "Not assigned"}
+                />
+                <HoloDetailRow
+                  label="School"
+                  value={selectedStudent.academic_school || "Not specified"}
+                />
+                <HoloDetailRow
+                  label="Faculty"
+                  value={selectedStudent.academic_faculty || "Not specified"}
+                />
+                <HoloDetailRow
                   label="Program"
                   value={selectedStudent.program || "Not registered"}
                 />
                 <HoloDetailRow
                   label="Department"
-                  value={selectedStudent.department || "Not registered"}
+                  value={selectedStudent.department || selectedStudent.academic_department || "Not registered"}
                 />
                 <HoloDetailRow
                   label="Semester"
-                  value={selectedStudent.semester || "Not specified"}
+                  value={selectedStudent.semester || selectedStudent.academic_semester || "Not specified"}
+                />
+                <HoloDetailRow
+                  label="Current GPA"
+                  value={selectedStudent.gpa || "Not specified"}
+                />
+                <HoloDetailRow
+                  label="Enrollment Year"
+                  value={selectedStudent.enrollment_year || "Not specified"}
                 />
                 <HoloDetailRow
                   label="Face Verification"
@@ -2477,6 +2471,12 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
               </View>
 
               <View style={styles.modalFooterTwoBtnsRow}>
+                <Pressable
+                  style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyanGlow, borderWidth: 1, borderColor: theme.cyan }]}
+                  onPress={() => setEditingStudent(selectedStudent)}
+                >
+                  <Text style={[styles.modalDismissBtnText, { color: theme.cyan }]}>EDIT</Text>
+                </Pressable>
                 <Pressable
                   style={[
                     styles.modalDangerBtn,
@@ -2525,6 +2525,17 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           </Pressable>
         </Modal>
       )}
+      <StudentEditModal
+        visible={!!editingStudent}
+        student={editingStudent}
+        endpoint={editingStudent ? `/admin/students/${editingStudent.student_id}` : "/admin/students/unknown"}
+        onClose={() => setEditingStudent(null)}
+        onSaved={(updated) => {
+          setStudents((current) => current.map((item) => item.student_id === updated.student_id ? { ...item, ...updated } : item));
+          setSelectedStudent((current: any) => current ? { ...current, ...updated } : current);
+          setEditingStudent(null);
+        }}
+      />
     </View>
   );
 }
@@ -7312,6 +7323,7 @@ function StudentProfile({
   const [profile, setProfile] = useState<any>(user);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     http
@@ -7373,9 +7385,14 @@ function StudentProfile({
           label="Student ID"
           value={profile.student_id || "STU-2026"}
         />
+        <HoloDetailRow label="Full Name" value={profile.name || profile.display_name || "Not specified"} />
+        <HoloDetailRow label="Email" value={profile.email || "Not registered"} />
+        <HoloDetailRow label="Phone" value={profile.phone || "Not registered"} />
+        <HoloDetailRow label="Date of Birth" value={profile.date_of_birth || "Not specified"} />
+        <HoloDetailRow label="Roll Number" value={profile.roll_number || "Not assigned"} />
         <HoloDetailRow
           label="Department"
-          value={profile.department || "Engineering"}
+          value={profile.department || profile.academic_department || "Not specified"}
         />
         <HoloDetailRow
           label="Program"
@@ -7383,11 +7400,15 @@ function StudentProfile({
         />
         <HoloDetailRow
           label="Semester"
-          value={profile.semester || "Semester 4"}
+          value={profile.semester || profile.academic_semester || "Not specified"}
         />
         <HoloDetailRow
           label="Current GPA"
-          value={String(profile.gpa || "3.85")}
+          value={String(profile.gpa || "Not specified")}
+        />
+        <HoloDetailRow
+          label="Enrollment Year"
+          value={profile.enrollment_year || "Not specified"}
         />
         <HoloDetailRow
           label="Face Biometrics"
@@ -7396,6 +7417,13 @@ function StudentProfile({
           }
         />
       </View>
+
+      <Pressable
+        style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginBottom: 12 }]}
+        onPress={() => setEditing(true)}
+      >
+        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>EDIT DETAILS</Text>
+      </Pressable>
 
       {/* Face Biometrics Registration / Update Button */}
       <Pressable
@@ -7443,6 +7471,17 @@ function StudentProfile({
         onCapture={handleFaceCaptured}
       />
 
+      <StudentEditModal
+        visible={editing}
+        student={profile}
+        endpoint="/student/profile"
+        onClose={() => setEditing(false)}
+        onSaved={(updated) => {
+          setProfile((current: any) => ({ ...current, ...updated }));
+          setEditing(false);
+        }}
+      />
+
       <Pressable
         style={[
           styles.signOutBtnHolo,
@@ -7456,6 +7495,104 @@ function StudentProfile({
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+function StudentEditModal({
+  visible,
+  student,
+  endpoint,
+  onClose,
+  onSaved,
+}: {
+  visible: boolean;
+  student: any;
+  endpoint: string;
+  onClose: () => void;
+  onSaved: (student: any) => void;
+}) {
+  const { theme } = useAppTheme();
+  const [form, setForm] = useState<any>({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setForm({
+        name: student?.name || student?.display_name || "",
+        email: student?.email || "",
+        phone: student?.phone || "",
+        date_of_birth: student?.date_of_birth || "",
+        program: student?.program || "",
+        department: student?.department || student?.academic_department || "",
+        semester: student?.semester || student?.academic_semester || "",
+        gpa: student?.gpa || "",
+        enrollment_year: student?.enrollment_year || "",
+        roll_number: student?.roll_number || "",
+      });
+    }
+  }, [visible, student]);
+
+  const update = (key: string, value: string) =>
+    setForm((current: any) => ({ ...current, [key]: value }));
+
+  const save = async () => {
+    if (!form.name.trim()) {
+      Alert.alert("Name required", "Please enter the student's full name.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const body = new FormData();
+      Object.entries(form).forEach(([key, value]) =>
+        body.append(key, String(value ?? "")),
+      );
+      const response = await http.patch(endpoint, body, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      onSaved(response.data);
+      Alert.alert("Details updated", "The student profile was saved successfully.");
+    } catch (e: any) {
+      Alert.alert("Update failed", e?.response?.data?.detail || "Could not save student details.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fields = [
+    ["name", "Full Name"], ["email", "Email"], ["phone", "Phone"],
+    ["date_of_birth", "Date of Birth (YYYY-MM-DD)"], ["program", "Program"],
+    ["department", "Department"], ["semester", "Semester"], ["gpa", "GPA"],
+    ["enrollment_year", "Enrollment Year"], ["roll_number", "Roll Number"],
+  ];
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalBackdropOverlay}>
+        <View style={[styles.modalSheetCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, maxHeight: "90%" }]}>
+          <View style={styles.modalSheetHeader}>
+            <Text style={[styles.modalSheetTitle, { color: theme.text }]}>Edit Student Details</Text>
+            <Pressable onPress={onClose}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
+          </View>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {fields.map(([key, label]) => (
+              <View key={key} style={{ marginBottom: 10 }}>
+                <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
+                <TextInput
+                  value={form[key] || ""}
+                  onChangeText={(value) => update(key, value)}
+                  placeholder={label}
+                  placeholderTextColor={theme.muted}
+                  style={[styles.textInputBox, { color: theme.text, backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+                />
+              </View>
+            ))}
+            <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8 }]} onPress={save} disabled={busy}>
+              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>SAVE DETAILS</Text>}
+            </Pressable>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 

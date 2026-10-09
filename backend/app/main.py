@@ -180,7 +180,13 @@ def ensure_auth_tables():
             # native PostgreSQL instance does not, so apply the same
             # idempotent base schema before adding the application tables.
             schema_path = Path(__file__).resolve().parents[1] / "init.sql"
-            cur.execute(schema_path.read_text(encoding="utf-8"))
+            # Only run the bundled bootstrap script for a genuinely new
+            # database.  Replaying init.sql on every API restart would
+            # reinsert its demo roster after an administrator removes it.
+            cur.execute("SELECT to_regclass('public.users')")
+            schema_probe = cur.fetchone()
+            if schema_probe["to_regclass"] is None:
+                cur.execute(schema_path.read_text(encoding="utf-8"))
             cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
@@ -200,7 +206,7 @@ def ensure_auth_tables():
             # Seed the bundled catalogue only for an empty database. Running
             # the bulk upsert on every API restart delayed readiness without
             # changing an already-populated hierarchy.
-            if cur.fetchone()["count"] == 0:
+            if cur.fetchone()["count"] == 0 and os.getenv("SEED_CATALOG", "").lower() == "true":
                 catalog = [
                     ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "B.Sc. Information Technology (Honors)"),
                     ("School of Technology, Communication and Management", "Faculty of Technology and Management", "Department of Computer Sciences", "Bachelor of Computer Application (Honors)"),
@@ -259,27 +265,11 @@ def ensure_auth_tables():
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES academic_sections(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS roll_number VARCHAR(50)")
             cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
             cur.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action VARCHAR(80) NOT NULL, entity VARCHAR(80) NOT NULL, entity_id VARCHAR(120), previous_value JSONB, new_value JSONB, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            # The database is intentionally empty except for the administrator.
+            # Students and teachers are created through the application flows.
             cur.execute("""INSERT INTO users (username, password_hash, role)
-                VALUES
-                    ('admin', %s, 'admin'),
-                    ('teacher', %s, 'teacher'),
-                    ('demo.teacher', %s, 'teacher')
-                ON CONFLICT (username) DO NOTHING""",
-                (password_hash("admin123"), password_hash("teacher123"), password_hash("DemoTeacher123!")))
-
-            # Seed demo student if not existing
-            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, section_id)
-                VALUES ('DEMO-STUDENT', 'Demo Scholar', 'demo.student@university.edu', '555-0199', '2000-01-01', 'B.Sc. Information Technology (Honors)', 1)
-                ON CONFLICT (student_id) DO NOTHING""")
-            cur.execute("""INSERT INTO users (username, password_hash, role, student_id, display_name)
-                VALUES ('DEMO-STUDENT', %s, 'student', 'DEMO-STUDENT', 'Demo Scholar')
-                ON CONFLICT (username) DO NOTHING""", (password_hash("2000-01-01"),))
-
-            # Ensure teacher assignments for section 1
-            cur.execute("""INSERT INTO teacher_assignments (teacher_user_id, section_id, subject)
-                SELECT u.id, 1, 'Computer Networks & Distributed Systems'
-                FROM users u WHERE u.username IN ('teacher', 'demo.teacher')
-                ON CONFLICT (teacher_user_id, section_id, subject) DO NOTHING""")
+                VALUES ('admin', %s, 'admin')
+                ON CONFLICT (username) DO NOTHING""", (password_hash("admin123"),))
         conn.commit()
     finally: conn.close()
 
@@ -334,10 +324,16 @@ def get_profile(user=Depends(current_user)):
         with conn.cursor() as cur:
             cur.execute("""SELECT u.username, u.role, u.student_id, COALESCE(u.display_name,s.name) AS display_name,
                 COALESCE(u.email,s.email) AS email, COALESCE(u.phone,s.phone) AS phone,
-                s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                s.name, s.date_of_birth, s.program, s.roll_number, s.section_id,
+                s.semester, s.department, s.gpa, s.enrollment_year,
+                sec.school AS academic_school, sec.faculty AS academic_faculty,
+                sec.department AS academic_department, sec.semester AS academic_semester,
+                sec.section AS academic_section,
                 EXISTS (SELECT 1 FROM student_embeddings e WHERE e.student_id=s.student_id) AS face_registered,
                 encode(u.profile_photo, 'base64') AS profile_photo_base64
-                FROM users u LEFT JOIN students s ON s.student_id=u.student_id WHERE u.id=%s""", (user["sub"],))
+                FROM users u LEFT JOIN students s ON s.student_id=u.student_id
+                LEFT JOIN academic_sections sec ON sec.id=s.section_id
+                WHERE u.id=%s""", (user["sub"],))
             profile = cur.fetchone()
             if not profile: raise HTTPException(404, "User not found")
             if profile.get("profile_photo_base64"):
@@ -778,15 +774,34 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
     try:
         with conn.cursor() as cur:
             if user["role"] == "admin":
-                cur.execute("SELECT student_id, name, email, phone, date_of_birth, program, roll_number, section_id, created_at FROM students ORDER BY student_id")
+                cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
+                    s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                    s.roll_number, s.section_id, s.created_at,
+                    sec.school AS academic_school, sec.faculty AS academic_faculty,
+                    sec.department AS academic_department, sec.semester AS academic_semester,
+                    sec.section AS academic_section
+                    FROM students s LEFT JOIN academic_sections sec ON sec.id=s.section_id
+                    ORDER BY s.student_id""")
             else:
-                cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth, s.program, s.roll_number, s.section_id, s.created_at
+                cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
+                    s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                    s.roll_number, s.section_id, s.created_at,
+                    sec.school AS academic_school, sec.faculty AS academic_faculty,
+                    sec.department AS academic_department, sec.semester AS academic_semester,
+                    sec.section AS academic_section
                     FROM students s JOIN academic_sections sec ON sec.id=s.section_id
                     JOIN teacher_assignments ta ON ta.section_id=sec.id AND ta.teacher_user_id=%s
                     ORDER BY s.student_id""", (user["sub"],))
                 rows = cur.fetchall()
                 if not rows:
-                    cur.execute("SELECT student_id, name, email, phone, date_of_birth, program, roll_number, section_id, created_at FROM students ORDER BY student_id")
+                    cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
+                        s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                        s.roll_number, s.section_id, s.created_at,
+                        sec.school AS academic_school, sec.faculty AS academic_faculty,
+                        sec.department AS academic_department, sec.semester AS academic_semester,
+                        sec.section AS academic_section
+                        FROM students s LEFT JOIN academic_sections sec ON sec.id=s.section_id
+                        ORDER BY s.student_id""")
                     rows = cur.fetchall()
                 return {"students": rows}
             return {"students": cur.fetchall()}
@@ -876,9 +891,14 @@ def student_attendance_sessions(user=Depends(require_roles("student"))):
                 s.program, s.semester, s.room, s.event_date, s.starts_at, s.ends_at, s.notes,
                 COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
                 a.timestamp AS marked_at
-                FROM attendance_sessions s JOIN students st ON st.section_id=s.section_id
+                FROM attendance_sessions s
                 LEFT JOIN attendance_logs a ON a.session_id=s.session_id AND a.student_id=%s
-                WHERE st.student_id=%s ORDER BY s.event_date DESC, s.starts_at DESC""", (student_id, student_id))
+                WHERE a.student_id IS NOT NULL
+                   OR EXISTS (
+                       SELECT 1 FROM students st
+                       WHERE st.student_id=%s AND st.section_id=s.section_id
+                   )
+                ORDER BY s.event_date DESC, s.starts_at DESC""", (student_id, student_id))
             return {"sessions": cur.fetchall()}
     finally:
         conn.close()
@@ -909,15 +929,37 @@ def delete_student(student_id: str, _=Depends(require_roles("admin"))):
     finally: conn.close()
 
 @app.patch("/admin/students/{student_id}")
-def update_student(student_id: str, name: str = Form(...), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), _=Depends(require_roles("admin"))):
+def update_student(student_id: str, name: str = Form(...), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), department: str = Form(""), semester: str = Form(""), gpa: str = Form(""), enrollment_year: str = Form(""), roll_number: str = Form(""), _=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""UPDATE students SET name=%s,email=%s,phone=%s,date_of_birth=NULLIF(%s,''),program=%s
-                         WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program""",
-                        (name.strip(), email or None, phone or None, date_of_birth, program or None, student_id))
+            cur.execute("""UPDATE students SET name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,''),date_of_birth=NULLIF(%s,''),
+                         program=NULLIF(%s,''),department=NULLIF(%s,''),semester=NULLIF(%s,''),gpa=NULLIF(%s,''),
+                         enrollment_year=NULLIF(%s,''),roll_number=NULLIF(%s,'')
+                         WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program,department,semester,gpa,enrollment_year,roll_number""",
+                        (name.strip(), email, phone, date_of_birth, program, department, semester, gpa, enrollment_year, roll_number, student_id))
             row = cur.fetchone()
             if not row: raise HTTPException(404, "Student not found")
+            cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE student_id=%s", (name.strip(), email, phone, student_id))
+        conn.commit(); return row
+    finally: conn.close()
+
+@app.patch("/student/profile")
+def update_own_student_profile(name: str = Form(...), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), department: str = Form(""), semester: str = Form(""), gpa: str = Form(""), enrollment_year: str = Form(""), roll_number: str = Form(""), user=Depends(require_roles("student"))):
+    student_id = user.get("student_id")
+    if not student_id:
+        raise HTTPException(422, "Student account is not linked to a student profile")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE students SET name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,''),date_of_birth=NULLIF(%s,''),
+                         program=NULLIF(%s,''),department=NULLIF(%s,''),semester=NULLIF(%s,''),gpa=NULLIF(%s,''),
+                         enrollment_year=NULLIF(%s,''),roll_number=NULLIF(%s,'')
+                         WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program,department,semester,gpa,enrollment_year,roll_number""",
+                        (name.strip(), email, phone, date_of_birth, program, department, semester, gpa, enrollment_year, roll_number, student_id))
+            row = cur.fetchone()
+            if not row: raise HTTPException(404, "Student profile not found")
+            cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE id=%s", (name.strip(), email, phone, user["sub"]))
         conn.commit(); return row
     finally: conn.close()
 
@@ -1243,9 +1285,14 @@ def own_attendance_overview(user=Depends(require_roles("student"))):
                 s.program, s.semester, s.room, s.event_date, s.starts_at, s.ends_at, s.notes,
                 COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
                 a.timestamp AS marked_at
-                FROM attendance_sessions s JOIN students st ON st.section_id=s.section_id
+                FROM attendance_sessions s
                 LEFT JOIN attendance_logs a ON a.session_id=s.session_id AND a.student_id=%s
-                WHERE st.student_id=%s ORDER BY s.event_date DESC, s.starts_at DESC""", (user["student_id"], user["student_id"]))
+                WHERE a.student_id IS NOT NULL
+                   OR EXISTS (
+                       SELECT 1 FROM students st
+                       WHERE st.student_id=%s AND st.section_id=s.section_id
+                   )
+                ORDER BY s.event_date DESC, s.starts_at DESC""", (user["student_id"], user["student_id"]))
             attendance = cur.fetchall()
             present = sum(1 for row in attendance if str(row["status"]).upper() == "PRESENT")
             return {"profile": profile, "attendance": attendance, "subjects": attendance, "summary": {"present": present, "absent": len(attendance) - present, "overall_percentage": round(present / len(attendance) * 100, 1) if attendance else 0}}
