@@ -182,6 +182,56 @@ export function resolveApiBaseUrl(): string {
 let API = resolveApiBaseUrl();
 const http = axios.create({ baseURL: API, timeout: 25000 });
 
+// Date fields are presented to users as DD-MM-YYYY, while the API receives ISO dates.
+const toApiDate = (value: string) => {
+  const match = value.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : value.trim();
+};
+
+const fromApiDate = (value: string) => {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : value;
+};
+
+const formatDisplayDate = (date: Date) =>
+  `${String(date.getDate()).padStart(2, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${date.getFullYear()}`;
+
+const parseDisplayDate = (value: string) => {
+  const match = value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : new Date();
+};
+
+function UploadDonut({ progress, label }: { progress: number; label: string }) {
+  const safeProgress = Math.max(0, Math.min(100, progress));
+  const segments = 24;
+  return (
+    <View style={{ alignItems: "center", marginVertical: 14 }}>
+      <View style={{ width: 116, height: 116, justifyContent: "center", alignItems: "center" }}>
+        {Array.from({ length: segments }).map((_, index) => {
+          const active = index < Math.ceil((safeProgress / 100) * segments);
+          return (
+            <View
+              key={index}
+              style={{
+                position: "absolute",
+                width: 8,
+                height: 22,
+                borderRadius: 4,
+                backgroundColor: active ? "#22C55E" : "rgba(148,163,184,0.22)",
+                transform: [{ rotate: `${index * (360 / segments)}deg` }, { translateY: -45 }],
+              }}
+            />
+          );
+        })}
+        <View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: "#0B1220", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "#22C55E", fontSize: 21, fontWeight: "800" }}>{safeProgress}%</Text>
+        </View>
+      </View>
+      <Text style={{ color: "#22C55E", fontSize: 11, fontWeight: "700", letterSpacing: 0.6 }}>{label}</Text>
+    </View>
+  );
+}
+
 export function updateApiBaseUrl(newUrl: string) {
   API = newUrl.trim();
   http.defaults.baseURL = API;
@@ -347,8 +397,8 @@ export default function App() {
 function Login({ onLogin }: { onLogin: (u: any) => void }) {
   const { theme, isDark, toggleTheme } = useAppTheme();
   const [role, setRole] = useState<Role>("admin");
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -374,16 +424,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
   const handleRoleSelect = (selectedRole: Role) => {
     setRole(selectedRole);
-    if (selectedRole === "admin") {
-      setUsername("admin");
-      setPassword("admin123");
-    } else if (selectedRole === "teacher") {
-      setUsername("demo.teacher");
-      setPassword("DemoTeacher123!");
-    } else {
-      setUsername("DEMO-STUDENT");
-      setPassword("2000-01-01");
-    }
+    setUsername("");
+    setPassword("");
   };
 
   const submit = async () => {
@@ -584,7 +626,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             {(
               [
                 { id: "admin", label: "Admin", icon: "shield-crown-outline" },
-                { id: "teacher", label: "Faculty", icon: "teach" },
+                { id: "teacher", label: "Faculty", icon: "account-tie-outline" },
                 { id: "student", label: "Student", icon: "school-outline" },
               ] as const
             ).map((item) => {
@@ -652,7 +694,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 style={[styles.textInputBox, { color: theme.text }]}
                 value={username}
                 onChangeText={setUsername}
-                placeholder="Username or student ID"
                 placeholderTextColor={theme.muted}
                 autoCapitalize="none"
               />
@@ -685,7 +726,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
-                placeholder="Enter your password"
                 placeholderTextColor={theme.muted}
               />
               <Pressable
@@ -1399,7 +1439,7 @@ function ScreenRenderer({
       return <AcademicHierarchyView />;
 
     case "Attendance":
-      if (role === "admin") return <AdminAttendanceView />;
+      if (role === "admin") return <AttendanceHistoryView />;
       if (role === "teacher") return <TeacherTakeAttendance go={go} />;
       return <StudentAttendanceView />;
 
@@ -3644,13 +3684,12 @@ function BiometricCameraModal({
 // ---------------------------------------------------------------------------
 function AddStudent({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
-  const [studentId, setStudentId] = useState(
-    `STU-${Date.now().toString().slice(-6)}`,
-  );
+  const [studentId, setStudentId] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [dateOfBirth, setDateOfBirth] = useState("2000-01-01");
+  const [dateOfBirth, setDateOfBirth] = useState("");
+  const [showDobPicker, setShowDobPicker] = useState(false);
   const [program, setProgram] = useState("");
   const [sectionId, setSectionId] = useState<number | null>(null);
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
@@ -3658,6 +3697,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   const [isValidatingPhoto, setIsValidatingPhoto] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   useEffect(() => {
     // Check if previously captured photos exist
@@ -3735,6 +3775,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       return;
     }
     setBusy(true);
+    setUploadProgress(0);
     try {
       const sid = studentId.trim() || `STU-${Date.now().toString().slice(-6)}`;
       const data = new FormData();
@@ -3742,8 +3783,9 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("name", name.trim());
       data.append("email", email.trim());
       data.append("phone", phone.trim());
-      data.append("date_of_birth", dateOfBirth.trim() || "2000-01-01");
-      data.append("password", dateOfBirth.trim() || "welcome123");
+      const apiDate = toApiDate(dateOfBirth);
+      data.append("date_of_birth", apiDate);
+      data.append("password", apiDate || "welcome123");
       data.append("program", program.trim() || "Undergraduate Program");
       if (sectionId) {
         data.append("section_id", String(sectionId));
@@ -3756,6 +3798,9 @@ function AddStudent({ go }: { go: (x: string) => void }) {
 
       await http.post("/register-student", data, {
         headers: { "Content-Type": "multipart/form-data" },
+        onUploadProgress: (event) => {
+          if (event.total) setUploadProgress(Math.round((event.loaded / event.total) * 100));
+        },
       });
 
       await AsyncStorage.removeItem("face_registration_photos");
@@ -3772,6 +3817,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       );
     } finally {
       setBusy(false);
+      setUploadProgress(0);
     }
   };
 
@@ -3830,7 +3876,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
               ]}
               value={studentId}
               onChangeText={setStudentId}
-              placeholder="e.g. STU-2026-001"
               placeholderTextColor={theme.muted}
             />
             <Pressable
@@ -3873,7 +3918,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             ]}
             value={name}
             onChangeText={setName}
-            placeholder="e.g. Jonathan Smith"
             placeholderTextColor={theme.muted}
           />
         </View>
@@ -3895,7 +3939,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
-            placeholder="j.smith@university.edu"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
@@ -3905,22 +3948,27 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         <View style={styles.twoColumnGridRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
             <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              DATE OF BIRTH (YYYY-MM-DD)
+              DATE OF BIRTH (DD-MM-YYYY)
             </Text>
-            <TextInput
+            <Pressable
               style={[
                 styles.textInputHoloPlain,
                 {
                   backgroundColor: theme.bgElevated,
                   borderColor: theme.border,
                   color: theme.text,
+                  justifyContent: "center",
                 },
               ]}
-              value={dateOfBirth}
-              onChangeText={setDateOfBirth}
-              placeholder="2000-01-01"
-              placeholderTextColor={theme.muted}
-            />
+              onPress={() => setShowDobPicker(true)}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ color: dateOfBirth ? theme.text : theme.muted }}>
+                  {dateOfBirth || "Select date"}
+                </Text>
+                <MaterialCommunityIcons name="calendar-month-outline" size={19} color={theme.cyan} />
+              </View>
+            </Pressable>
           </View>
           <View style={{ flex: 1, marginLeft: 8 }}>
             <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
@@ -3937,11 +3985,23 @@ function AddStudent({ go }: { go: (x: string) => void }) {
               ]}
               value={phone}
               onChangeText={setPhone}
-              placeholder="+1 555-0199"
               placeholderTextColor={theme.muted}
             />
           </View>
         </View>
+
+        {showDobPicker && (
+          <DateTimePicker
+            value={parseDisplayDate(dateOfBirth)}
+            mode="date"
+            display="calendar"
+            maximumDate={new Date()}
+            onChange={(_, selectedDate) => {
+              setShowDobPicker(false);
+              if (selectedDate) setDateOfBirth(formatDisplayDate(selectedDate));
+            }}
+          />
+        )}
 
         {/* Academic Placement */}
         <AcademicCascade
@@ -4145,6 +4205,10 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           </View>
         )}
 
+        {busy && uploadProgress > 0 && (
+          <UploadDonut progress={uploadProgress} label="UPLOADING PHOTO" />
+        )}
+
         {/* Submit Actions */}
         <View style={styles.formActionButtonsRow}>
           <Pressable
@@ -4299,7 +4363,6 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             ]}
             value={form.name}
             onChangeText={(v) => setForm((p) => ({ ...p, name: v }))}
-            placeholder="Dr. Sarah Jenkins"
             placeholderTextColor={theme.muted}
           />
         </View>
@@ -4320,7 +4383,6 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             value={form.email}
             onChangeText={(v) => setForm((p) => ({ ...p, email: v }))}
             keyboardType="email-address"
-            placeholder="s.jenkins@university.edu"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
@@ -4341,7 +4403,6 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             ]}
             value={form.username}
             onChangeText={(v) => setForm((p) => ({ ...p, username: v }))}
-            placeholder="EMP-2026-88"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
@@ -4363,7 +4424,6 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             value={form.password}
             onChangeText={(v) => setForm((p) => ({ ...p, password: v }))}
             secureTextEntry
-            placeholder="Create secure password"
             placeholderTextColor={theme.muted}
           />
         </View>
@@ -4968,6 +5028,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
   const [busy, setBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [scope, setScope] = useState<any>(null);
   const [academicScope, setAcademicScope] = useState<any>({
     school: [],
@@ -5003,6 +5064,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       return;
     }
     setBusy(true);
+    setUploadProgress(0);
     try {
       const res = await http.post("/teacher/attendance-sessions", {
         ...form,
@@ -5046,6 +5108,9 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 
       const res = await http.post("/process-group-attendance", data, {
         headers: { "Content-Type": "multipart/form-data" },
+        onUploadProgress: (event) => {
+          if (event.total) setUploadProgress(Math.round((event.loaded / event.total) * 100));
+        },
       });
 
       if (res.data) {
@@ -5068,6 +5133,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       );
     } finally {
       setBusy(false);
+      setUploadProgress(0);
     }
   };
 
@@ -5297,6 +5363,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             )}
           </Pressable>
         ) : (
+          <>
           <View style={styles.dualPhotoActionsCol}>
             <Pressable
               style={[
@@ -5360,6 +5427,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
               </Text>
             </Pressable>
           </View>
+          {busy && uploadProgress > 0 && (
+            <UploadDonut progress={uploadProgress} label="UPLOADING CLASS PHOTO" />
+          )}
+          </>
         )}
       </View>
     </View>
@@ -6087,7 +6158,6 @@ function AdminAttendanceView() {
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [busy, setBusy] = useState(true);
-
   useEffect(() => {
     http
       .get("/admin/attendance")
@@ -6427,7 +6497,7 @@ function StudentClassesView() {
               <Text
                 style={[styles.scheduleLectureMeta, { color: theme.muted }]}
               >
-                {cls.room || "Room 101"} • {cls.program} • {cls.semester}
+                {cls.room || "Room 101"}
               </Text>
             </View>
             <View
@@ -6459,6 +6529,32 @@ function AttendanceHistoryView() {
   const [month, setMonth] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [busy, setBusy] = useState(true);
+  const [selectedSession, setSelectedSession] = useState<any>(null);
+  const [sessionStudents, setSessionStudents] = useState<any[]>([]);
+  const [sessionBusy, setSessionBusy] = useState(false);
+
+  const openSession = async (session: any) => {
+    setSelectedSession(session);
+    setSessionBusy(true);
+    try {
+      const response = await http.get(`/attendance/${session.session_id}`);
+      setSessionStudents(response.data?.students || []);
+    } catch {
+      setSessionStudents([]);
+      Alert.alert("Unable to load session", "Please try again.");
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const updateAttendance = async (student: any, status: string) => {
+    try {
+      await http.patch(`/attendance/${selectedSession.session_id}/${student.student_id}`, { status });
+      setSessionStudents((items) => items.map((item) => item.student_id === student.student_id ? { ...item, status, is_manual_override: true } : item));
+    } catch (e: any) {
+      Alert.alert("Update failed", e?.response?.data?.detail || "Could not update attendance.");
+    }
+  };
 
   useEffect(() => {
     const monthStr = month.toISOString().slice(0, 7);
@@ -6544,12 +6640,13 @@ function AttendanceHistoryView() {
             (r) => r.session_id === sess.session_id,
           ).length;
           return (
-            <View
+            <Pressable
               key={sess.session_id || i}
               style={[
                 styles.rosterItemCard,
                 { backgroundColor: theme.cardGlass, borderColor: theme.border },
               ]}
+              onPress={() => openSession(sess)}
             >
               <View
                 style={[
@@ -6564,27 +6661,49 @@ function AttendanceHistoryView() {
                 />
               </View>
               <View style={{ flex: 1, paddingHorizontal: 12 }}>
-                <Text style={[styles.rosterItemName, { color: theme.text }]}>
-                  {sess.timestamp
-                    ? new Date(sess.timestamp).toLocaleDateString(undefined, {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                      })
-                    : `Session #${sess.session_id}`}
+                <Text style={[styles.rosterItemName, { color: theme.text }]}> 
+                  {sess.title || sess.course || "Attendance Session"}
                 </Text>
-                <Text style={[styles.rosterItemId, { color: theme.cyan }]}>
-                  Session ID: {sess.session_id}
+                <Text style={[styles.rosterItemId, { color: theme.cyan }]}> 
+                  {sess.timestamp ? new Date(sess.timestamp).toLocaleDateString() : "Open session details"}
                 </Text>
                 <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
                   {count} verified students
                 </Text>
               </View>
               <HoloStatusPill label={`${count} students`} tone="info" />
-            </View>
+            </Pressable>
           );
         })
       )}
+
+      <Modal visible={!!selectedSession} transparent animationType="slide" onRequestClose={() => setSelectedSession(null)}>
+        <View style={styles.modalBackdropOverlay}>
+          <View style={[styles.modalSheetCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, maxHeight: "90%" }]}>
+            <View style={styles.modalSheetHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.modalSheetTitle, { color: theme.text }]}>{selectedSession?.title || selectedSession?.course}</Text>
+                <Text style={{ color: theme.muted }}>Tap Present or Absent to save immediately</Text>
+              </View>
+              <Pressable onPress={() => setSelectedSession(null)}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
+            </View>
+            {sessionBusy ? <ActivityIndicator color={theme.cyan} style={{ margin: 24 }} /> : (
+              <ScrollView>
+                {sessionStudents.map((student) => (
+                  <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
+                    <Pressable style={{ flex: 1 }} onPress={() => Alert.alert(student.name, `Student ID: ${student.student_id}\nEmail: ${student.email || "Not provided"}\nPhone: ${student.phone || "Not provided"}\nProgram: ${student.program || "Not provided"}`)}>
+                      <Text style={[styles.rosterItemName, { color: theme.text }]}>{student.name}</Text>
+                      <Text style={[styles.rosterItemId, { color: theme.muted }]}>{student.student_id}</Text>
+                    </Pressable>
+                    <Pressable onPress={() => updateAttendance(student, "PRESENT")} style={{ padding: 8 }}><HoloStatusPill label="Present" tone={student.status === "PRESENT" ? "success" : "neutral"} /></Pressable>
+                    <Pressable onPress={() => updateAttendance(student, "ABSENT")} style={{ padding: 8 }}><HoloStatusPill label="Absent" tone={student.status === "ABSENT" ? "danger" : "neutral"} /></Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -7285,10 +7404,8 @@ function TeacherProfile({
                 >
                   {item.subject}
                 </Text>
-                <Text
-                  style={[styles.assignedCourseSub, { color: theme.muted }]}
-                >
-                  {item.semester || "Semester"} • {item.students || 0} Students
+                <Text style={[styles.assignedCourseSub, { color: theme.muted }]}>
+                  {item.students || 0} Students
                 </Text>
               </View>
             </View>
@@ -7521,7 +7638,7 @@ function StudentEditModal({
         name: student?.name || student?.display_name || "",
         email: student?.email || "",
         phone: student?.phone || "",
-        date_of_birth: student?.date_of_birth || "",
+        date_of_birth: fromApiDate(student?.date_of_birth || ""),
         program: student?.program || "",
         department: student?.department || student?.academic_department || "",
         semester: student?.semester || student?.academic_semester || "",
@@ -7544,7 +7661,7 @@ function StudentEditModal({
     try {
       const body = new FormData();
       Object.entries(form).forEach(([key, value]) =>
-        body.append(key, String(value ?? "")),
+        body.append(key, key === "date_of_birth" ? toApiDate(String(value ?? "")) : String(value ?? "")),
       );
       const response = await http.patch(endpoint, body, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -7560,7 +7677,7 @@ function StudentEditModal({
 
   const fields = [
     ["name", "Full Name"], ["email", "Email"], ["phone", "Phone"],
-    ["date_of_birth", "Date of Birth (YYYY-MM-DD)"], ["program", "Program"],
+    ["date_of_birth", "Date of Birth (DD-MM-YYYY)"], ["program", "Program"],
     ["department", "Department"], ["semester", "Semester"], ["gpa", "GPA"],
     ["enrollment_year", "Enrollment Year"], ["roll_number", "Roll Number"],
   ];
