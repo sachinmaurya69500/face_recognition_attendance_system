@@ -39,6 +39,10 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
 const STATUS_BAR_HEIGHT =
   Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
+// Most Android emulators expose a virtual back camera but leave the front
+// camera unconfigured. Real phones retain the expected selfie-camera default.
+const DEFAULT_CAMERA_FACING: "front" | "back" =
+  Platform.OS === "android" && !Constants.isDevice ? "back" : "front";
 
 // ---------------------------------------------------------------------------
 // DUAL-ENGINE THEME PALETTES (MIDNIGHT COSMOS DARK  +  CLOUD ATLAS LIGHT)
@@ -233,14 +237,13 @@ function loadAcademicSections(): Promise<any[]> {
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    // Load persisted theme preference
-    AsyncStorage.getItem("pratyaksh_theme").then((savedTheme) => {
-      if (savedTheme === "light") setIsDark(false);
-      else if (savedTheme === "dark") setIsDark(true);
-    });
+    // Start in the requested light theme even for users who previously saved
+    // the old dark default.
+    setIsDark(false);
+    AsyncStorage.setItem("pratyaksh_theme", "light");
 
     // Load persisted user session
     AsyncStorage.getItem("attendai_user")
@@ -2940,7 +2943,7 @@ function BiometricCameraModal({
 }: BiometricCameraModalProps) {
   const { theme } = useAppTheme();
   const [permission, requestPermission] = useCameraPermissions();
-  const [facing, setFacing] = useState<"front" | "back">("front");
+  const [facing, setFacing] = useState<"front" | "back">(DEFAULT_CAMERA_FACING);
   const cameraRef = useRef<any>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
@@ -2948,32 +2951,72 @@ function BiometricCameraModal({
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [validationInfo, setValidationInfo] = useState<any>(null);
   const [statusMessage, setStatusMessage] = useState("");
+  const blankFrameFallbackUsed = useRef(false);
+
+  const recoverFromBlankFrame = () => {
+    setCapturedPhoto(null);
+    setValidationInfo(null);
+    setCameraReady(false);
+    if (!blankFrameFallbackUsed.current) {
+      blankFrameFallbackUsed.current = true;
+      setFacing((current) => (current === "front" ? "back" : "front"));
+      setStatusMessage(
+        "This camera has no video feed. Switching cameras—wait for the preview before taking another photo.",
+      );
+      return;
+    }
+    setStatusMessage(
+      "Neither camera is providing an image. In Android Studio Device Manager, set the emulator Front or Back camera to Virtual Scene or Webcam0, then reopen this screen. You can also choose a photo from the gallery.",
+    );
+  };
+
+  const commitValidatedPhoto = (photoUri: string, validationData: any) => {
+    const cb = onCaptureSuccess || onCapture;
+    if (cb) cb(photoUri, validationData);
+    handleReset();
+    onClose();
+  };
 
   const handleCapture = async () => {
-    if (!cameraRef.current || busy || !cameraReady) return;
+    if (busy || (Platform.OS !== "android" && !cameraReady)) return;
     setBusy(true);
     setStatusMessage("Capturing frame & analyzing photo...");
     try {
-      let photo: any;
-      try {
-        photo = await cameraRef.current.takePictureAsync({
+      let photoUri: string | null = null;
+      if (Platform.OS === "android") {
+        // CameraView's preview can be live on an Android emulator while its
+        // still-image output is black. The system camera uses Android's native
+        // capture route and reliably returns the actual sensor image.
+        const cameraPermission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!cameraPermission.granted) {
+          throw new Error("Camera permission is required to capture a face photo.");
+        }
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          allowsEditing: false,
           quality: 0.9,
-          skipProcessing: true,
+          cameraType:
+            facing === "front"
+              ? ImagePicker.CameraType.front
+              : ImagePicker.CameraType.back,
         });
-      } catch {
-        photo = await cameraRef.current.takePictureAsync({
-          quality: 0.9,
-          skipProcessing: false,
-        });
+        if (result.canceled) {
+          setStatusMessage("Capture cancelled. Tap CAPTURE & PROCESS to try again.");
+          return;
+        }
+        photoUri = result.assets?.[0]?.uri ?? null;
+      } else {
+        const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9 });
+        photoUri = photo?.uri ?? null;
       }
-      if (!photo?.uri) throw new Error("Could not capture image from camera");
+      if (!photoUri) throw new Error("Could not capture image from camera");
 
-      setCapturedPhoto(photo.uri);
+      setCapturedPhoto(photoUri);
 
       // Run detection & embedding pipeline check on complete frame
       const data = new FormData();
       data.append("file", {
-        uri: photo.uri,
+        uri: photoUri,
         name: "capture.jpg",
         type: "image/jpeg",
       } as any);
@@ -2984,9 +3027,19 @@ function BiometricCameraModal({
         headers: { "Content-Type": "multipart/form-data" },
       });
 
+      if (res.data?.frame_blank) {
+        recoverFromBlankFrame();
+        return;
+      }
+
       if (res.data?.valid) {
+        blankFrameFallbackUsed.current = false;
         setValidationInfo(res.data);
         setStatusMessage("Face detected and verified! Ready to register.");
+        // A verified capture is already the final user intent. Commit it to
+        // the parent form immediately so enrollment cannot lose the image
+        // behind a second, easily missed confirmation button.
+        commitValidatedPhoto(photoUri, res.data);
       } else {
         setValidationInfo(null);
         setStatusMessage(
@@ -3020,16 +3073,14 @@ function BiometricCameraModal({
       );
       return;
     }
-    const cb = onCaptureSuccess || onCapture;
-    if (cb) cb(capturedPhoto, validationInfo);
-    handleReset();
-    onClose();
+    commitValidatedPhoto(capturedPhoto, validationInfo);
   };
 
   const handleRetake = () => {
     setCapturedPhoto(null);
     setValidationInfo(null);
     setStatusMessage("");
+    blankFrameFallbackUsed.current = false;
   };
 
   const handleReset = () => {
@@ -3037,6 +3088,7 @@ function BiometricCameraModal({
     setValidationInfo(null);
     setStatusMessage("");
     setBusy(false);
+    blankFrameFallbackUsed.current = false;
   };
 
   const pickFromGallery = async () => {
@@ -3125,9 +3177,10 @@ function BiometricCameraModal({
             </Text>
           </View>
           <Pressable
-            onPress={() =>
-              setFacing((prev) => (prev === "front" ? "back" : "front"))
-            }
+            onPress={() => {
+              setCameraReady(false);
+              setFacing((prev) => (prev === "front" ? "back" : "front"));
+            }}
             style={[
               styles.backBtnCircle,
               { backgroundColor: theme.card, borderColor: theme.border },
@@ -3141,8 +3194,51 @@ function BiometricCameraModal({
           </Pressable>
         </View>
 
-        {/* Viewfinder Content */}
-        {!permission?.granted ? (
+        {/* Android deliberately uses only the system still-camera. Keeping a
+            second in-app preview here caused black output on the emulator and
+            made the registration flow look like a recording screen. */}
+        {Platform.OS === "android" ? (
+          <View style={styles.nativeCaptureScreen}>
+            <View
+              style={[
+                styles.nativeCaptureIcon,
+                { backgroundColor: theme.blueGlow, borderColor: theme.borderAccent },
+              ]}
+            >
+              <MaterialCommunityIcons name="camera" size={46} color={theme.blue} />
+            </View>
+            <Text style={[styles.nativeCaptureTitle, { color: theme.text }]}>
+              Take a face photo
+            </Text>
+            <Text style={[styles.nativeCaptureText, { color: theme.textSecondary }]}>
+              Tap the button, take one photo in the system camera, and it will be uploaded for face validation automatically.
+            </Text>
+            <Pressable
+              onPress={handleCapture}
+              disabled={busy}
+              style={({ pressed }) => [
+                styles.nativeCaptureButton,
+                { backgroundColor: theme.blue },
+                pressed && { opacity: 0.85 },
+                busy && { opacity: 0.6 },
+              ]}
+            >
+              {busy ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="camera" size={21} color="#FFFFFF" />
+                  <Text style={styles.nativeCaptureButtonText}>TAKE PHOTO & UPLOAD</Text>
+                </>
+              )}
+            </Pressable>
+            {!!statusMessage && (
+              <Text style={[styles.nativeCaptureStatus, { color: theme.textSecondary }]}>
+                {statusMessage}
+              </Text>
+            )}
+          </View>
+        ) : !permission?.granted ? (
           <View style={styles.biometricPermWrap}>
             <MaterialCommunityIcons
               name="camera-off"
@@ -3376,10 +3472,14 @@ function BiometricCameraModal({
             {/* Viewfinder area (Full Frame) */}
             <View style={styles.biometricViewfinderArea}>
               <CameraView
+                key={`biometric-camera-${facing}`}
                 ref={cameraRef}
                 style={StyleSheet.absoluteFillObject}
                 facing={facing}
-                onCameraReady={() => setCameraReady(true)}
+                onCameraReady={() => {
+                  setCameraError("");
+                  setCameraReady(true);
+                }}
                 onMountError={() => setCameraError("Camera unavailable")}
               />
 
@@ -3424,6 +3524,30 @@ function BiometricCameraModal({
                       : "STARTING CAMERA..."}
                 </Text>
               </View>
+
+              {/* This lives in the viewfinder layer so Android's camera
+                  surface cannot push the actual capture action off-screen. */}
+              <Pressable
+                onPress={handleCapture}
+                disabled={busy || !cameraReady}
+                style={({ pressed }) => [
+                  styles.inViewCaptureButton,
+                  { backgroundColor: theme.blue },
+                  pressed && { transform: [{ scale: 0.97 }] },
+                  (busy || !cameraReady) && { opacity: 0.6 },
+                ]}
+              >
+                {busy ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="camera" size={22} color="#FFFFFF" />
+                    <Text style={styles.inViewCaptureButtonText}>
+                      CAPTURE & PROCESS
+                    </Text>
+                  </>
+                )}
+              </Pressable>
             </View>
 
             {/* Bottom Controls Bar: Pinned Below Viewfinder */}
@@ -3466,19 +3590,20 @@ function BiometricCameraModal({
                 {busy ? (
                   <ActivityIndicator color={theme.cyan} />
                 ) : (
-                  <View
-                    style={[
-                      styles.shutterInnerCircle,
-                      { backgroundColor: theme.cyan },
-                    ]}
-                  />
+                  <View style={styles.captureButtonContent}>
+                    <MaterialCommunityIcons name="camera" size={21} color="#FFFFFF" />
+                    <Text style={styles.captureButtonLabel}>CAPTURE & PROCESS</Text>
+                  </View>
                 )}
               </Pressable>
 
               <Pressable
-                onPress={() =>
-                  setFacing((prev) => (prev === "front" ? "back" : "front"))
-                }
+                onPress={() => {
+                  // A flip remounts the native camera. Require its new stream
+                  // to report ready before allowing another capture.
+                  setCameraReady(false);
+                  setFacing((prev) => (prev === "front" ? "back" : "front"));
+                }}
                 disabled={busy}
                 style={({ pressed }) => [
                   styles.galleryIconBtn,
@@ -4291,7 +4416,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const [captured, setCaptured] = useState<string[]>([]);
   const cameraRef = useRef<any>(null);
   const [busy, setBusy] = useState(false);
-  const [facing, setFacing] = useState<"front" | "back">("front");
+  const [facing, setFacing] = useState<"front" | "back">(DEFAULT_CAMERA_FACING);
   const [faceDetected, setFaceDetected] = useState(false);
   const [faceBox, setFaceBox] = useState<
     [number, number, number, number] | null
@@ -4300,6 +4425,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
+  const blankFrameFallbackUsed = useRef(false);
 
   const steps = [
     {
@@ -4353,6 +4479,24 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
+      if (res.data?.frame_blank) {
+        setFaceDetected(false);
+        setFaceBox(null);
+        setCameraReady(false);
+        if (!blankFrameFallbackUsed.current) {
+          blankFrameFallbackUsed.current = true;
+          setFacing((current) => (current === "front" ? "back" : "front"));
+          setStatusMsg(
+            "This camera has no video feed. Switching cameras—wait for the preview before trying again.",
+          );
+        } else {
+          setStatusMsg(
+            "Neither camera is providing an image. Configure the emulator camera as Virtual Scene or Webcam0, then reopen this screen; or choose a gallery image.",
+          );
+        }
+        return;
+      }
+
       const bbox = res.data?.face_bbox;
       const imageWidth = Number(res.data?.image_width);
       const imageHeight = Number(res.data?.image_height);
@@ -4384,6 +4528,7 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
       }
 
       setFaceDetected(true);
+      blankFrameFallbackUsed.current = false;
       setStatusMsg("✓ Face verified successfully!");
       const nextPhotos = [...captured, photoUri];
       setCaptured(nextPhotos);
@@ -4415,25 +4560,33 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
   };
 
   const capturePhoto = async () => {
-    if (!cameraRef.current || busy) return;
+    if (busy || !cameraReady) return;
     try {
       setBusy(true);
       setStatusMsg("Capturing photo from frame...");
       let photoUri: string | null = null;
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
+      if (Platform.OS === "android") {
+        const cameraPermission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!cameraPermission.granted) {
+          throw new Error("Camera permission is required to capture a face photo.");
+        }
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          allowsEditing: false,
           quality: 0.9,
-          skipProcessing: true,
+          cameraType:
+            facing === "front"
+              ? ImagePicker.CameraType.front
+              : ImagePicker.CameraType.back,
         });
-        if (photo?.uri) photoUri = photo.uri;
-      } catch (err: any) {
-        console.warn("Primary capture fallback:", err);
-      }
-      if (!photoUri) {
-        const fallback = await cameraRef.current.takePictureAsync({
-          quality: 0.9,
-        });
-        if (fallback?.uri) photoUri = fallback.uri;
+        if (result.canceled) {
+          setStatusMsg("Capture cancelled. Please try again.");
+          return;
+        }
+        photoUri = result.assets?.[0]?.uri ?? null;
+      } else {
+        const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9 });
+        photoUri = photo?.uri ?? null;
       }
       if (!photoUri) throw new Error("Could not acquire image from camera");
       await validateAndAddPhoto(photoUri);
@@ -4584,10 +4737,14 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
         ) : (
           <View style={styles.cameraFrameWrapper}>
             <CameraView
+              key={`registration-camera-${facing}`}
               ref={cameraRef}
               style={StyleSheet.absoluteFillObject}
               facing={facing}
-              onCameraReady={() => setCameraReady(true)}
+              onCameraReady={() => {
+                setCameraError("");
+                setCameraReady(true);
+              }}
               onMountError={() => setCameraError("Camera error")}
             />
 
@@ -4600,9 +4757,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
                   borderColor: theme.borderAccent,
                 },
               ]}
-              onPress={() =>
-                setFacing((f) => (f === "front" ? "back" : "front"))
-              }
+              onPress={() => {
+                setCameraReady(false);
+                setFacing((f) => (f === "front" ? "back" : "front"));
+              }}
             >
               <MaterialCommunityIcons
                 name="camera-flip"
@@ -4707,10 +4865,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
           style={[
             styles.hudForceCaptureBtn,
             { backgroundColor: theme.cyan },
-            busy && { opacity: 0.7 },
+            (busy || !cameraReady) && { opacity: 0.7 },
           ]}
           onPress={capturePhoto}
-          disabled={busy}
+          disabled={busy || !cameraReady}
         >
           {busy ? (
             <ActivityIndicator
@@ -9961,9 +10119,58 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
   },
+  nativeCaptureScreen: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+  },
+  nativeCaptureIcon: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    marginBottom: 24,
+  },
+  nativeCaptureTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    marginBottom: 10,
+  },
+  nativeCaptureText: {
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: "center",
+    maxWidth: 310,
+    marginBottom: 28,
+  },
+  nativeCaptureButton: {
+    minWidth: 250,
+    height: 54,
+    borderRadius: 27,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+  },
+  nativeCaptureButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+  nativeCaptureStatus: {
+    textAlign: "center",
+    marginTop: 20,
+    fontSize: 13,
+    lineHeight: 19,
+  },
   biometricCameraFullFrame: {
     flex: 1,
     flexDirection: "column",
+    position: "relative",
     backgroundColor: "#000",
   },
   biometricViewfinderArea: {
@@ -9991,10 +10198,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#000",
   },
   biometricBottomControlBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
-    paddingVertical: 20,
+    paddingVertical: 12,
     paddingHorizontal: 20,
     borderTopWidth: 1,
   },
@@ -10019,17 +10231,44 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   shutterOuterRing: {
-    width: 74,
-    height: 74,
-    borderRadius: 37,
-    borderWidth: 3,
+    minWidth: 174,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#1D4ED8",
   },
-  shutterInnerCircle: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+  captureButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  captureButtonLabel: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+  inViewCaptureButton: {
+    position: "absolute",
+    left: 42,
+    right: 42,
+    bottom: 24,
+    height: 54,
+    borderRadius: 27,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    zIndex: 30,
+    elevation: 10,
+  },
+  inViewCaptureButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.5,
   },
   biometricPreviewContainer: {
     flex: 1,

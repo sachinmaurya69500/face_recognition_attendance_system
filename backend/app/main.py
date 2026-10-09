@@ -39,6 +39,10 @@ MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.60"))
 # frames commonly produce valid embeddings around 0.35-0.65.
 MIN_FACE_CONFIDENCE = float(os.getenv("FACE_MIN_CONFIDENCE", "0.35"))
 MIN_GROUP_FACE_CONFIDENCE = float(os.getenv("GROUP_FACE_MIN_CONFIDENCE", "0.45"))
+# Blank-frame guard: mean luma and 99th-percentile luma (0-255) below which a
+# capture is treated as an empty/black camera frame.
+BLANK_MEAN_MAX = float(os.getenv("BLANK_FRAME_MEAN_MAX", "8"))
+BLANK_P99_MAX = float(os.getenv("BLANK_FRAME_P99_MAX", "25"))
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 logger = logging.getLogger("pratyaksh.api")
@@ -483,7 +487,16 @@ def update_user(user_id: int, name: str = Form(""), email: str = Form(""), phone
         conn.commit(); return row
     finally: conn.close()
 
-def read_image_bytes(data: bytes):
+def is_blank_frame(image) -> bool:
+    """True when the frame is effectively black (camera layer missing).
+
+    A high percentile is used instead of std-dev so a small bright overlay
+    (e.g. a timestamp stamped over an empty frame) does not hide the problem.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return float(gray.mean()) < BLANK_MEAN_MAX and float(np.percentile(gray, 99)) < BLANK_P99_MAX
+
+def read_image_bytes(data: bytes, allow_blank: bool = False):
     if not data or len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, f"Image must be between 1 byte and {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
     try:
@@ -500,6 +513,9 @@ def read_image_bytes(data: bytes):
     if min(height, width) < 640:
         scale = 640.0 / max(min(height, width), 1)
         image = cv2.resize(image, (round(width * scale), round(height * scale)), interpolation=cv2.INTER_CUBIC)
+    if not allow_blank and is_blank_frame(image):
+        logger.warning("blank_frame_rejected size=%sx%s", image.shape[1], image.shape[0])
+        raise HTTPException(422, "The captured image is blank (black frame). The camera image was not received; please reopen the camera and retake the photo.")
     return image
 
 def embedding_array(value):
@@ -692,7 +708,22 @@ async def validate_face(
     allowed = {"any", "center", "left", "right", "chin_up", "chin_down"}
     if target_pose not in allowed:
         raise HTTPException(422, f"target_pose must be one of: {', '.join(sorted(allowed))}")
-    image = read_image_bytes(await file.read())
+    image = read_image_bytes(await file.read(), allow_blank=True)
+    if is_blank_frame(image):
+        blank_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        logger.warning("face_validation pose=%s valid=false reason=blank_frame size=%sx%s", target_pose, image.shape[1], image.shape[0])
+        return {
+            "valid": False,
+            "issues": ["Captured frame is black. The camera image was not received."],
+            "faces_detected": 0,
+            "target_pose": target_pose,
+            "frame_blank": True,
+            "image_width": image.shape[1],
+            "image_height": image.shape[0],
+            "brightness": round(float(blank_gray.mean()), 2),
+            "contrast": round(float(blank_gray.std()), 2),
+            "user_guidance": "The camera returned an empty image. Reopen the camera and retake the photo.",
+        }
     detected_faces = await detect(image)
     candidate_count = len(detected_faces)
     faces = confident_faces(detected_faces, minimum_confidence=0.30)
