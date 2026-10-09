@@ -58,7 +58,6 @@ class FaceModel:
                 "GPU is required, but CUDAExecutionProvider is unavailable. "
                 f"Available providers: {ort.get_available_providers()}"
             )
-
         # GPU deployments must never silently downgrade to CPU: that would
         # hide a broken NVIDIA runtime and make production latency unpredictable.
         attempts = [self._provider_candidates]
