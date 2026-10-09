@@ -14,7 +14,6 @@ import {
   Dimensions,
   Easing,
   Image,
-  InteractionManager,
   Modal,
   Platform,
   Pressable,
@@ -35,6 +34,11 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import Constants from "expo-constants";
+import DeferredScreen from "./components/DeferredScreen";
+import UploadDonut from "./components/UploadDonut";
+import { formatDisplayDate, fromApiDate, parseDisplayDate, toApiDate } from "./utils/dateFormat";
+import { getTabIcon as getNavigationTabIcon } from "./utils/navigation";
+import type { Role } from "./utils/types";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
@@ -132,8 +136,6 @@ const ThemeContext = createContext<{
 
 export const useAppTheme = () => useContext(ThemeContext);
 
-type Role = "admin" | "teacher" | "student";
-
 const DEFAULT_TUNNEL_URL = "https://cair-ms-7e06.tail49e3b1.ts.net";
 
 export function resolveApiBaseUrl(): string {
@@ -182,56 +184,6 @@ export function resolveApiBaseUrl(): string {
 
 let API = resolveApiBaseUrl();
 const http = axios.create({ baseURL: API, timeout: 25000 });
-
-// Date fields are presented to users as DD-MM-YYYY, while the API receives ISO dates.
-const toApiDate = (value: string) => {
-  const match = value.trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  return match ? `${match[3]}-${match[2]}-${match[1]}` : value.trim();
-};
-
-const fromApiDate = (value: string) => {
-  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return match ? `${match[3]}-${match[2]}-${match[1]}` : value;
-};
-
-const formatDisplayDate = (date: Date) =>
-  `${String(date.getDate()).padStart(2, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${date.getFullYear()}`;
-
-const parseDisplayDate = (value: string) => {
-  const match = value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : new Date();
-};
-
-function UploadDonut({ progress, label }: { progress: number; label: string }) {
-  const safeProgress = Math.max(0, Math.min(100, progress));
-  const segments = 24;
-  return (
-    <View style={{ alignItems: "center", marginVertical: 14 }}>
-      <View style={{ width: 116, height: 116, justifyContent: "center", alignItems: "center" }}>
-        {Array.from({ length: segments }).map((_, index) => {
-          const active = index < Math.ceil((safeProgress / 100) * segments);
-          return (
-            <View
-              key={index}
-              style={{
-                position: "absolute",
-                width: 8,
-                height: 22,
-                borderRadius: 4,
-                backgroundColor: active ? "#22C55E" : "rgba(148,163,184,0.22)",
-                transform: [{ rotate: `${index * (360 / segments)}deg` }, { translateY: -45 }],
-              }}
-            />
-          );
-        })}
-        <View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: "#0B1220", alignItems: "center", justifyContent: "center" }}>
-          <Text style={{ color: "#22C55E", fontSize: 21, fontWeight: "800" }}>{safeProgress}%</Text>
-        </View>
-      </View>
-      <Text style={{ color: "#22C55E", fontSize: 11, fontWeight: "700", letterSpacing: 0.6 }}>{label}</Text>
-    </View>
-  );
-}
 
 export function updateApiBaseUrl(newUrl: string) {
   API = newUrl.trim();
@@ -512,6 +464,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
         <View style={styles.loginTopControls}>
           <Pressable
             onPress={toggleTheme}
+            accessibilityRole="button"
+            accessibilityLabel={isDark ? "Switch to light theme" : "Switch to dark theme"}
             style={[
               styles.themePillBtn,
               {
@@ -1221,6 +1175,8 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
           {/* Notification Bell */}
           <Pressable
             onPress={() => setActiveTab("Alerts")}
+            accessibilityRole="button"
+            accessibilityLabel={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ""}`}
             style={[
               styles.topIconBtn,
               {
@@ -1263,6 +1219,8 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
           {/* Avatar */}
           <Pressable
             onPress={() => setActiveTab("Profile")}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile"
             style={[
               styles.topAvatarPill,
               {
@@ -1326,11 +1284,14 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
       >
         {tabs.map((tabName) => {
           const isActive = activeTab === tabName;
-          const iconInfo = getTabIcon(tabName, role);
+          const iconInfo = getNavigationTabIcon(tabName, role);
           return (
             <Pressable
               key={tabName}
               onPress={() => setActiveTab(tabName)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: isActive }}
+              accessibilityLabel={`${iconInfo.label} tab`}
               style={styles.bottomTabButton}
             >
               <View
@@ -1381,52 +1342,9 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
   );
 }
 
-function getTabIcon(tab: string, role: Role) {
-  switch (tab) {
-    case "Dashboard":
-      return { name: "view-dashboard-outline", label: "Overview" };
-    case "Students":
-      return { name: "account-group-outline", label: "Students" };
-    case "Teachers":
-      return { name: "account-tie-outline", label: "Faculty" };
-    case "Academic":
-      return { name: "layers-outline", label: "Hierarchy" };
-    case "Attendance":
-      return {
-        name:
-          role === "teacher"
-            ? "camera-enhance-outline"
-            : "calendar-check-outline",
-        label: "Attendance",
-      };
-    case "Classes":
-      return { name: "book-open-outline", label: "Schedule" };
-    case "History":
-      return { name: "history", label: "History" };
-    case "Reports":
-      return { name: "file-chart-outline", label: "Reports" };
-    case "Profile":
-      return { name: "account-circle-outline", label: "Profile" };
-    default:
-      return { name: "circle-outline", label: tab };
-  }
-}
-
 // Mount heavy screens after navigation animations complete. This keeps the
 // login/dashboard transition responsive on low-end devices without changing
 // screen behavior or introducing fragile native dynamic imports.
-function DeferredScreen({ children }: { children: React.ReactNode }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => setReady(true));
-    return () => task.cancel();
-  }, []);
-  if (!ready) {
-    return <View style={styles.screenCenterLoader}><ActivityIndicator size="large" color={darkTheme.cyan} /></View>;
-  }
-  return <>{children}</>;
-}
-
 // ---------------------------------------------------------------------------
 // ROUTER & SCREEN DISPATCHER
 // ---------------------------------------------------------------------------
@@ -1468,7 +1386,7 @@ function ScreenRenderer({
       return <AcademicHierarchyView />;
 
     case "Attendance":
-      if (role === "admin") return <AttendanceHistoryView />;
+      if (role === "admin") return <AttendanceHistoryView role={role} />;
       if (role === "teacher") return <DeferredScreen><TeacherTakeAttendance go={go} /></DeferredScreen>;
       return <StudentAttendanceView />;
 
@@ -1480,7 +1398,7 @@ function ScreenRenderer({
     case "Classes":
       return <StudentClassesView />;
     case "History":
-      return <AttendanceHistoryView />;
+      return <AttendanceHistoryView role={role} />;
     case "Reports":
       return <DeferredScreen><ReportsView /></DeferredScreen>;
     case "Alerts":
@@ -3720,6 +3638,9 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [showDobPicker, setShowDobPicker] = useState(false);
   const [program, setProgram] = useState("");
+  const [department, setDepartment] = useState("");
+  const [semester, setSemester] = useState("");
+  const [rollNumber, setRollNumber] = useState("");
   const [sectionId, setSectionId] = useState<number | null>(null);
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [photoValidation, setPhotoValidation] = useState<any>(null);
@@ -3816,6 +3737,9 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("date_of_birth", apiDate);
       data.append("password", apiDate || "welcome123");
       data.append("program", program.trim() || "Undergraduate Program");
+      data.append("department", department.trim());
+      data.append("semester", semester.trim());
+      data.append("roll_number", rollNumber.trim());
       if (sectionId) {
         data.append("section_id", String(sectionId));
       }
@@ -3931,6 +3855,16 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           </View>
         </View>
 
+        <View style={styles.formGroup}>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>ROLL NUMBER</Text>
+          <TextInput
+            style={[styles.textInputHoloPlain, { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text }]}
+            value={rollNumber}
+            onChangeText={setRollNumber}
+            placeholderTextColor={theme.muted}
+          />
+        </View>
+
         {/* Full Name */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
@@ -4036,6 +3970,8 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         <AcademicCascade
           onChange={(sel, match) => {
             if (sel.program) setProgram(sel.program);
+            if (sel.department) setDepartment(sel.department);
+            if (sel.semester) setSemester(sel.semester);
             if (match?.id) setSectionId(match.id);
           }}
         />
@@ -5773,9 +5709,11 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const [sessionId, setSessionId] = useState("");
   const [busy, setBusy] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
-  useEffect(() => {
-    const loadData = async () => {
+  const loadData = useCallback(async () => {
+      setBusy(true);
+      setLoadError("");
       try {
         const storedSession = await AsyncStorage.getItem(
           "active_attendance_session_id",
@@ -5843,12 +5781,15 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
         setStatusMap(initialMap);
       } catch {
         setItems([]);
+        setLoadError("Could not load the selected session roster.");
       } finally {
         setBusy(false);
       }
-    };
+    }, []);
+
+  useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   const toggleStatus = (studentId: string) => {
     setStatusMap((prev) => ({
@@ -5876,6 +5817,17 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       );
       return;
     }
+    Alert.alert(
+      "Confirm Attendance",
+      `Submit attendance for ${items.length} students? Present: ${presentCount}, Absent: ${absentCount}. You can still edit records later from session history.`,
+      [
+        { text: "Review", style: "cancel" },
+        { text: "Submit", onPress: () => submitAttendance(currentSession) },
+      ],
+    );
+  };
+
+  const submitAttendance = async (currentSession: string) => {
     setSubmitting(true);
     try {
       const records = Object.entries(statusMap).map(([student_id, status]) => ({
@@ -5924,11 +5876,14 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     ? Math.round((presentCount / items.length) * 100)
     : 0;
 
-  const filteredItems = items.filter((student) => {
-    if (activeFilter === "ALL") return true;
-    const currentStatus = statusMap[student.student_id] || "ABSENT";
-    return currentStatus === activeFilter;
-  });
+  const filteredItems = useMemo(
+    () => items.filter((student) => {
+      if (activeFilter === "ALL") return true;
+      const currentStatus = statusMap[student.student_id] || "ABSENT";
+      return currentStatus === activeFilter;
+    }),
+    [items, activeFilter, statusMap],
+  );
 
   return (
     <View style={styles.screenLayout}>
@@ -5943,6 +5898,13 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
         </View>
       </View>
 
+      {loadError && (
+        <View style={[styles.errorBannerBox, { backgroundColor: theme.roseGlow, borderColor: theme.rose }]}>
+          <Text style={[styles.errorBannerText, { color: theme.rose }]}>{loadError}</Text>
+          <Pressable onPress={loadData}><Text style={{ color: theme.cyan, fontWeight: "800" }}>RETRY</Text></Pressable>
+        </View>
+      )}
+
       {/* Roster Ratio & Tally HUD */}
       <View
         style={[
@@ -5950,6 +5912,7 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.border },
         ]}
       >
+        <Text style={[styles.tallyRatioSubText, { color: theme.cyan, marginBottom: 8 }]}>Selected session roster: {items.length} students</Text>
         <View style={styles.tallyStatsRow}>
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
@@ -6552,7 +6515,7 @@ function StudentClassesView() {
 // ---------------------------------------------------------------------------
 // ATTENDANCE HISTORY
 // ---------------------------------------------------------------------------
-function AttendanceHistoryView() {
+function AttendanceHistoryView({ role }: { role: Role }) {
   const { theme } = useAppTheme();
   const [records, setRecords] = useState<any[]>([]);
   const [month, setMonth] = useState(new Date());
@@ -6561,6 +6524,8 @@ function AttendanceHistoryView() {
   const [selectedSession, setSelectedSession] = useState<any>(null);
   const [sessionStudents, setSessionStudents] = useState<any[]>([]);
   const [sessionBusy, setSessionBusy] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState<any>(null);
+  const [editingStudent, setEditingStudent] = useState<any>(null);
 
   const openSession = async (session: any) => {
     setSelectedSession(session);
@@ -6597,8 +6562,9 @@ function AttendanceHistoryView() {
       .finally(() => setBusy(false));
   }, [month]);
 
-  const sessions = Array.from(
-    new Map(records.map((x) => [x.session_id, x])).values(),
+  const sessions = useMemo(
+    () => Array.from(new Map(records.map((x) => [x.session_id, x])).values()),
+    [records],
   );
 
   return (
@@ -6706,9 +6672,9 @@ function AttendanceHistoryView() {
         })
       )}
 
-      <Modal visible={!!selectedSession} transparent animationType="slide" onRequestClose={() => setSelectedSession(null)}>
-        <View style={styles.modalBackdropOverlay}>
-          <View style={[styles.modalSheetCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, maxHeight: "90%" }]}>
+      <Modal visible={!!selectedSession} animationType="slide" onRequestClose={() => setSelectedSession(null)}>
+        <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+          <View style={[styles.modalSheetCard, { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.borderBright }]}> 
             <View style={styles.modalSheetHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.modalSheetTitle, { color: theme.text }]}>{selectedSession?.title || selectedSession?.course}</Text>
@@ -6720,7 +6686,7 @@ function AttendanceHistoryView() {
               <ScrollView>
                 {sessionStudents.map((student) => (
                   <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
-                    <Pressable style={{ flex: 1 }} onPress={() => Alert.alert(student.name, `Student ID: ${student.student_id}\nEmail: ${student.email || "Not provided"}\nPhone: ${student.phone || "Not provided"}\nProgram: ${student.program || "Not provided"}`)}>
+                    <Pressable style={{ flex: 1 }} onPress={() => setSelectedStudent(student)}>
                       <Text style={[styles.rosterItemName, { color: theme.text }]}>{student.name}</Text>
                       <Text style={[styles.rosterItemId, { color: theme.muted }]}>{student.student_id}</Text>
                     </Pressable>
@@ -6731,8 +6697,20 @@ function AttendanceHistoryView() {
               </ScrollView>
             )}
           </View>
-        </View>
+        </SafeAreaView>
       </Modal>
+      <Modal visible={!!selectedStudent} animationType="slide" onRequestClose={() => setSelectedStudent(null)}>
+        <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+          <ScrollView contentContainerStyle={{ padding: 20 }}>
+            <Pressable onPress={() => setSelectedStudent(null)}><MaterialCommunityIcons name="arrow-left" size={26} color={theme.cyan} /></Pressable>
+            <Text style={[styles.screenMainTitle, { color: theme.text, marginTop: 20 }]}>{selectedStudent?.name}</Text>
+            <Text style={[styles.screenSubTitle, { color: theme.muted }]}>{selectedStudent?.student_id}</Text>
+            {[["Email", selectedStudent?.email], ["Phone", selectedStudent?.phone], ["Date of Birth", selectedStudent?.date_of_birth], ["Program", selectedStudent?.program], ["Department", selectedStudent?.department], ["Semester", selectedStudent?.semester], ["Roll Number", selectedStudent?.roll_number], ["Attendance", selectedStudent?.status]].map(([label, value]) => <HoloDetailRow key={label} label={label} value={String(value || "Not provided")} />)}
+            {role === "admin" && <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 20 }]} onPress={() => setEditingStudent(selectedStudent)}><Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>EDIT STUDENT DETAILS</Text></Pressable>}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+      {role === "admin" && editingStudent && <StudentEditModal visible student={editingStudent} endpoint={`/admin/students/${editingStudent.student_id}`} onClose={() => setEditingStudent(null)} onSaved={(updated) => { setSelectedStudent(updated); setEditingStudent(null); }} />}
     </View>
   );
 }
