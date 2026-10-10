@@ -54,22 +54,22 @@ const DEFAULT_CAMERA_FACING: "front" | "back" =
 // ---------------------------------------------------------------------------
 export const darkTheme = {
   mode: "dark" as const,
-  bg: "#070B13",
-  bgElevated: "#0C1422",
-  card: "#101E35",
-  cardGlass: "rgba(14, 24, 48, 0.92)",
-  cardSubtle: "#090F1E",
-  cardHover: "#152240",
-  divider: "rgba(255,255,255,0.06)",
-  border: "rgba(255, 255, 255, 0.07)",
-  borderBright: "rgba(255, 255, 255, 0.14)",
-  borderAccent: "rgba(99, 179, 237, 0.38)",
-  cyan: "#63B3ED",
-  cyanGlow: "rgba(99, 179, 237, 0.18)",
-  cyanStrong: "#90CDF4",
-  blue: "#4C9BE8",
-  blueDark: "#1A365D",
-  blueGlow: "rgba(76, 155, 232, 0.18)",
+  bg: "#070A12",
+  bgElevated: "#0D1423",
+  card: "#111B2D",
+  cardGlass: "rgba(16, 27, 45, 0.94)",
+  cardSubtle: "#0A101D",
+  cardHover: "#17263E",
+  divider: "rgba(255,255,255,0.07)",
+  border: "rgba(255, 255, 255, 0.09)",
+  borderBright: "rgba(255, 255, 255, 0.17)",
+  borderAccent: "rgba(111, 191, 232, 0.42)",
+  cyan: "#71C4E8",
+  cyanGlow: "rgba(113, 196, 232, 0.16)",
+  cyanStrong: "#A6E0F5",
+  blue: "#5B8DEF",
+  blueDark: "#1B2C51",
+  blueGlow: "rgba(91, 141, 239, 0.18)",
   amber: "#F6AD55",
   amberGlow: "rgba(246, 173, 85, 0.18)",
   emerald: "#48BB78",
@@ -89,36 +89,36 @@ export const darkTheme = {
 
 export const lightTheme = {
   mode: "light" as const,
-  bg: "#F0F4F8",
+  bg: "#F7F8FA",
   bgElevated: "#FFFFFF",
   card: "#FFFFFF",
-  cardGlass: "rgba(255, 255, 255, 0.96)",
-  cardSubtle: "#EBF4FF",
-  cardHover: "#DBEAFE",
+  cardGlass: "rgba(255, 255, 255, 0.94)",
+  cardSubtle: "#F3F5F8",
+  cardHover: "#EEF3F8",
   divider: "rgba(0,0,0,0.05)",
-  border: "#E2ECF5",
-  borderBright: "#BDD0EA",
-  borderAccent: "rgba(37, 99, 235, 0.28)",
-  cyan: "#2563EB",
-  cyanGlow: "rgba(37, 99, 235, 0.10)",
-  cyanStrong: "#1D4ED8",
-  blue: "#2563EB",
-  blueDark: "#1E3A8A",
-  blueGlow: "rgba(37, 99, 235, 0.10)",
-  amber: "#D97706",
-  amberGlow: "rgba(217, 119, 6, 0.10)",
+  border: "#E4E8EE",
+  borderBright: "#CDD6E2",
+  borderAccent: "rgba(35, 76, 130, 0.25)",
+  cyan: "#24558C",
+  cyanGlow: "rgba(36, 85, 140, 0.10)",
+  cyanStrong: "#183F6D",
+  blue: "#315FAD",
+  blueDark: "#19375F",
+  blueGlow: "rgba(49, 95, 173, 0.10)",
+  amber: "#B7791F",
+  amberGlow: "rgba(183, 121, 31, 0.12)",
   emerald: "#059669",
   emeraldGlow: "rgba(5, 150, 105, 0.10)",
   rose: "#DC2626",
   roseGlow: "rgba(220, 38, 38, 0.10)",
-  purple: "#7C3AED",
-  purpleGlow: "rgba(124, 58, 237, 0.10)",
-  gold: "#B7791F",
+  purple: "#7656A8",
+  purpleGlow: "rgba(118, 86, 168, 0.10)",
+  gold: "#A46F18",
   goldGlow: "rgba(183, 121, 31, 0.10)",
-  text: "#1A202C",
-  textSecondary: "#4A5568",
-  muted: "#A0AEC0",
-  navBg: "rgba(240, 244, 248, 0.97)",
+  text: "#162235",
+  textSecondary: "#526174",
+  muted: "#8995A5",
+  navBg: "rgba(247, 248, 250, 0.97)",
   statusBarStyle: "dark" as const,
 };
 
@@ -1498,6 +1498,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
         ]}
       >
+        <View style={[styles.heroAccentBar, { backgroundColor: theme.cyan }]} />
         <View style={styles.executiveHeroHeaderRow}>
           <View
             style={[
@@ -3919,7 +3920,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
                 {
                   backgroundColor: theme.bgElevated,
                   borderColor: theme.border,
-                  color: theme.text,
                   justifyContent: "center",
                 },
               ]}
@@ -8721,7 +8721,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
   },
   topBarLeft: {
@@ -8730,9 +8730,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   brandBadgeWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 11,
+    width: 40,
+    height: 40,
+    borderRadius: 13,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -8818,13 +8818,13 @@ const styles = StyleSheet.create({
     bottom: Platform.OS === "ios" ? 20 : 12,
     left: 16,
     right: 16,
-    borderRadius: 24,
+    borderRadius: 28,
     borderWidth: 1,
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.35,
@@ -8849,7 +8849,7 @@ const styles = StyleSheet.create({
 
   // SCREEN COMMONS
   screenLayout: {
-    gap: 16,
+    gap: 18,
   },
   screenTopHeader: {
     flexDirection: "row",
@@ -8858,9 +8858,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   screenMainTitle: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: "900",
-    letterSpacing: -0.4,
+    letterSpacing: -0.7,
   },
   screenSubTitle: {
     fontSize: 13,
@@ -8898,9 +8898,24 @@ const styles = StyleSheet.create({
 
   // EXECUTIVE HERO CARDS
   executiveHeroCard: {
-    borderRadius: 22,
-    padding: 18,
+    position: "relative",
+    borderRadius: 26,
+    padding: 20,
     borderWidth: 1,
+    shadowColor: "#18375C",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 3,
+  },
+  heroAccentBar: {
+    position: "absolute",
+    left: 0,
+    top: 18,
+    bottom: 18,
+    width: 3,
+    borderRadius: 2,
+    opacity: 0.9,
   },
   executiveHeroHeaderRow: {
     flexDirection: "row",
@@ -8942,7 +8957,7 @@ const styles = StyleSheet.create({
   },
 
   teacherHeroBanner: {
-    borderRadius: 22,
+    borderRadius: 26,
     padding: 20,
     borderWidth: 1,
   },
@@ -8998,9 +9013,14 @@ const styles = StyleSheet.create({
   },
   kpiCardHolo: {
     width: CARD_GRID_WIDTH,
-    borderRadius: 18,
-    padding: 14,
+    borderRadius: 22,
+    padding: 16,
     borderWidth: 1,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    elevation: 2,
   },
   kpiIconBadgeHolo: {
     width: 38,
@@ -9027,9 +9047,14 @@ const styles = StyleSheet.create({
 
   // SPARKLINES
   sparklineContainer: {
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 22,
+    padding: 18,
     borderWidth: 1,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 2,
   },
   sparklineHeader: {
     flexDirection: "row",
@@ -9078,8 +9103,8 @@ const styles = StyleSheet.create({
   },
   rapidCmdCardHolo: {
     width: CARD_GRID_WIDTH,
-    borderRadius: 18,
-    padding: 14,
+    borderRadius: 22,
+    padding: 16,
     borderWidth: 1,
   },
   rapidCmdIconBadge: {
@@ -9103,8 +9128,8 @@ const styles = StyleSheet.create({
   streamEventCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 15,
-    padding: 12,
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
   },
   streamIconCircle: {
@@ -9126,8 +9151,8 @@ const styles = StyleSheet.create({
   rosterItemCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: 19,
+    padding: 15,
     borderWidth: 1,
   },
   rosterAvatarBox: {
