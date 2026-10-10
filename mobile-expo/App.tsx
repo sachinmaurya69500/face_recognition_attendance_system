@@ -41,7 +41,11 @@ import { getTabIcon as getNavigationTabIcon } from "./utils/navigation";
 import type { Role } from "./utils/types";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-const CARD_GRID_WIDTH = (SCREEN_WIDTH - 32 - 12) / 2; // Exact 2-column mathematical grid
+const SCREEN_SIDE_PADDING = 18;
+const CARD_GRID_GAP = 12;
+// Keep every two-column dashboard grid exactly inside the scroll content.
+const CARD_GRID_WIDTH =
+  (SCREEN_WIDTH - SCREEN_SIDE_PADDING * 2 - CARD_GRID_GAP) / 2;
 const STATUS_BAR_HEIGHT =
   Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
 // Most Android emulators expose a virtual back camera but leave the front
@@ -7860,9 +7864,10 @@ function RapidCommandButton({
   const { theme } = useAppTheme();
   return (
     <Pressable
-      style={[
+      style={({ pressed }) => [
         styles.rapidCmdCardHolo,
         { backgroundColor: theme.cardGlass, borderColor: theme.border },
+        pressed && styles.dashboardCardPressed,
       ]}
       onPress={onPress}
     >
@@ -9021,13 +9026,15 @@ const styles = StyleSheet.create({
   kpiGridMatrix: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
+    gap: CARD_GRID_GAP,
   },
   kpiCardHolo: {
     width: CARD_GRID_WIDTH,
-    borderRadius: 22,
-    padding: 16,
+    minHeight: 158,
+    borderRadius: 20,
+    padding: 15,
     borderWidth: 1,
+    justifyContent: "space-between",
     shadowColor: "#173458",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.07,
@@ -9040,7 +9047,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   kpiValueHolo: {
     fontSize: 22,
@@ -9050,7 +9057,7 @@ const styles = StyleSheet.create({
   kpiLabelHolo: {
     fontSize: 12,
     fontWeight: "800",
-    marginTop: 2,
+    marginTop: 4,
   },
   kpiDeltaHolo: {
     fontSize: 10,
@@ -9111,13 +9118,24 @@ const styles = StyleSheet.create({
   rapidCommandsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
+    gap: CARD_GRID_GAP,
   },
   rapidCmdCardHolo: {
     width: CARD_GRID_WIDTH,
-    borderRadius: 22,
-    padding: 16,
+    minHeight: 148,
+    borderRadius: 20,
+    padding: 15,
     borderWidth: 1,
+    justifyContent: "space-between",
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 1,
+  },
+  dashboardCardPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
   },
   rapidCmdIconBadge: {
     width: 42,
