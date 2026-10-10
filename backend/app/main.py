@@ -32,6 +32,7 @@ warnings.filterwarnings(
 )
 
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
+MAX_BATCH_FILES = int(os.getenv("MAX_BATCH_FILES", "10"))
 # Keep proposal generation permissive (configured in FaceModel), then enforce
 # strict acceptance at the API boundary. This avoids high detector thresholds
 # preventing InsightFace from producing an embedding at all.
@@ -127,6 +128,19 @@ class AttendanceSessionRequest(BaseModel):
     notes: str = ""
     academic_scope: dict[str, list[str]] = {}
 
+class SessionStatusRequest(BaseModel):
+    status: str
+
+class SessionUpdateRequest(BaseModel):
+    """Editable lecture metadata. The academic scope stays immutable once created."""
+    title: str | None = None
+    course: str | None = None
+    room: str | None = None
+    event_date: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    notes: str | None = None
+
 class NotificationRequest(BaseModel):
     user_id: int
     category: str
@@ -201,6 +215,8 @@ def ensure_auth_tables():
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""")
             cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS section_id INTEGER")
             cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS academic_scope JSONB")
+            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'")
+            cur.execute("ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ")
             cur.execute("CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, category VARCHAR(30) NOT NULL, title VARCHAR(160) NOT NULL, body TEXT NOT NULL, is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("CREATE TABLE IF NOT EXISTS academic_sections (id SERIAL PRIMARY KEY, school VARCHAR(160) NOT NULL, faculty VARCHAR(160) NOT NULL, department VARCHAR(160) NOT NULL, program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL, section VARCHAR(80) NOT NULL, UNIQUE(school, faculty, department, program, semester, section))")
             cur.execute("SELECT COUNT(*) AS count FROM academic_sections")
@@ -268,6 +284,24 @@ def ensure_auth_tables():
             cur.execute("CREATE INDEX IF NOT EXISTS attendance_sessions_teacher_date_idx ON attendance_sessions(teacher_id, event_date DESC, starts_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS attendance_logs_session_student_idx ON attendance_logs(session_id, student_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS attendance_logs_student_timestamp_idx ON attendance_logs(student_id, timestamp DESC)")
+            cur.execute("""CREATE TABLE IF NOT EXISTS attendance_upload_batches (
+                id UUID PRIMARY KEY, session_id VARCHAR(50) NOT NULL REFERENCES attendance_sessions(session_id) ON DELETE CASCADE,
+                submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                section_id INTEGER REFERENCES academic_sections(id) ON DELETE SET NULL,
+                program VARCHAR(160) NOT NULL, semester VARCHAR(80) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'PROCESSING', idempotency_key VARCHAR(100),
+                total_files INTEGER NOT NULL DEFAULT 0, processed_files INTEGER NOT NULL DEFAULT 0,
+                recognized_count INTEGER NOT NULL DEFAULT 0, duplicate_count INTEGER NOT NULL DEFAULT 0,
+                unknown_faces INTEGER NOT NULL DEFAULT 0, failed_files INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMPTZ,
+                UNIQUE (session_id, idempotency_key))""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS attendance_batch_photos (
+                id UUID PRIMARY KEY, batch_id UUID NOT NULL REFERENCES attendance_upload_batches(id) ON DELETE CASCADE,
+                filename VARCHAR(255) NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'PROCESSING',
+                faces_detected INTEGER NOT NULL DEFAULT 0, recognized_count INTEGER NOT NULL DEFAULT 0,
+                unknown_faces INTEGER NOT NULL DEFAULT 0, error_message TEXT, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)""")
+            cur.execute("CREATE INDEX IF NOT EXISTS attendance_batches_session_created_idx ON attendance_upload_batches(session_id, created_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS attendance_batch_photos_batch_idx ON attendance_batch_photos(batch_id)")
             cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
             cur.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action VARCHAR(80) NOT NULL, entity VARCHAR(80) NOT NULL, entity_id VARCHAR(120), previous_value JSONB, new_value JSONB, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             # The database is intentionally empty except for the administrator.
@@ -853,22 +887,19 @@ def list_academic_sections(_=Depends(current_user)):
 
 @app.post("/teacher/attendance-sessions")
 def create_attendance_session(body: AttendanceSessionRequest, user=Depends(require_roles("teacher"))):
-    values = [body.title, body.course, body.school, body.faculty, body.department, body.program, body.semester,
-              body.room, body.event_date, body.starts_at, body.ends_at, body.notes]
-    if not body.title.strip() or not body.course.strip() or not body.school.strip():
-        raise HTTPException(422, "Title, course, and school are required")
+    if not body.title.strip() or not body.course.strip() or not body.school.strip() or not body.program.strip() or not body.semester.strip() or body.section_id is None:
+        raise HTTPException(422, "Title, course, school, program, semester, and section are required")
     session_id = f"ATT-{secrets.token_hex(6).upper()}"
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
-                WHERE ta.teacher_user_id=%s AND sec.id=COALESCE(%s, sec.id) AND sec.school=%s
-                AND (%s='' OR sec.faculty=%s) AND (%s='' OR sec.department=%s)
-                AND (%s='' OR sec.program=%s) AND (%s='' OR sec.semester=%s) LIMIT 1""",
-                (user["sub"], body.section_id, body.school.strip(), body.faculty.strip(), body.faculty.strip(), body.department.strip(), body.department.strip(), body.program.strip(), body.program.strip(), body.semester.strip(), body.semester.strip()))
+                WHERE ta.teacher_user_id=%s AND sec.id=%s AND sec.school=%s AND sec.faculty=%s
+                  AND sec.department=%s AND sec.program=%s AND sec.semester=%s LIMIT 1""",
+                (user["sub"], body.section_id, body.school.strip(), body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip()))
             assigned = cur.fetchone()
             if not assigned: raise HTTPException(403, "You are not assigned to the selected academic scope")
-            section_id = body.section_id or assigned["id"]
+            section_id = assigned["id"]
             cur.execute("""INSERT INTO attendance_sessions
                 (session_id,teacher_id,title,course,school,faculty,department,program,semester,section_id,room,event_date,starts_at,ends_at,notes,academic_scope)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -883,7 +914,7 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
         conn.close()
 
 @app.get("/teacher/attendance-sessions")
-def teacher_attendance_sessions(user=Depends(require_roles("teacher"))):
+def teacher_attendance_sessions(user=Depends(require_roles("admin", "teacher"))):
     cache_key = f"teacher:{user['sub']}:attendance-sessions"
     cached = cache_get(cache_key)
     if cached is not None:
@@ -891,10 +922,100 @@ def teacher_attendance_sessions(user=Depends(require_roles("teacher"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM attendance_sessions WHERE teacher_id=%s ORDER BY event_date DESC, starts_at DESC", (user["sub"],))
+            query = """SELECT s.*,
+                (SELECT COUNT(*) FROM students st WHERE st.section_id=s.section_id) AS roster_count,
+                (SELECT COUNT(*) FROM attendance_logs a WHERE a.session_id=s.session_id
+                    AND COALESCE(a.final_attendance_status, a.initial_attendance_status)='PRESENT') AS present_count
+                FROM attendance_sessions s
+                {owner_filter}
+                ORDER BY s.event_date DESC, s.starts_at DESC"""
+            owner_filter = "WHERE s.teacher_id=%s" if user["role"] == "teacher" else ""
+            cur.execute(query.format(owner_filter=owner_filter), (user["sub"],) if owner_filter else ())
             rows = cur.fetchall()
             cache_set(cache_key, rows, ttl=30)
             return {"sessions": rows}
+    finally:
+        conn.close()
+
+@app.get("/teacher/attendance-sessions/{session_id}")
+def teacher_attendance_session_detail(session_id: str, user=Depends(require_roles("teacher"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+            session = cur.fetchone()
+            if not session: raise HTTPException(404, "Attendance session not found")
+            cur.execute("SELECT * FROM attendance_upload_batches WHERE session_id=%s ORDER BY created_at DESC", (session_id,))
+            batches = cur.fetchall()
+            return {"session": session, "batches": batches}
+    finally: conn.close()
+
+@app.patch("/teacher/attendance-sessions/{session_id}")
+def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Depends(require_roles("teacher"))):
+    values = body.model_dump(exclude_none=True)
+    if not values:
+        raise HTTPException(422, "Provide at least one session field to update")
+    text_fields = {"title", "course", "room", "notes"}
+    for field in text_fields & values.keys():
+        values[field] = values[field].strip()
+    if any(not values[field] for field in {"title", "course"} & values.keys()):
+        raise HTTPException(422, "Title and course cannot be empty")
+    assignments = ", ".join(f"{field}=%s" for field in values)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE attendance_sessions SET {assignments} WHERE session_id=%s AND teacher_id=%s RETURNING *",
+                (*values.values(), session_id, user["sub"]),
+            )
+            updated = cur.fetchone()
+            if not updated:
+                raise HTTPException(404, "Attendance session not found")
+            cur.execute("INSERT INTO audit_logs (actor_id,action,entity,entity_id,new_value) VALUES (%s,'SESSION_UPDATED','attendance_session',%s,%s)",
+                        (user["sub"], session_id, json.dumps(values)))
+        conn.commit()
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        return updated
+    finally:
+        conn.close()
+
+@app.patch("/teacher/attendance-sessions/{session_id}/status")
+def update_teacher_session_status(session_id: str, body: SessionStatusRequest, user=Depends(require_roles("teacher"))):
+    desired = body.status.upper()
+    if desired not in {"ACTIVE", "COMPLETED"}:
+        raise HTTPException(422, "Session status must be ACTIVE or COMPLETED")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s FOR UPDATE", (session_id, user["sub"]))
+            current = cur.fetchone()
+            if not current: raise HTTPException(404, "Attendance session not found")
+            if current["status"] == "COMPLETED" and desired != "ACTIVE":
+                raise HTTPException(409, "Session is already completed")
+            cur.execute("UPDATE attendance_sessions SET status=%s, completed_at=CASE WHEN %s='COMPLETED' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE session_id=%s RETURNING *", (desired, desired, session_id))
+            updated = cur.fetchone()
+            cur.execute("INSERT INTO audit_logs (actor_id,action,entity,entity_id,new_value) VALUES (%s,%s,'attendance_session',%s,%s)", (user["sub"], "SESSION_" + desired, session_id, json.dumps({"status": desired})))
+        conn.commit(); cache_delete(f"teacher:{user['sub']}:attendance-sessions"); return updated
+    finally: conn.close()
+
+@app.delete("/teacher/attendance-sessions/{session_id}")
+def delete_teacher_session(session_id: str, user=Depends(require_roles("teacher"))):
+    """Delete a teacher-owned session and its dependent attendance records."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s FOR UPDATE", (session_id, user["sub"]))
+            if not cur.fetchone():
+                raise HTTPException(404, "Attendance session not found")
+            cur.execute("DELETE FROM attendance_logs WHERE session_id=%s", (session_id,))
+            attendance_deleted = cur.rowcount
+            # Upload batches and their photos cascade from the session.
+            cur.execute("DELETE FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            cur.execute("INSERT INTO audit_logs (actor_id,action,entity,entity_id) VALUES (%s,'SESSION_DELETED','attendance_session',%s)",
+                        (user["sub"], session_id))
+        conn.commit()
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        return {"deleted": session_id, "attendance_records_deleted": attendance_deleted}
     finally:
         conn.close()
 
@@ -1155,87 +1276,112 @@ async def student_register_face(
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": "Biometric face profile successfully registered!"}
 
 @app.post("/process-group-attendance")
-async def process_group_attendance(session_id: str = Form(...), file: UploadFile = File(...), user=Depends(require_roles("teacher"))):
-    session_id = session_id.strip()
-    if not session_id: raise HTTPException(422, "session_id is required")
+async def process_group_attendance(
+    session_id: str = Form(...), section_id: int = Form(...), program: str = Form(...), semester: str = Form(...),
+    idempotency_key: str | None = Form(None), files: list[UploadFile] = File(default=[]), file: UploadFile | None = File(default=None),
+    user=Depends(require_roles("teacher")),
+):
+    """Process one bounded, retry-safe photo batch without changing its parent session's scope."""
+    uploads = list(files or []) + ([file] if file is not None else [])
+    session_id, program, semester = session_id.strip(), program.strip(), semester.strip()
+    if not session_id or not program or not semester:
+        raise HTTPException(422, "session_id, program, and semester are required")
+    if not 1 <= len(uploads) <= MAX_BATCH_FILES:
+        raise HTTPException(422, f"Upload between 1 and {MAX_BATCH_FILES} photographs per batch")
+    if any(upload.content_type and upload.content_type.lower() not in {"image/jpeg", "image/jpg", "image/png", "image/webp"} for upload in uploads):
+        raise HTTPException(422, "Only JPEG, PNG, and WebP photographs are supported")
+
+    # Pass canonical UUID text to psycopg2.  PostgreSQL coerces it to the UUID
+    # column type, and this does not depend on the optional UUID adapter being
+    # registered in each worker process.
+    batch_id = str(uuid.uuid4())
     conn = get_db_connection()
-    session_scope = None
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT school, faculty, department, program, semester, section_id, academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+            cur.execute("SELECT status FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s FOR UPDATE", (session_id, user["sub"]))
             session = cur.fetchone()
-            if not session: raise HTTPException(404, "Attendance session not found or not owned by this teacher")
-            session_scope = session
+            if not session:
+                raise HTTPException(404, "Attendance session not found or not owned by this teacher")
+            if session["status"] not in {"DRAFT", "ACTIVE"}:
+                raise HTTPException(409, f"Session is {session['status'].lower()} and cannot accept photographs")
+            cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
+                WHERE ta.teacher_user_id=%s AND sec.id=%s AND sec.program=%s AND sec.semester=%s""", (user["sub"], section_id, program, semester))
+            if not cur.fetchone():
+                raise HTTPException(403, "You are not assigned to the selected program and semester")
+            if idempotency_key:
+                cur.execute("SELECT * FROM attendance_upload_batches WHERE session_id=%s AND idempotency_key=%s", (session_id, idempotency_key))
+                previous = cur.fetchone()
+                if previous:
+                    if previous["status"] == "COMPLETED":
+                        return {"session_id": session_id, "batch_id": str(previous["id"]), "status": "COMPLETED", "retry": True,
+                                "recognized_count": previous["recognized_count"], "duplicate_count": previous["duplicate_count"], "unknown_faces": previous["unknown_faces"], "failed_files": previous["failed_files"]}
+                    raise HTTPException(409, "This upload batch is already processing")
+            cur.execute("""INSERT INTO attendance_upload_batches (id,session_id,submitted_by,section_id,program,semester,idempotency_key,total_files)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (batch_id, session_id, user["sub"], section_id, program, semester, idempotency_key, len(uploads)))
+            cur.execute("UPDATE attendance_sessions SET status='ACTIVE' WHERE session_id=%s", (session_id,))
+            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id) WHERE s.section_id=%s", (section_id,))
+            roster = cur.fetchall()
+        conn.commit()
     finally:
         conn.close()
-    image, faces = read_image_bytes(await file.read()), None
-    faces = await detect(image)
-    # Group photos often contain background patterns that produce weak
-    # proposals. Attendance must only process face-sized, confident boxes.
-    image_height, image_width = image.shape[:2]
-    faces = [face for face in faces if (
-        float(getattr(face, "det_score", 0.0)) >= MIN_GROUP_FACE_CONFIDENCE and
-        (float(face.bbox[2]) - float(face.bbox[0])) >= max(16, image_width * 0.008) and
-        (float(face.bbox[3]) - float(face.bbox[1])) >= max(16, image_height * 0.008)
-    )]
+
+    known = np.asarray([embedding_array(row["embedding"]) for row in roster], dtype=np.float32) if roster else np.empty((0, 512), dtype=np.float32)
+    if len(known): known /= np.maximum(np.linalg.norm(known, axis=1, keepdims=True), 1e-12)
+    summary = {"total_faces_detected": 0, "recognized_count": 0, "duplicate_count": 0, "unknown_faces": 0, "failed_files": 0}
+    students, photo_results = [], []
+    for upload in uploads:
+        photo_id, filename = str(uuid.uuid4()), (upload.filename or "photo").replace("/", "_").replace("\\", "_")[:255]
+        try:
+            raw = await upload.read()
+            image = read_image_bytes(raw)
+            faces = await detect(image)
+            h, w = image.shape[:2]
+            faces = [face for face in faces if float(getattr(face, "det_score", 0.0)) >= MIN_GROUP_FACE_CONFIDENCE and float(face.bbox[2] - face.bbox[0]) >= max(16, w * .008) and float(face.bbox[3] - face.bbox[1]) >= max(16, h * .008)]
+            recognized, seen = [], set()
+            for face in faces:
+                query = np.asarray(face.embedding, dtype=np.float32); query /= max(np.linalg.norm(query), 1e-12)
+                scores = known @ query if len(known) else np.empty(0)
+                idx = int(np.argmax(scores)) if len(scores) else -1
+                score = float(scores[idx]) if idx >= 0 else 0.0
+                if idx >= 0 and score >= MATCH_THRESHOLD and roster[idx]["student_id"] not in seen:
+                    seen.add(roster[idx]["student_id"])
+                    recognized.append({"student_id": roster[idx]["student_id"], "name": roster[idx]["name"], "confidence": round(score, 4)})
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    newly_marked = 0
+                    for student in recognized:
+                        cur.execute("SELECT 1 FROM attendance_logs WHERE student_id=%s AND session_id=%s", (student["student_id"], session_id))
+                        existed = bool(cur.fetchone())
+                        cur.execute("""INSERT INTO attendance_logs (student_id,teacher_id,session_id,confidence_score,recognition_status,initial_attendance_status,final_attendance_status,attendance_method)
+                            VALUES (%s,%s,%s,%s,'RECOGNIZED','PRESENT','PRESENT','FACE_RECOGNITION')
+                            ON CONFLICT (student_id,session_id) DO UPDATE SET confidence_score=GREATEST(attendance_logs.confidence_score,EXCLUDED.confidence_score)""", (student["student_id"], user["sub"], session_id, student["confidence"]))
+                        newly_marked += not existed
+                    unknown = max(0, len(faces) - len(recognized))
+                    cur.execute("""INSERT INTO attendance_batch_photos (id,batch_id,filename,status,faces_detected,recognized_count,unknown_faces)
+                        VALUES (%s,%s,%s,'COMPLETED',%s,%s,%s)""", (photo_id, batch_id, filename, len(faces), len(recognized), unknown))
+                conn.commit()
+            finally: conn.close()
+            summary["total_faces_detected"] += len(faces); summary["recognized_count"] += newly_marked; summary["duplicate_count"] += len(recognized) - newly_marked; summary["unknown_faces"] += unknown
+            students.extend(recognized); photo_results.append({"id": str(photo_id), "filename": filename, "status": "COMPLETED", "faces_detected": len(faces), "recognized_count": len(recognized), "unknown_faces": unknown})
+        except (HTTPException, ValueError, UnidentifiedImageError) as exc:
+            message = getattr(exc, "detail", str(exc))
+            summary["failed_files"] += 1; photo_results.append({"id": str(photo_id), "filename": filename, "status": "FAILED", "error": str(message)})
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur: cur.execute("INSERT INTO attendance_batch_photos (id,batch_id,filename,status,error_message) VALUES (%s,%s,%s,'FAILED',%s)", (photo_id, batch_id, filename, str(message)[:1000]))
+                conn.commit()
+            finally: conn.close()
+        finally:
+            await upload.close()
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            if not session_scope["program"] and not session_scope["semester"]:
-                # Department-wide attendance mode: include every enrolled
-                # Computer Science student across all programs and semesters.
-                cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
-                    FROM students s
-                    JOIN student_embeddings e USING (student_id)
-                    JOIN academic_sections sec ON sec.id = s.section_id
-                    WHERE sec.school=%s AND sec.faculty=%s AND sec.department=%s""",
-                    (session_scope["school"], session_scope["faculty"], session_scope["department"]))
-            else:
-                cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
-                    FROM students s
-                    JOIN student_embeddings e USING (student_id)
-                    WHERE s.section_id = %s""", (session_scope["section_id"],))
-            rows = cur.fetchall()
+            cur.execute("""UPDATE attendance_upload_batches SET status='COMPLETED', processed_files=%s, recognized_count=%s, duplicate_count=%s, unknown_faces=%s, failed_files=%s, completed_at=CURRENT_TIMESTAMP WHERE id=%s""", (len(uploads), summary["recognized_count"], summary["duplicate_count"], summary["unknown_faces"], summary["failed_files"], batch_id))
+        conn.commit()
     finally: conn.close()
-    known = np.asarray([embedding_array(r["embedding"]) for r in rows], dtype=np.float32) if rows else np.empty((0, 512), dtype=np.float32)
-    if len(known): known /= np.maximum(np.linalg.norm(known, axis=1, keepdims=True), 1e-12)
-    recognized, seen, annotated = [], set(), image.copy()
-    for face in faces:
-        query = np.asarray(face.embedding, dtype=np.float32); query /= max(np.linalg.norm(query), 1e-12)
-        scores = known @ query if len(known) else np.empty(0)
-        idx = int(np.argmax(scores)) if len(scores) else -1
-        score = float(scores[idx]) if idx >= 0 else 0.0
-        x1, y1, x2, y2 = np.asarray(face.bbox, dtype=int).tolist()
-        student = rows[idx] if idx >= 0 and score >= MATCH_THRESHOLD else None
-        if student and student["student_id"] not in seen:
-            seen.add(student["student_id"]); recognized.append({"student_id": student["student_id"], "name": student["name"], "confidence": round(score, 4)})
-            color, label = (0, 200, 0), f'{student["name"]} {score:.2f}'
-        else: color, label = (0, 0, 255), "Unknown"
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2); cv2.putText(annotated, label, (x1, max(y1 - 8, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-    if recognized:
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                for st in recognized:
-                    cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method)
-                        VALUES (%s,%s,%s,%s,'RECOGNIZED','PRESENT','PRESENT','FACE_RECOGNITION')
-                        ON CONFLICT (student_id, session_id) DO UPDATE SET
-                            confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score),
-                            teacher_id=EXCLUDED.teacher_id,
-                            recognition_status='RECOGNIZED',
-                            initial_attendance_status='PRESENT',
-                            final_attendance_status='PRESENT',
-                            attendance_method='FACE_RECOGNITION'""", (st["student_id"], user["sub"], session_id, st["confidence"]))
-                    cur.execute("""INSERT INTO notifications (user_id, category, title, body)
-                        SELECT id, 'attendance', 'Attendance marked', %s FROM users WHERE student_id=%s""",
-                        (f'Attendance recorded for {st["name"]} in session {session_id}.', st["student_id"]))
-                cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your attendance submission for session {session_id} was processed successfully.'))
-            conn.commit()
-            cache_delete(f"teacher:{user['sub']}:attendance-sessions")
-        finally: conn.close()
-    ok, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    encoded = base64.b64encode(buffer).decode() if ok else None
-    return {"session_id": session_id, "total_faces_detected": len(faces), "recognized_count": len(recognized), "students": recognized, "annotated_image_base64": f"data:image/jpeg;base64,{encoded}" if encoded else None}
+    cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+    return {"session_id": session_id, "batch_id": str(batch_id), "status": "COMPLETED", **summary, "students": students, "photos": photo_results}
 
 class FinalAttendanceRequest(BaseModel):
     session_id: str
@@ -1278,10 +1424,13 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
         conn.close()
 
 @app.get("/attendance/{session_id}")
-def session_attendance(session_id: str, _=Depends(require_roles("admin", "teacher"))):
+def session_attendance(session_id: str, user=Depends(require_roles("admin", "teacher"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            if user["role"] == "teacher":
+                cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+                if not cur.fetchone(): raise HTTPException(404, "Attendance session not found")
             cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program,
                 COALESCE(st.semester, sec.semester) AS semester,
                 COALESCE(st.department, sec.department) AS department,
@@ -1305,10 +1454,14 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT section_id FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            cur.execute("SELECT section_id, teacher_id, status FROM attendance_sessions WHERE session_id=%s", (session_id,))
             session = cur.fetchone()
             if not session:
                 raise HTTPException(404, "Attendance session not found")
+            if user["role"] == "teacher" and session["teacher_id"] != user["sub"]:
+                raise HTTPException(404, "Attendance session not found")
+            if session["status"] == "COMPLETED" and user["role"] == "teacher":
+                raise HTTPException(409, "Reopen the session before changing attendance")
             cur.execute("SELECT 1 FROM students WHERE student_id=%s AND section_id=%s", (student_id, session["section_id"]))
             if not cur.fetchone():
                 raise HTTPException(403, "Student is outside this attendance session's selected hierarchy")

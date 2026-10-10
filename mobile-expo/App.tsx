@@ -4923,19 +4923,13 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 // ---------------------------------------------------------------------------
 function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
-  const departmentWideAttendance = true;
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [photoCount, setPhotoCount] = useState(0);
   const [scope, setScope] = useState<any>(null);
-  const [academicScope, setAcademicScope] = useState<any>({
-    school: [],
-    faculty: [],
-    department: [],
-    program: [],
-    semester: [],
-  });
-  const [sections, setSections] = useState<any[]>([]);
+  const [batchScope, setBatchScope] = useState<any>(null);
+  const [selectedPhotos, setSelectedPhotos] = useState<any[]>([]);
+  const [batchRequestKey, setBatchRequestKey] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     title: "Class Lecture",
@@ -4946,12 +4940,6 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     ends_at: "10:00",
     notes: "",
   });
-
-  useEffect(() => {
-    loadAcademicSections()
-      .then(setSections)
-      .catch(() => setSections([]));
-  }, []);
 
   useEffect(() => {
     const restoreActiveSession = async () => {
@@ -4966,7 +4954,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         );
         if (activeSession) {
           setScope(activeSession);
-          setPhotoCount(1);
+          const details = await http.get(`/teacher/attendance-sessions/${activeSessionId}`);
+          setPhotoCount((details.data?.batches || []).reduce((total: number, batch: any) => total + Number(batch.total_files || 0), 0));
         }
       } catch {
         // A missing or expired session should not block creation of a new one.
@@ -4976,7 +4965,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   }, []);
 
   const createSession = async () => {
-    if ((!scope?.id && !departmentWideAttendance) || !form.title.trim() || !form.course.trim()) {
+    if (!batchScope?.id || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
         "Please select an academic section and specify course and title.",
@@ -4988,15 +4977,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     try {
       const res = await http.post("/teacher/attendance-sessions", {
         ...form,
-        school: academicScope.school[0] || scope.school,
-        faculty: academicScope.faculty[0] || scope.faculty,
-        department: academicScope.department[0] || scope.department,
-        program: academicScope.program[0] || scope.program,
-        semester: academicScope.semester[0] || scope.semester,
-        academic_scope: academicScope,
-        section_id: scope.id,
+        school: batchScope.school,
+        faculty: batchScope.faculty,
+        department: batchScope.department,
+        program: batchScope.program,
+        semester: batchScope.semester,
+        academic_scope: { school: [batchScope.school], faculty: [batchScope.faculty], department: [batchScope.department], program: [batchScope.program], semester: [batchScope.semester] },
+        section_id: batchScope.id,
       });
-      setScope({ ...scope, session_id: res.data.session_id });
+      const session = { ...res.data, session_id: res.data.session_id };
+      setScope(session);
+      await AsyncStorage.setItem("active_attendance_session_id", session.session_id);
       Alert.alert(
         "Session Created",
         "Attendance session created. You may now upload classroom group photos.",
@@ -5011,20 +5002,34 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
-  const processPhoto = async (uri: string) => {
+  const processPhotos = async () => {
     if (!scope?.session_id) {
       Alert.alert("No Session", "Initialize session details first.");
+      return;
+    }
+    if (!batchScope?.id || !batchScope?.program || !batchScope?.semester) {
+      Alert.alert("Select Batch Context", "Select a program and semester for this photo batch.");
+      return;
+    }
+    if (!selectedPhotos.length) {
+      Alert.alert("No Photos", "Select one or more classroom photographs first.");
       return;
     }
     setBusy(true);
     try {
       const data = new FormData();
+      const requestKey = batchRequestKey || `${scope.session_id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      if (!batchRequestKey) setBatchRequestKey(requestKey);
       data.append("session_id", scope.session_id);
-      data.append("file", {
-        uri,
-        name: "classroom-photo.jpg",
-        type: "image/jpeg",
-      } as any);
+      data.append("section_id", String(batchScope.id));
+      data.append("program", batchScope.program);
+      data.append("semester", batchScope.semester);
+      data.append("idempotency_key", requestKey);
+      selectedPhotos.forEach((asset, index) => data.append("files", {
+        uri: asset.uri,
+        name: asset.fileName || `classroom-photo-${index + 1}.jpg`,
+        type: asset.mimeType || "image/jpeg",
+      } as any));
 
       const res = await http.post("/process-group-attendance", data, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -5045,6 +5050,16 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       }
 
       setPhotoCount((count) => count + 1);
+      setSelectedPhotos([]);
+      setBatchRequestKey(null);
+      Alert.alert(
+        "Batch Processed",
+        `${res.data.recognized_count || 0} new student(s) marked present. Continue with another program/semester or finish this session.`,
+        [
+          { text: "Continue Same Session", style: "cancel" },
+          { text: "Finish Session", onPress: async () => { await http.patch(`/teacher/attendance-sessions/${scope.session_id}/status`, { status: "COMPLETED" }); await AsyncStorage.removeItem("active_attendance_session_id"); go("Recognition Results"); } },
+        ],
+      );
     } catch (e: any) {
       Alert.alert(
         "Processing Failed",
@@ -5065,13 +5080,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       selectionLimit: 10,
     });
     if (!res.canceled && res.assets?.length) {
-      for (const asset of res.assets) {
-        await processPhoto(asset.uri);
-      }
-      Alert.alert(
-        "Attendance Updated",
-        "The selected photos were processed. Previously marked students remain present, and newly recognized students were added to this session.",
-      );
+      setSelectedPhotos((current) => [...current, ...res.assets].slice(0, 10));
+      setBatchRequestKey(null);
     }
   };
 
@@ -5089,6 +5099,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             setBusy(true);
             try {
               await http.delete(`/teacher/attendance-sessions/${scope.session_id}`);
+              await AsyncStorage.removeItem("active_attendance_session_id");
               setScope(null);
               setPhotoCount(0);
               Alert.alert("Session Deleted", "The attendance session and its records were removed.");
@@ -5166,24 +5177,9 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        <TeacherHierarchyCheckboxes
-          selected={[]}
-          onChange={() => {}}
-          departmentWide
-          onScopeChange={(next) => {
-            setAcademicScope(next);
-            const found = sections.find((s) =>
-              Object.entries(next).every(
-                ([k, v]: any) => !v.length || v.includes(s[k]),
-              ),
-            );
-            if (found) {
-              setScope(
-                departmentWideAttendance
-                  ? { ...found, id: undefined, program: "", semester: "" }
-                  : found,
-              );
-            }
+        <AcademicCascade
+          onChange={(selection, matchedSection) => {
+            if (matchedSection && selection.program && selection.semester) setBatchScope(matchedSection);
           }}
         />
 
@@ -5354,6 +5350,9 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             You can upload up to 10 group photos for this session. Recognized students are merged automatically.
           </Text>
           {photoCount > 0 && (
+            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>Batch context is saved with each upload; choose a new program and semester above before the next batch.</Text>
+          )}
+          {photoCount > 0 && (
             <Pressable
               style={[styles.viewResultsBtn, { borderColor: theme.border, backgroundColor: theme.cardSubtle }]}
               onPress={() => go("Recognition Results")}
@@ -5364,6 +5363,23 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           )}
           {busy && uploadProgress > 0 && (
             <UploadDonut progress={uploadProgress} label="UPLOADING CLASS PHOTO" />
+          )}
+          {selectedPhotos.length > 0 && (
+            <View style={{ marginTop: 14 }}>
+              <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{selectedPhotos.length} PHOTO{selectedPhotos.length === 1 ? "" : "S"} READY</Text>
+              {selectedPhotos.map((asset, index) => (
+                <View key={`${asset.uri}-${index}`} style={{ flexDirection: "row", alignItems: "center", marginTop: 8 }}>
+                  <Image source={{ uri: asset.uri }} style={{ width: 38, height: 38, borderRadius: 6 }} />
+                  <Text numberOfLines={1} style={{ flex: 1, marginLeft: 9, color: theme.text }}>{asset.fileName || `Photo ${index + 1}`}</Text>
+                  <Pressable onPress={() => setSelectedPhotos((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={busy}>
+                    <MaterialCommunityIcons name="close-circle-outline" size={22} color={theme.rose} />
+                  </Pressable>
+                </View>
+              ))}
+              <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 14 }, busy && { opacity: .6 }]} onPress={processPhotos} disabled={busy}>
+                <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>PROCESS {selectedPhotos.length} PHOTO{selectedPhotos.length === 1 ? "" : "S"}</Text>
+              </Pressable>
+            </View>
           )}
           </>
         )}
@@ -6496,6 +6512,8 @@ function AttendanceHistoryView({ role }: { role: Role }) {
   const [sessionBusy, setSessionBusy] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [editingStudent, setEditingStudent] = useState<any>(null);
+  const [editingSession, setEditingSession] = useState<any>(null);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
 
   const openSession = async (session: any) => {
     setSelectedSession(session);
@@ -6520,22 +6538,62 @@ function AttendanceHistoryView({ role }: { role: Role }) {
     }
   };
 
-  useEffect(() => {
+  const refreshSessions = async () => {
     const monthStr = month.toISOString().slice(0, 7);
+    const response = await http.get("/teacher/attendance-sessions");
+    setRecords((response.data?.sessions || []).filter((session: any) =>
+      String(session.event_date || "").startsWith(monthStr),
+    ));
+  };
+
+  const setSessionStatus = async (status: "ACTIVE" | "COMPLETED") => {
+    if (!selectedSession) return;
+    setSessionActionBusy(true);
+    try {
+      const response = await http.patch(`/teacher/attendance-sessions/${selectedSession.session_id}/status`, { status });
+      setSelectedSession((current: any) => ({ ...current, ...response.data }));
+      await refreshSessions();
+    } catch (e: any) {
+      Alert.alert("Session update failed", e?.response?.data?.detail || "Could not update the session.");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const deleteSelectedSession = () => {
+    if (!selectedSession) return;
+    Alert.alert("Delete session?", "This permanently removes the session, its uploaded batches, and its attendance records.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete", style: "destructive",
+        onPress: async () => {
+          setSessionActionBusy(true);
+          try {
+            await http.delete(`/teacher/attendance-sessions/${selectedSession.session_id}`);
+            setSelectedSession(null);
+            setSessionStudents([]);
+            await refreshSessions();
+          } catch (e: any) {
+            Alert.alert("Delete failed", e?.response?.data?.detail || "Could not delete the session.");
+          } finally {
+            setSessionActionBusy(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  useEffect(() => {
     setBusy(true);
-    http
-      .get("/teacher/attendance/report", { params: { month: monthStr } })
-      .then((r) =>
-        setRecords(Array.isArray(r.data?.records) ? r.data.records : []),
-      )
+    refreshSessions()
       .catch(() => setRecords([]))
       .finally(() => setBusy(false));
   }, [month]);
 
-  const sessions = useMemo(
-    () => Array.from(new Map(records.map((x) => [x.session_id, x])).values()),
-    [records],
-  );
+  // Sessions, rather than attendance-log rows, are the source of truth here.
+  // This includes lectures with no face matches yet and keeps repeated uploads
+  // from producing duplicate lecture cards.
+  const sessions = records;
 
   return (
     <View style={styles.screenLayout}>
@@ -6601,9 +6659,8 @@ function AttendanceHistoryView({ role }: { role: Role }) {
         />
       ) : (
         sessions.map((sess: any, i) => {
-          const count = records.filter(
-            (r) => r.session_id === sess.session_id,
-          ).length;
+          const count = Number(sess.present_count || 0);
+          const rosterCount = Number(sess.roster_count || 0);
           return (
             <Pressable
               key={sess.session_id || i}
@@ -6630,13 +6687,13 @@ function AttendanceHistoryView({ role }: { role: Role }) {
                   {sess.title || sess.course || "Attendance Session"}
                 </Text>
                 <Text style={[styles.rosterItemId, { color: theme.cyan }]}> 
-                  {sess.timestamp ? new Date(sess.timestamp).toLocaleDateString() : "Open session details"}
+                  {sess.event_date ? new Date(`${sess.event_date}T00:00:00`).toLocaleDateString() : "Open session details"}
                 </Text>
                 <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
-                  {count} verified students
+                  {count} present of {rosterCount} students
                 </Text>
               </View>
-              <HoloStatusPill label={`${count} students`} tone="info" />
+              <HoloStatusPill label={`${count}/${rosterCount}`} tone="info" />
             </Pressable>
           );
         })
@@ -6648,12 +6705,27 @@ function AttendanceHistoryView({ role }: { role: Role }) {
             <View style={styles.modalSheetHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.modalSheetTitle, { color: theme.text }]}>{selectedSession?.title || selectedSession?.course}</Text>
-                <Text style={{ color: theme.muted }}>Tap Present or Absent to save immediately</Text>
+                <Text style={{ color: theme.muted }}>{selectedSession?.course} • {selectedSession?.event_date} • {selectedSession?.room || "Room not set"}</Text>
               </View>
               <Pressable onPress={() => setSelectedSession(null)}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
             </View>
             {sessionBusy ? <ActivityIndicator color={theme.cyan} style={{ margin: 24 }} /> : (
               <ScrollView>
+                {role === "teacher" && (
+                  <>
+                    <Pressable onPress={() => setEditingSession(selectedSession)} style={[styles.modalDismissBtn, { backgroundColor: theme.purple, marginBottom: 8 }]}>
+                      <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>EDIT SESSION DETAILS</Text>
+                    </Pressable>
+                    <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
+                      <Pressable disabled={sessionActionBusy} onPress={() => setSessionStatus(selectedSession?.status === "COMPLETED" ? "ACTIVE" : "COMPLETED")} style={[styles.modalDismissBtn, { flex: 1, backgroundColor: theme.cyan, opacity: sessionActionBusy ? 0.6 : 1 }]}>
+                        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>{selectedSession?.status === "COMPLETED" ? "REOPEN SESSION" : "COMPLETE SESSION"}</Text>
+                      </Pressable>
+                      <Pressable disabled={sessionActionBusy} onPress={deleteSelectedSession} style={[styles.modalDismissBtn, { flex: 1, backgroundColor: theme.rose, opacity: sessionActionBusy ? 0.6 : 1 }]}>
+                        <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>DELETE SESSION</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                )}
                 {sessionStudents.map((student) => (
                   <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
                     <Pressable style={{ flex: 1 }} onPress={() => setSelectedStudent(student)}>
@@ -6681,6 +6753,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
         </SafeAreaView>
       </Modal>
       {role === "admin" && editingStudent && <StudentEditModal visible student={editingStudent} endpoint={`/admin/students/${editingStudent.student_id}`} onClose={() => setEditingStudent(null)} onSaved={(updated) => { setSelectedStudent(updated); setEditingStudent(null); }} />}
+      <SessionEditModal visible={!!editingSession} session={editingSession} onClose={() => setEditingSession(null)} onSaved={async (updated) => { setSelectedSession((current: any) => ({ ...current, ...updated })); setEditingSession(null); await refreshSessions(); }} />
     </View>
   );
 }
@@ -7545,6 +7618,79 @@ function StudentProfile({
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+function SessionEditModal({
+  visible,
+  session,
+  onClose,
+  onSaved,
+}: {
+  visible: boolean;
+  session: any;
+  onClose: () => void;
+  onSaved: (session: any) => void;
+}) {
+  const { theme } = useAppTheme();
+  const [form, setForm] = useState<any>({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setForm({
+        title: session?.title || "", course: session?.course || "", room: session?.room || "",
+        event_date: String(session?.event_date || "").slice(0, 10),
+        starts_at: String(session?.starts_at || "").slice(0, 5),
+        ends_at: String(session?.ends_at || "").slice(0, 5), notes: session?.notes || "",
+      });
+    }
+  }, [visible, session]);
+
+  const save = async () => {
+    if (!form.title.trim() || !form.course.trim()) {
+      Alert.alert("Details required", "Lecture title and course are required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await http.patch(`/teacher/attendance-sessions/${session.session_id}`, form);
+      onSaved(response.data);
+      Alert.alert("Session updated", "Lecture details were saved.");
+    } catch (e: any) {
+      Alert.alert("Update failed", e?.response?.data?.detail || "Could not update the session.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fields = [
+    ["title", "Lecture Title"], ["course", "Course"], ["room", "Room"],
+    ["event_date", "Date (YYYY-MM-DD)"], ["starts_at", "Starts (HH:MM)"],
+    ["ends_at", "Ends (HH:MM)"], ["notes", "Notes"],
+  ];
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalBackdropOverlay}>
+        <View style={[styles.modalSheetCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, maxHeight: "90%" }]}>
+          <View style={styles.modalSheetHeader}>
+            <Text style={[styles.modalSheetTitle, { color: theme.text }]}>Edit Session Details</Text>
+            <Pressable onPress={onClose} disabled={busy}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
+          </View>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {fields.map(([key, label]) => (
+              <View key={key} style={{ marginBottom: 10 }}>
+                <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
+                <TextInput value={form[key] || ""} onChangeText={(value) => setForm((current: any) => ({ ...current, [key]: value }))} placeholder={label} placeholderTextColor={theme.muted} multiline={key === "notes"} style={[styles.textInputBox, { color: theme.text, backgroundColor: theme.bgElevated, borderColor: theme.border }]} />
+              </View>
+            ))}
+            <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8, opacity: busy ? 0.6 : 1 }]} onPress={save} disabled={busy}>
+              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>SAVE SESSION</Text>}
+            </Pressable>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
