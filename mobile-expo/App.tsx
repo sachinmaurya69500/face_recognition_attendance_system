@@ -218,6 +218,14 @@ AsyncStorage.getItem("custom_api_url")
 let academicSectionsCache: any[] | null = null;
 let academicSectionsRequest: Promise<any[]> | null = null;
 
+// Temporary academic scope while the full university hierarchy is being finalized.
+// Program and semester remain selectable for attendance registration.
+const DEFAULT_ACADEMIC_SCOPE = {
+  school: "School of Technology, Communication and Management",
+  faculty: "Faculty of Technology and Management",
+  department: "Department of Computer Sciences",
+};
+
 function loadAcademicSections(): Promise<any[]> {
   if (academicSectionsCache) return Promise.resolve(academicSectionsCache);
   if (academicSectionsRequest) return academicSectionsRequest;
@@ -243,10 +251,12 @@ export default function App() {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    // Start in the requested light theme even for users who previously saved
-    // the old dark default.
-    setIsDark(false);
-    AsyncStorage.setItem("pratyaksh_theme", "light");
+    // Restore the user's theme preference; light remains the default for new installs.
+    AsyncStorage.getItem("pratyaksh_theme")
+      .then((storedTheme) => {
+        if (storedTheme === "dark") setIsDark(true);
+      })
+      .catch(() => {});
 
     // Load persisted user session
     AsyncStorage.getItem("attendai_user")
@@ -1579,51 +1589,6 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           color={theme.purple}
           bgColor={theme.purpleGlow}
         />
-      </View>
-
-      {/* Weekly Trend Sparkline */}
-      <View
-        style={[
-          styles.sparklineContainer,
-          { backgroundColor: theme.cardGlass, borderColor: theme.border },
-        ]}
-      >
-        <View style={styles.sparklineHeader}>
-          <Text style={[styles.sparklineTitle, { color: theme.text }]}>
-            Weekly Attendance Fidelity
-          </Text>
-          <Text style={[styles.sparklineAvg, { color: theme.cyan }]}>
-            Overall {attendanceRate}%
-          </Text>
-        </View>
-        <View style={styles.sparklineBarsRow}>
-          {[
-            { day: "Mon", rate: 88 },
-            { day: "Tue", rate: 94 },
-            { day: "Wed", rate: 82 },
-            { day: "Thu", rate: 91 },
-            { day: "Fri", rate: 86 },
-          ].map((bar) => (
-            <View key={bar.day} style={styles.sparklineCol}>
-              <View
-                style={[
-                  styles.sparklineBarTrack,
-                  { backgroundColor: theme.bgElevated },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.sparklineBarFill,
-                    { height: `${bar.rate}%`, backgroundColor: theme.cyan },
-                  ]}
-                />
-              </View>
-              <Text style={[styles.sparklineDayLabel, { color: theme.muted }]}>
-                {bar.day}
-              </Text>
-            </View>
-          ))}
-        </View>
       </View>
 
       {/* Rapid Commands Grid */}
@@ -8023,12 +7988,23 @@ function AcademicCascade({
 }) {
   const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
-  const [selection, setSelection] = useState<any>({});
+  const [selection, setSelection] = useState<any>({
+    ...DEFAULT_ACADEMIC_SCOPE,
+  });
   const [modalOpen, setModalOpen] = useState<string | null>(null);
 
   useEffect(() => {
     loadAcademicSections()
-      .then(setSections)
+      .then((loaded) => {
+        setSections(loaded);
+        const matched = loaded.find(
+          (s) =>
+            s.school === DEFAULT_ACADEMIC_SCOPE.school &&
+            s.faculty === DEFAULT_ACADEMIC_SCOPE.faculty &&
+            s.department === DEFAULT_ACADEMIC_SCOPE.department,
+        );
+        if (matched) onChange?.({ ...DEFAULT_ACADEMIC_SCOPE }, matched);
+      })
       .catch(() => setSections([]));
   }, []);
 
@@ -8182,46 +8158,35 @@ function AcademicCascade({
     );
   };
 
-  const has = !!selection.school;
+  const has = !!selection.program;
 
   return (
     <View style={{ marginTop: 14 }}>
       <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
         ACADEMIC PLACEMENT
       </Text>
-      {renderSelect("School", "school", getOptions("school"))}
-      {renderSelect(
-        "Faculty",
-        "faculty",
-        getOptions("faculty", { school: selection.school }),
-        !selection.school,
-      )}
-      {renderSelect(
-        "Department",
-        "department",
-        getOptions("department", {
-          school: selection.school,
-          faculty: selection.faculty,
-        }),
-        !selection.faculty,
-      )}
+      <View style={[styles.lockedScopeNotice, { backgroundColor: theme.cardSubtle, borderColor: theme.border }]}>
+        <MaterialCommunityIcons name="lock-outline" size={16} color={theme.cyan} />
+        <Text style={[styles.lockedScopeNoticeText, { color: theme.textSecondary }]}>
+          {DEFAULT_ACADEMIC_SCOPE.school} • {DEFAULT_ACADEMIC_SCOPE.faculty} • {DEFAULT_ACADEMIC_SCOPE.department}
+        </Text>
+      </View>
       {renderSelect(
         "Program",
         "program",
         getOptions("program", {
-          school: selection.school,
-          faculty: selection.faculty,
-          department: selection.department,
+          school: DEFAULT_ACADEMIC_SCOPE.school,
+          faculty: DEFAULT_ACADEMIC_SCOPE.faculty,
+          department: DEFAULT_ACADEMIC_SCOPE.department,
         }),
-        !selection.department,
       )}
       {renderSelect(
         "Semester",
         "semester",
         getOptions("semester", {
-          school: selection.school,
-          faculty: selection.faculty,
-          department: selection.department,
+          school: DEFAULT_ACADEMIC_SCOPE.school,
+          faculty: DEFAULT_ACADEMIC_SCOPE.faculty,
+          department: DEFAULT_ACADEMIC_SCOPE.department,
           program: selection.program,
         }),
         !selection.program,
@@ -8271,9 +8236,9 @@ function TeacherHierarchyCheckboxes({
   const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
   const [selection, setSelection] = useState<any>({
-    school: [],
-    faculty: [],
-    department: [],
+    school: [DEFAULT_ACADEMIC_SCOPE.school],
+    faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
+    department: [DEFAULT_ACADEMIC_SCOPE.department],
     program: [],
     semester: [],
   });
@@ -8387,40 +8352,29 @@ function TeacherHierarchyCheckboxes({
       <Text style={[styles.hierarchyScopeDesc, { color: theme.muted }]}>
         Select the academic programs this instructor can manage:
       </Text>
-      {renderPhase("1. Select School", "school", getOptions("school"))}
-      {selection.school.length > 0 &&
-        renderPhase(
-          "2. Select Faculty",
-          "faculty",
-          getOptions("faculty", { school: selection.school }),
-        )}
-      {selection.faculty.length > 0 &&
-        renderPhase(
-          "3. Select Department",
-          "department",
-          getOptions("department", {
-            school: selection.school,
-            faculty: selection.faculty,
-          }),
-        )}
-      {selection.department.length > 0 &&
-        renderPhase(
-          "4. Select Program",
-          "program",
-          getOptions("program", {
-            school: selection.school,
-            faculty: selection.faculty,
-            department: selection.department,
-          }),
-        )}
+      <View style={[styles.lockedScopeNotice, { backgroundColor: theme.cardSubtle, borderColor: theme.border }]}>
+        <MaterialCommunityIcons name="lock-outline" size={16} color={theme.cyan} />
+        <Text style={[styles.lockedScopeNoticeText, { color: theme.textSecondary }]}>
+          {DEFAULT_ACADEMIC_SCOPE.school} • {DEFAULT_ACADEMIC_SCOPE.faculty} • {DEFAULT_ACADEMIC_SCOPE.department}
+        </Text>
+      </View>
+      {renderPhase(
+        "1. Select Program",
+        "program",
+        getOptions("program", {
+          school: [DEFAULT_ACADEMIC_SCOPE.school],
+          faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
+          department: [DEFAULT_ACADEMIC_SCOPE.department],
+        }),
+      )}
       {selection.program.length > 0 &&
         renderPhase(
-          "5. Select Semester",
+          "2. Select Semester",
           "semester",
           getOptions("semester", {
-            school: selection.school,
-            faculty: selection.faculty,
-            department: selection.department,
+            school: [DEFAULT_ACADEMIC_SCOPE.school],
+            faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
+            department: [DEFAULT_ACADEMIC_SCOPE.department],
             program: selection.program,
           }),
         )}
@@ -9247,6 +9201,22 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 1,
     marginBottom: 12,
+  },
+  lockedScopeNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 14,
+  },
+  lockedScopeNoticeText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
   },
   formTopHeaderRow: {
     flexDirection: "row",
