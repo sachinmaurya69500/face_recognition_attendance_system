@@ -1005,8 +1005,12 @@ async def register_student(
     student_id, name = student_id.strip(), name.strip()
     if not student_id or not name:
         raise HTTPException(422, "student_id and name are required")
-    if len(password) < 4:
-        raise HTTPException(422, "Student password must be at least 4 characters")
+    phone = phone.strip()
+    if len(phone) < 4:
+        raise HTTPException(422, "A valid mobile number is required; it becomes the student's initial password")
+    # Student credentials are intentionally derived from the registered mobile
+    # number so the admin cannot create a mismatched initial password.
+    password = phone
     if not (1 <= len(files) <= 5):
         raise HTTPException(422, "Registration requires between 1 and 5 photos")
     if date_of_birth:
@@ -1177,10 +1181,20 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
-                FROM students s
-                JOIN student_embeddings e USING (student_id)
-                WHERE s.section_id = %s""", (session_scope["section_id"],))
+            if not session_scope["program"] and not session_scope["semester"]:
+                # Department-wide attendance mode: include every enrolled
+                # Computer Science student across all programs and semesters.
+                cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
+                    FROM students s
+                    JOIN student_embeddings e USING (student_id)
+                    JOIN academic_sections sec ON sec.id = s.section_id
+                    WHERE sec.school=%s AND sec.faculty=%s AND sec.department=%s""",
+                    (session_scope["school"], session_scope["faculty"], session_scope["department"]))
+            else:
+                cur.execute("""SELECT DISTINCT s.student_id, s.name, e.embedding
+                    FROM students s
+                    JOIN student_embeddings e USING (student_id)
+                    WHERE s.section_id = %s""", (session_scope["section_id"],))
             rows = cur.fetchall()
     finally: conn.close()
     known = np.asarray([embedding_array(r["embedding"]) for r in rows], dtype=np.float32) if rows else np.empty((0, 512), dtype=np.float32)
@@ -1365,6 +1379,25 @@ def own_attendance_overview(user=Depends(require_roles("student"))):
             present = sum(1 for row in attendance if str(row["status"]).upper() == "PRESENT")
             return {"profile": profile, "attendance": attendance, "subjects": attendance, "summary": {"present": present, "absent": len(attendance) - present, "overall_percentage": round(present / len(attendance) * 100, 1) if attendance else 0}}
     finally: conn.close()
+
+@app.delete("/teacher/attendance-sessions/{session_id}")
+def delete_teacher_attendance_session(session_id: str, user=Depends(require_roles("teacher"))):
+    """Delete a teacher-owned session and its attendance records."""
+    session_id = session_id.strip()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+            if not cur.fetchone():
+                raise HTTPException(404, "Attendance session not found")
+            cur.execute("DELETE FROM attendance_logs WHERE session_id=%s", (session_id,))
+            deleted_records = cur.rowcount
+            cur.execute("DELETE FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
+        conn.commit()
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        return {"session_id": session_id, "deleted_records": deleted_records}
+    finally:
+        conn.close()
 
 @app.delete("/admin/attendance/{session_id}")
 def delete_session(session_id: str, _=Depends(require_roles("admin"))):

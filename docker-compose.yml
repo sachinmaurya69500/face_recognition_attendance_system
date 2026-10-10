@@ -33,8 +33,8 @@ services:
     environment:
       REQUIRE_GPU: "1"
       INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      REDIS_URL: redis://redis:6379/0
     volumes:
-      - insightface_models:/workspace/models
       - ./backend/app:/workspace/app
     ports:
       - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
@@ -58,6 +58,20 @@ services:
       # Expose on 0.0.0.0 so phones on LAN and emulators can reach Nginx
       - "${NGINX_BIND_ADDRESS:-0.0.0.0}:${NGINX_PORT:-8080}:80"
 
+  redis:
+    image: redis:7-alpine
+    container_name: attendance_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pgdata:
   insightface_models:
+  redisdata:

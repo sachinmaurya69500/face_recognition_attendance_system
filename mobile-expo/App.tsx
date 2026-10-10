@@ -8820,7 +8820,7 @@ const styles = StyleSheet.create({
 
   // SCROLL CONTENT & FLOATING ISLAND
   scrollContentBody: {
-    paddingHorizontal: 18,
+    paddingHorizontal: SCREEN_SIDE_PADDING,
     paddingTop: 18,
     paddingBottom: 110, // Generous clearance for floating island nav
   },
@@ -8917,7 +8917,7 @@ const styles = StyleSheet.create({
   executiveHeroCard: {
     position: "relative",
     borderRadius: 26,
-    padding: 20,
+    padding: 22,
     borderWidth: 1,
     shadowColor: "#18375C",
     shadowOffset: { width: 0, height: 8 },
@@ -8975,8 +8975,13 @@ const styles = StyleSheet.create({
 
   teacherHeroBanner: {
     borderRadius: 26,
-    padding: 20,
+    padding: 22,
     borderWidth: 1,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 3,
   },
   teacherHeroPillRow: {
     flexDirection: "row",
@@ -9161,6 +9166,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     padding: 14,
     borderWidth: 1,
+    minHeight: 70,
   },
   streamIconCircle: {
     width: 38,
@@ -9758,12 +9764,17 @@ const styles = StyleSheet.create({
 
   // STUDENT SCORECARD
   studentScorecardGlass: {
-    borderRadius: 22,
-    padding: 20,
+    borderRadius: 26,
+    padding: 22,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
     gap: 18,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 3,
   },
   radialDialContainer: {
     alignItems: "center",
@@ -9798,11 +9809,12 @@ const styles = StyleSheet.create({
   },
   studentBreakdownGrid: {
     flexDirection: "row",
-    gap: 10,
+    gap: 12,
   },
   studentBreakdownBox: {
     flex: 1,
-    borderRadius: 16,
+    minHeight: 96,
+    borderRadius: 18,
     padding: 14,
     borderWidth: 1,
     alignItems: "center",
@@ -9838,7 +9850,8 @@ const styles = StyleSheet.create({
   scheduleRowCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 16,
+    minHeight: 78,
+    borderRadius: 18,
     padding: 14,
     borderWidth: 1,
   },
@@ -9880,14 +9893,16 @@ const styles = StyleSheet.create({
   },
   teacherMetricsRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 12,
   },
   teacherMetricBox: {
     flex: 1,
-    borderRadius: 16,
-    padding: 12,
+    minHeight: 108,
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
     alignItems: "center",
+    justifyContent: "center",
   },
   teacherMetricDigit: {
     fontSize: 18,

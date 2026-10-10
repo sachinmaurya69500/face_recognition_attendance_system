@@ -5,6 +5,7 @@ down, so cache availability never affects attendance correctness.
 """
 import json
 import os
+import time
 
 try:
     import redis
@@ -12,10 +13,14 @@ except ImportError:  # pragma: no cover
     redis = None
 
 _client = None
+_last_failure = 0.0
 
 def _get_client():
-    global _client
-    if _client is None and redis is not None:
+    global _client, _last_failure
+    # Do not permanently disable caching when Redis is still starting.
+    if _client is False and time.monotonic() - _last_failure < 2.0:
+        return None
+    if (_client is None or _client is False) and redis is not None:
         try:
             _client = redis.Redis.from_url(
                 os.getenv("REDIS_URL", "redis://redis:6379/0"),
@@ -26,6 +31,7 @@ def _get_client():
             _client.ping()
         except Exception:
             _client = False
+            _last_failure = time.monotonic()
     return _client if _client is not False else None
 
 def cache_get(key):

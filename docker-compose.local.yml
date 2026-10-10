@@ -5,3 +5,26 @@ services:
   db:
     ports:
       - "127.0.0.1:5432:5432"
+
+  api:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+
+  redis:
+    image: redis:7-alpine
+    container_name: attendance_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redisdata:

@@ -23,10 +23,6 @@ RUN python -c "import os; from insightface.app import FaceAnalysis; FaceAnalysis
 
 COPY . .
 
-# Keep model weights in a named runtime volume while retaining the baked-in
-# weights as the image fallback for first startup.
-VOLUME ["/workspace/models"]
-
 EXPOSE 8000
 
 CMD ["/bin/sh", "-c", "exec gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-1} --threads ${GUNICORN_THREADS:-1} --timeout ${GUNICORN_TIMEOUT:-300} --graceful-timeout ${GUNICORN_GRACEFUL_TIMEOUT:-30} --access-logfile - --error-logfile -"]

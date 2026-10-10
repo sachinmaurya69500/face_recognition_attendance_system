@@ -26,8 +26,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
@@ -37,7 +35,6 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       REDIS_URL: redis://redis:6379/0
     volumes:
-      - insightface_models:/workspace/models
       - ./backend/app:/workspace/app
     ports:
       - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
