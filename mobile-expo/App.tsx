@@ -54,24 +54,24 @@ const DEFAULT_CAMERA_FACING: "front" | "back" =
 // ---------------------------------------------------------------------------
 export const darkTheme = {
   mode: "dark" as const,
-  bg: "#070A12",
-  bgElevated: "#0D1423",
-  card: "#111B2D",
-  cardGlass: "rgba(16, 27, 45, 0.94)",
+  bg: "#080D18",
+  bgElevated: "#101A2B",
+  card: "#142037",
+  cardGlass: "rgba(20, 32, 55, 0.94)",
   cardSubtle: "#0A101D",
   cardHover: "#17263E",
   divider: "rgba(255,255,255,0.07)",
   border: "rgba(255, 255, 255, 0.09)",
   borderBright: "rgba(255, 255, 255, 0.17)",
   borderAccent: "rgba(111, 191, 232, 0.42)",
-  cyan: "#71C4E8",
-  cyanGlow: "rgba(113, 196, 232, 0.16)",
-  cyanStrong: "#A6E0F5",
-  blue: "#5B8DEF",
-  blueDark: "#1B2C51",
-  blueGlow: "rgba(91, 141, 239, 0.18)",
-  amber: "#F6AD55",
-  amberGlow: "rgba(246, 173, 85, 0.18)",
+  cyan: "#8FD0D4",
+  cyanGlow: "rgba(143, 208, 212, 0.16)",
+  cyanStrong: "#C0EEF0",
+  blue: "#82A9F4",
+  blueDark: "#263F70",
+  blueGlow: "rgba(130, 169, 244, 0.18)",
+  amber: "#E9B968",
+  amberGlow: "rgba(233, 185, 104, 0.18)",
   emerald: "#48BB78",
   emeraldGlow: "rgba(72, 187, 120, 0.18)",
   rose: "#FC8181",
@@ -89,24 +89,24 @@ export const darkTheme = {
 
 export const lightTheme = {
   mode: "light" as const,
-  bg: "#F7F8FA",
+  bg: "#F7F6F2",
   bgElevated: "#FFFFFF",
   card: "#FFFFFF",
   cardGlass: "rgba(255, 255, 255, 0.94)",
-  cardSubtle: "#F3F5F8",
-  cardHover: "#EEF3F8",
+  cardSubtle: "#F2F4F4",
+  cardHover: "#EDF1F0",
   divider: "rgba(0,0,0,0.05)",
   border: "#E4E8EE",
   borderBright: "#CDD6E2",
   borderAccent: "rgba(35, 76, 130, 0.25)",
-  cyan: "#24558C",
-  cyanGlow: "rgba(36, 85, 140, 0.10)",
-  cyanStrong: "#183F6D",
-  blue: "#315FAD",
-  blueDark: "#19375F",
-  blueGlow: "rgba(49, 95, 173, 0.10)",
-  amber: "#B7791F",
-  amberGlow: "rgba(183, 121, 31, 0.12)",
+  cyan: "#1F6670",
+  cyanGlow: "rgba(31, 102, 112, 0.10)",
+  cyanStrong: "#174D55",
+  blue: "#345A91",
+  blueDark: "#1E385D",
+  blueGlow: "rgba(52, 90, 145, 0.10)",
+  amber: "#A76D1B",
+  amberGlow: "rgba(167, 109, 27, 0.12)",
   emerald: "#059669",
   emeraldGlow: "rgba(5, 150, 105, 0.10)",
   rose: "#DC2626",
@@ -115,8 +115,8 @@ export const lightTheme = {
   purpleGlow: "rgba(118, 86, 168, 0.10)",
   gold: "#A46F18",
   goldGlow: "rgba(183, 121, 31, 0.10)",
-  text: "#162235",
-  textSecondary: "#526174",
+  text: "#182231",
+  textSecondary: "#596777",
   muted: "#8995A5",
   navBg: "rgba(247, 248, 250, 0.97)",
   statusBarStyle: "dark" as const,
@@ -1039,16 +1039,24 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [unreadCount, setUnreadCount] = useState(0);
   const screenOpacity = useRef(new Animated.Value(1)).current;
+  const screenLift = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     screenOpacity.setValue(0.96);
+    screenLift.setValue(8);
     Animated.timing(screenOpacity, {
       toValue: 1,
       duration: 180,
       easing: Easing.out(Easing.ease),
       useNativeDriver: true,
     }).start();
-  }, [activeTab, screenOpacity]);
+    Animated.timing(screenLift, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [activeTab, screenOpacity, screenLift]);
 
   useEffect(() => {
     http
@@ -1256,7 +1264,9 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View style={{ opacity: screenOpacity }}>
+        <Animated.View
+          style={{ opacity: screenOpacity, transform: [{ translateY: screenLift }] }}
+        >
           <ScreenRenderer
             screen={activeTab}
             role={role}
@@ -8577,9 +8587,14 @@ const styles = StyleSheet.create({
   },
   loginSurfaceCard: {
     width: "100%",
-    borderRadius: 28,
-    padding: 24,
+    borderRadius: 30,
+    padding: 26,
     borderWidth: 1,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.10,
+    shadowRadius: 26,
+    elevation: 4,
   },
   cardHeaderTitle: {
     fontSize: 24,
@@ -8625,10 +8640,10 @@ const styles = StyleSheet.create({
   inputContainerBox: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 12,
+    borderRadius: 15,
     borderWidth: 1,
     paddingHorizontal: 12,
-    height: 48,
+    height: 52,
   },
   inputPrefixIcon: {
     marginRight: 8,
@@ -8639,10 +8654,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   textInputHoloPlain: {
-    borderRadius: 12,
+    borderRadius: 15,
     borderWidth: 1,
     paddingHorizontal: 14,
-    height: 46,
+    height: 50,
     fontSize: 14,
     fontWeight: "600",
   },
@@ -8720,8 +8735,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
     borderBottomWidth: 1,
   },
   topBarLeft: {
@@ -8773,9 +8788,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   topIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
+    width: 38,
+    height: 38,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
@@ -8809,8 +8824,8 @@ const styles = StyleSheet.create({
 
   // SCROLL CONTENT & FLOATING ISLAND
   scrollContentBody: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
+    paddingHorizontal: 18,
+    paddingTop: 18,
     paddingBottom: 110, // Generous clearance for floating island nav
   },
   bottomFloatingIsland: {
@@ -8865,13 +8880,19 @@ const styles = StyleSheet.create({
   screenSubTitle: {
     fontSize: 13,
     marginTop: 2,
+    lineHeight: 19,
   },
   screenAddButtonMini: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 12,
+    borderRadius: 14,
+    shadowColor: "#173458",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 2,
     gap: 4,
   },
   screenAddBtnMiniText: {
