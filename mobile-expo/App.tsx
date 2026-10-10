@@ -7328,14 +7328,12 @@ function TeacherProfile({
 }) {
   const { theme } = useAppTheme();
   const [profile, setProfile] = useState<any>(user);
-  const [assignments, setAssignments] = useState<any[]>([]);
 
   useEffect(() => {
     http
       .get("/teacher/profile")
       .then((r) => {
         setProfile(r.data?.profile || user);
-        setAssignments(r.data?.assignments || []);
       })
       .catch(() => {});
   }, []);
@@ -7347,48 +7345,6 @@ function TeacherProfile({
         role="FACULTY INSTRUCTOR"
         setProfile={setProfile}
       />
-
-      <View
-        style={[
-          styles.glassFormCard,
-          { backgroundColor: theme.cardGlass, borderColor: theme.borderBright },
-        ]}
-      >
-        <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
-          ASSIGNED COURSES
-        </Text>
-        {assignments.length === 0 ? (
-          <Text style={[styles.emptySubText, { color: theme.muted }]}>
-            No course sections assigned yet.
-          </Text>
-        ) : (
-          assignments.map((item, i) => (
-            <View
-              key={i}
-              style={[
-                styles.assignedCourseRow,
-                { borderBottomColor: theme.border },
-              ]}
-            >
-              <MaterialCommunityIcons
-                name="book-outline"
-                size={19}
-                color={theme.cyan}
-              />
-              <View style={{ flex: 1, paddingLeft: 10 }}>
-                <Text
-                  style={[styles.assignedCourseTitle, { color: theme.text }]}
-                >
-                  {item.subject}
-                </Text>
-                <Text style={[styles.assignedCourseSub, { color: theme.muted }]}>
-                  {item.students || 0} Students
-                </Text>
-              </View>
-            </View>
-          ))
-        )}
-      </View>
 
       <Pressable
         style={[
