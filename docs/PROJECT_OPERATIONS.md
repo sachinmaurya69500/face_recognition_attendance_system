@@ -86,13 +86,35 @@ Metro remains compatible with Android, iOS, and web, while screen behavior and
 navigation state remain unchanged. The loading indicator is shown briefly if a
 screen is opened before the interaction queue is idle.
 
+Shared frontend utilities are kept outside `App.tsx` in
+`mobile-expo/components/` and `mobile-expo/utils/`. Current extracted modules
+include `DeferredScreen`, `UploadDonut`, date formatting, and navigation-tab
+metadata. This incremental structure is ready for future screen-by-screen
+bundle splitting without changing the current navigation behavior.
+
 ## Redis caching
 
 The backend includes an optional Redis cache at `redis://redis:6379/0`.
 Academic-section data is cached for five minutes and faculty session lists for
 30 seconds. Attendance writes invalidate the related faculty-session cache.
 Redis is best-effort: if Redis is unavailable, requests fall back to
-PostgreSQL automatically and attendance remains fully functional.
+PostgreSQL automatically and attendance remains fully functional. A healthy
+Redis connection is reported as `cache: "ok"` by `/health`; `unavailable`
+means the API is using the PostgreSQL fallback.
+
+The API also creates indexes for student section lookups, teacher session
+history, and attendance log session/student and timestamp queries during
+startup. The `/health` response reports the configured cache state.
+
+## Backend tests
+
+Run the isolated cache tests without starting PostgreSQL, Redis, or the GPU:
+
+```bash
+cd backend
+python -m pip install -r requirements-dev.txt
+pytest -q tests/test_cache.py
+```
 
 Start the stack with:
 

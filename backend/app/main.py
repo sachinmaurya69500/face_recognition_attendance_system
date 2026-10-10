@@ -20,7 +20,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.database import get_db_connection
-from app.cache import cache_delete, cache_get, cache_set
+from app.cache import cache_available, cache_delete, cache_get, cache_set
 from app.models import face_model
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -264,6 +264,10 @@ def ensure_auth_tables():
                 cur.executemany("INSERT INTO academic_sections (school,faculty,department,program,semester,section) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", rows)
             cur.execute("CREATE TABLE IF NOT EXISTS teacher_assignments (id SERIAL PRIMARY KEY, teacher_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, section_id INTEGER REFERENCES academic_sections(id) ON DELETE CASCADE, subject VARCHAR(160) NOT NULL, UNIQUE(teacher_user_id, section_id, subject))")
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES academic_sections(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS roll_number VARCHAR(50)")
+            cur.execute("CREATE INDEX IF NOT EXISTS students_section_id_idx ON students(section_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS attendance_sessions_teacher_date_idx ON attendance_sessions(teacher_id, event_date DESC, starts_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS attendance_logs_session_student_idx ON attendance_logs(session_id, student_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS attendance_logs_student_timestamp_idx ON attendance_logs(student_id, timestamp DESC)")
             cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
             cur.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action VARCHAR(80) NOT NULL, entity VARCHAR(80) NOT NULL, entity_id VARCHAR(120), previous_value JSONB, new_value JSONB, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             # The database is intentionally empty except for the administrator.
@@ -671,7 +675,8 @@ def face_quality(image, face, target_pose="any"):
 def health():
     try:
         conn = get_db_connection(); conn.close()
-        return {"status": "ok", "model_loaded": face_model.loaded, "database": "ok"}
+        cache_status = "ok" if cache_available() else ("unavailable" if os.getenv("REDIS_URL") else "disabled")
+        return {"status": "ok", "model_loaded": face_model.loaded, "database": "ok", "cache": cache_status}
     except Exception as exc:
         raise HTTPException(503, f"Database unavailable: {exc}")
 
@@ -985,6 +990,9 @@ async def register_student(
     phone: str = Form(""),
     date_of_birth: str = Form(""),
     program: str = Form(""),
+    department: str = Form(""),
+    semester: str = Form(""),
+    roll_number: str = Form(""),
     section_id: int | None = Form(None),
     files: list[UploadFile] = File(default=[]),
     file: UploadFile | None = File(default=None),
@@ -1046,17 +1054,20 @@ async def register_student(
                     cur.execute("SELECT 1 FROM academic_sections WHERE id=%s", (section_id,))
                     if not cur.fetchone():
                         raise HTTPException(403, "You are not allowed to register a student in this academic section")
-            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, section_id, profile_photo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, department, semester, roll_number, section_id, profile_photo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET
                     name=EXCLUDED.name,
                     email=COALESCE(EXCLUDED.email, students.email),
                     phone=COALESCE(EXCLUDED.phone, students.phone),
                     date_of_birth=COALESCE(EXCLUDED.date_of_birth, students.date_of_birth),
                     program=COALESCE(EXCLUDED.program, students.program),
+                    department=COALESCE(EXCLUDED.department, students.department),
+                    semester=COALESCE(EXCLUDED.semester, students.semester),
+                    roll_number=COALESCE(EXCLUDED.roll_number, students.roll_number),
                     section_id=COALESCE(EXCLUDED.section_id, students.section_id),
                     profile_photo=COALESCE(EXCLUDED.profile_photo, students.profile_photo)""",
-                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, section_id, first_image_bytes))
+                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, department or None, semester or None, roll_number or None, section_id, first_image_bytes))
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             # A student's ID is also their login ID. Registration creates or
@@ -1251,13 +1262,16 @@ def session_attendance(session_id: str, _=Depends(require_roles("admin", "teache
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program, st.semester,
-                st.department, st.date_of_birth, st.roll_number,
+            cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program,
+                COALESCE(st.semester, sec.semester) AS semester,
+                COALESCE(st.department, sec.department) AS department,
+                st.date_of_birth, st.roll_number,
                 a.confidence_score, a.timestamp,
                 COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
                 a.is_manual_override
                 FROM attendance_sessions sess
                 JOIN students st ON st.section_id=sess.section_id
+                LEFT JOIN academic_sections sec ON sec.id=st.section_id
                 LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
                 WHERE sess.session_id=%s ORDER BY st.name""", (session_id,))
             return {"session_id": session_id, "students": cur.fetchall()}
@@ -1311,7 +1325,7 @@ def teacher_attendance_report(
             if month: conditions.append("a.timestamp >= to_date(%s, 'YYYY-MM') AND a.timestamp < (to_date(%s, 'YYYY-MM') + interval '1 month')"); values += [month, month]
             if date: conditions.append("a.timestamp::date = %s::date"); values.append(date)
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            cur.execute(f"SELECT a.id, a.session_id, a.student_id, s.name, a.confidence_score, a.timestamp FROM attendance_logs a JOIN students s USING (student_id){where} ORDER BY a.timestamp DESC, s.name", values)
+            cur.execute(f"SELECT a.id, a.session_id, a.student_id, s.name, a.confidence_score, a.timestamp, sess.title, sess.course, sess.event_date, sess.starts_at, sess.ends_at FROM attendance_logs a JOIN students s USING (student_id) JOIN attendance_sessions sess USING (session_id){where} ORDER BY a.timestamp DESC, s.name", values)
             records = cur.fetchall()
             cur.execute(f"SELECT a.student_id, s.name, COUNT(*) AS days_present, MIN(a.timestamp) AS first_attendance, MAX(a.timestamp) AS last_attendance FROM attendance_logs a JOIN students s USING (student_id){where} GROUP BY a.student_id, s.name ORDER BY s.name", values)
             by_student = cur.fetchall()

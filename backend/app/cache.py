@@ -50,3 +50,11 @@ def cache_delete(*keys):
             client.delete(*keys)
     except Exception:
         pass
+
+def cache_available():
+    """Return whether Redis is currently reachable."""
+    try:
+        client = _get_client()
+        return bool(client and client.ping())
+    except Exception:
+        return False
