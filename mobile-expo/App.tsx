@@ -4953,6 +4953,28 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       .catch(() => setSections([]));
   }, []);
 
+  useEffect(() => {
+    const restoreActiveSession = async () => {
+      try {
+        const activeSessionId = await AsyncStorage.getItem(
+          "active_attendance_session_id",
+        );
+        if (!activeSessionId) return;
+        const response = await http.get("/teacher/attendance-sessions");
+        const activeSession = (response.data?.sessions || []).find(
+          (session: any) => session.session_id === activeSessionId,
+        );
+        if (activeSession) {
+          setScope(activeSession);
+          setPhotoCount(1);
+        }
+      } catch {
+        // A missing or expired session should not block creation of a new one.
+      }
+    };
+    restoreActiveSession();
+  }, []);
+
   const createSession = async () => {
     if ((!scope?.id && !departmentWideAttendance) || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
@@ -4977,7 +4999,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       setScope({ ...scope, session_id: res.data.session_id });
       Alert.alert(
         "Session Created",
-        "Attendance session created. You may now capture or upload the classroom photo.",
+        "Attendance session created. You may now upload classroom group photos.",
       );
     } catch (e: any) {
       Alert.alert(
@@ -4989,7 +5011,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
-  const processPhoto = async (uri: string, navigateAfter = true) => {
+  const processPhoto = async (uri: string) => {
     if (!scope?.session_id) {
       Alert.alert("No Session", "Initialize session details first.");
       return;
@@ -5023,7 +5045,6 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       }
 
       setPhotoCount((count) => count + 1);
-      if (navigateAfter) go("Recognition Results");
     } catch (e: any) {
       Alert.alert(
         "Processing Failed",
@@ -5036,21 +5057,6 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
-  const takePhoto = async () => {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert("Permission Needed", "Please enable camera access.");
-      return;
-    }
-    const res = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.9,
-    });
-    if (!res.canceled && res.assets?.[0]?.uri) {
-      await processPhoto(res.assets[0].uri);
-    }
-  };
-
   const pickFromGallery = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
@@ -5059,9 +5065,13 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       selectionLimit: 10,
     });
     if (!res.canceled && res.assets?.length) {
-      for (const [index, asset] of res.assets.entries()) {
-        await processPhoto(asset.uri, index === res.assets.length - 1);
+      for (const asset of res.assets) {
+        await processPhoto(asset.uri);
       }
+      Alert.alert(
+        "Attendance Updated",
+        "The selected photos were processed. Previously marked students remain present, and newly recognized students were added to this session.",
+      );
     }
   };
 
@@ -5101,7 +5111,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             Take Attendance
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Classroom group photo attendance
+            Upload classroom group photos to mark attendance
           </Text>
         </View>
       </View>
@@ -5314,47 +5324,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           <View style={styles.dualPhotoActionsCol}>
             <Pressable
               style={[
-                styles.captureHeroBtn,
-                { backgroundColor: theme.cyan },
-                busy && { opacity: 0.7 },
-              ]}
-              onPress={takePhoto}
-              disabled={busy}
-            >
-              <MaterialCommunityIcons
-                name="camera"
-                size={26}
-                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
-              />
-              <Text
-                style={[
-                  styles.captureHeroBtnTitle,
-                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
-                ]}
-              >
-                TAKE CLASS PHOTO
-              </Text>
-              <Text
-                style={[
-                  styles.captureHeroBtnSub,
-                  {
-                    color:
-                      theme.mode === "dark"
-                        ? "rgba(8,12,20,0.75)"
-                        : "rgba(255,255,255,0.85)",
-                  },
-                ]}
-              >
-                Capture students with camera
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[
                 styles.galleryHeroBtn,
                 {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.border,
+                  backgroundColor: theme.cyan,
+                  borderColor: theme.cyan,
                 },
                 busy && { opacity: 0.7 },
               ]}
@@ -5364,13 +5337,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
               <MaterialCommunityIcons
                 name="image-multiple"
                 size={24}
-                color={theme.text}
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
               />
-              <Text style={[styles.galleryHeroBtnTitle, { color: theme.text }]}>
-                UPLOAD FROM GALLERY
+              <Text style={[styles.galleryHeroBtnTitle, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                {photoCount > 0 ? "ADD PHOTO" : "UPLOAD GROUP PHOTOS"}
               </Text>
-              <Text style={[styles.galleryHeroBtnSub, { color: theme.muted }]}>
-                Select multiple group photos
+              <Text style={[styles.galleryHeroBtnSub, { color: theme.mode === "dark" ? "rgba(8,12,20,0.75)" : "rgba(255,255,255,0.85)" }]}>
+                {photoCount > 0
+                  ? "Add more photos to update attendance"
+                  : "Select up to 10 photos from gallery"}
               </Text>
             </Pressable>
           </View>
@@ -5378,6 +5353,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             {photoCount > 0 ? `${photoCount} group photo${photoCount === 1 ? "" : "s"} processed. ` : ""}
             You can upload up to 10 group photos for this session. Recognized students are merged automatically.
           </Text>
+          {photoCount > 0 && (
+            <Pressable
+              style={[styles.viewResultsBtn, { borderColor: theme.border, backgroundColor: theme.cardSubtle }]}
+              onPress={() => go("Recognition Results")}
+            >
+              <MaterialCommunityIcons name="clipboard-text-outline" size={18} color={theme.text} />
+              <Text style={[styles.viewResultsBtnText, { color: theme.text }]}>VIEW LATEST RESULTS</Text>
+            </Pressable>
+          )}
           {busy && uploadProgress > 0 && (
             <UploadDonut progress={uploadProgress} label="UPLOADING CLASS PHOTO" />
           )}
@@ -9567,6 +9551,21 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     textAlign: "center",
     marginTop: 10,
+  },
+  viewResultsBtn: {
+    height: 46,
+    marginTop: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  viewResultsBtnText: {
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.5,
   },
   dualPhotoActionsCol: {
     gap: 12,
