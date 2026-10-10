@@ -1219,7 +1219,13 @@ async def process_group_attendance(session_id: str = Form(...), file: UploadFile
                 for st in recognized:
                     cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method)
                         VALUES (%s,%s,%s,%s,'RECOGNIZED','PRESENT','PRESENT','FACE_RECOGNITION')
-                        ON CONFLICT (student_id, session_id) DO UPDATE SET confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score), teacher_id=EXCLUDED.teacher_id, recognition_status='RECOGNIZED', initial_attendance_status='PRESENT', final_attendance_status=COALESCE(attendance_logs.final_attendance_status,'PRESENT')""", (st["student_id"], user["sub"], session_id, st["confidence"]))
+                        ON CONFLICT (student_id, session_id) DO UPDATE SET
+                            confidence_score=GREATEST(attendance_logs.confidence_score, EXCLUDED.confidence_score),
+                            teacher_id=EXCLUDED.teacher_id,
+                            recognition_status='RECOGNIZED',
+                            initial_attendance_status='PRESENT',
+                            final_attendance_status='PRESENT',
+                            attendance_method='FACE_RECOGNITION'""", (st["student_id"], user["sub"], session_id, st["confidence"]))
                     cur.execute("""INSERT INTO notifications (user_id, category, title, body)
                         SELECT id, 'attendance', 'Attendance marked', %s FROM users WHERE student_id=%s""",
                         (f'Attendance recorded for {st["name"]} in session {session_id}.', st["student_id"]))
