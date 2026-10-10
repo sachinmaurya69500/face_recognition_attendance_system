@@ -3611,8 +3611,6 @@ function AddStudent({ go }: { go: (x: string) => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [dateOfBirth, setDateOfBirth] = useState("");
-  const [showDobPicker, setShowDobPicker] = useState(false);
   const [program, setProgram] = useState("");
   const [department, setDepartment] = useState("");
   const [semester, setSemester] = useState("");
@@ -3709,9 +3707,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("name", name.trim());
       data.append("email", email.trim());
       data.append("phone", phone.trim());
-      const apiDate = toApiDate(dateOfBirth);
-      data.append("date_of_birth", apiDate);
-      data.append("password", apiDate || "welcome123");
+      data.append("password", phone.trim());
       data.append("program", program.trim() || "Undergraduate Program");
       data.append("department", department.trim());
       data.append("semester", semester.trim());
@@ -3883,63 +3879,19 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        {/* Date of Birth and Phone */}
-        <View style={styles.twoColumnGridRow}>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              DATE OF BIRTH (DD-MM-YYYY)
-            </Text>
-            <Pressable
-              style={[
-                styles.textInputHoloPlain,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.border,
-                  justifyContent: "center",
-                },
-              ]}
-              onPress={() => setShowDobPicker(true)}
-            >
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ color: dateOfBirth ? theme.text : theme.muted }}>
-                  {dateOfBirth || "Select date"}
-                </Text>
-                <MaterialCommunityIcons name="calendar-month-outline" size={19} color={theme.cyan} />
-              </View>
-            </Pressable>
-          </View>
-          <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              PHONE NUMBER
-            </Text>
-            <TextInput
-              style={[
-                styles.textInputHoloPlain,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.border,
-                  color: theme.text,
-                },
-              ]}
-              value={phone}
-              onChangeText={setPhone}
-              placeholderTextColor={theme.muted}
-            />
-          </View>
-        </View>
-
-        {showDobPicker && (
-          <DateTimePicker
-            value={parseDisplayDate(dateOfBirth)}
-            mode="date"
-            display="calendar"
-            maximumDate={new Date()}
-            onChange={(_, selectedDate) => {
-              setShowDobPicker(false);
-              if (selectedDate) setDateOfBirth(formatDisplayDate(selectedDate));
-            }}
+        {/* The mobile number is also used as the student's initial password. */}
+        <View style={styles.formGroup}>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>MOBILE NUMBER / INITIAL PASSWORD *</Text>
+          <TextInput
+            style={[styles.textInputHoloPlain, { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text }]}
+            value={phone}
+            onChangeText={setPhone}
+            keyboardType="phone-pad"
+            placeholder="Enter mobile number"
+            placeholderTextColor={theme.muted}
           />
-        )}
+          <Text style={[styles.fieldHintText, { color: theme.muted }]}>The student will use this mobile number as their initial password.</Text>
+        </View>
 
         {/* Academic Placement */}
         <AcademicCascade
@@ -4967,8 +4919,10 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 // ---------------------------------------------------------------------------
 function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
+  const departmentWideAttendance = true;
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [photoCount, setPhotoCount] = useState(0);
   const [scope, setScope] = useState<any>(null);
   const [academicScope, setAcademicScope] = useState<any>({
     school: [],
@@ -4996,7 +4950,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   }, []);
 
   const createSession = async () => {
-    if (!scope?.id || !form.title.trim() || !form.course.trim()) {
+    if ((!scope?.id && !departmentWideAttendance) || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
         "Please select an academic section and specify course and title.",
@@ -5031,7 +4985,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
-  const processPhoto = async (uri: string) => {
+  const processPhoto = async (uri: string, navigateAfter = true) => {
     if (!scope?.session_id) {
       Alert.alert("No Session", "Initialize session details first.");
       return;
@@ -5064,7 +5018,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         );
       }
 
-      go("Recognition Results");
+      setPhotoCount((count) => count + 1);
+      if (navigateAfter) go("Recognition Results");
     } catch (e: any) {
       Alert.alert(
         "Processing Failed",
@@ -5096,10 +5051,42 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 0.9,
+      allowsMultipleSelection: true,
+      selectionLimit: 10,
     });
-    if (!res.canceled && res.assets?.[0]?.uri) {
-      await processPhoto(res.assets[0].uri);
+    if (!res.canceled && res.assets?.length) {
+      for (const [index, asset] of res.assets.entries()) {
+        await processPhoto(asset.uri, index === res.assets.length - 1);
+      }
     }
+  };
+
+  const deleteSession = () => {
+    if (!scope?.session_id) return;
+    Alert.alert(
+      "Delete Attendance Session?",
+      "This will permanently remove the session and all attendance records created from it.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Session",
+          style: "destructive",
+          onPress: async () => {
+            setBusy(true);
+            try {
+              await http.delete(`/teacher/attendance-sessions/${scope.session_id}`);
+              setScope(null);
+              setPhotoCount(0);
+              Alert.alert("Session Deleted", "The attendance session and its records were removed.");
+            } catch (e: any) {
+              Alert.alert("Delete Failed", e?.response?.data?.detail || "Could not delete the session.");
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -5168,6 +5155,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         <TeacherHierarchyCheckboxes
           selected={[]}
           onChange={() => {}}
+          departmentWide
           onScopeChange={(next) => {
             setAcademicScope(next);
             const found = sections.find((s) =>
@@ -5175,7 +5163,13 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
                 ([k, v]: any) => !v.length || v.includes(s[k]),
               ),
             );
-            if (found) setScope(found);
+            if (found) {
+              setScope(
+                departmentWideAttendance
+                  ? { ...found, id: undefined, program: "", semester: "" }
+                  : found,
+              );
+            }
           }}
         />
 
@@ -5268,6 +5262,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
                 : "Ready to create attendance session"}
             </Text>
           </View>
+          {scope?.session_id && (
+            <Pressable
+              onPress={deleteSession}
+              disabled={busy}
+              style={[styles.sessionDeleteBtn, { borderColor: theme.rose, opacity: busy ? 0.5 : 1 }]}
+            >
+              <MaterialCommunityIcons name="trash-can-outline" size={17} color={theme.rose} />
+            </Pressable>
+          )}
         </View>
 
         {!scope?.session_id ? (
@@ -5363,10 +5366,14 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
                 UPLOAD FROM GALLERY
               </Text>
               <Text style={[styles.galleryHeroBtnSub, { color: theme.muted }]}>
-                Select an existing photo file
+                Select multiple group photos
               </Text>
             </Pressable>
           </View>
+          <Text style={[styles.multiPhotoHint, { color: theme.muted }]}>
+            {photoCount > 0 ? `${photoCount} group photo${photoCount === 1 ? "" : "s"} processed. ` : ""}
+            You can upload up to 10 group photos for this session. Recognized students are merged automatically.
+          </Text>
           {busy && uploadProgress > 0 && (
             <UploadDonut progress={uploadProgress} label="UPLOADING CLASS PHOTO" />
           )}
@@ -8228,10 +8235,12 @@ function TeacherHierarchyCheckboxes({
   selected,
   onChange,
   onScopeChange,
+  departmentWide = false,
 }: {
   selected: number[];
   onChange: (ids: number[]) => void;
   onScopeChange?: (scope: any) => void;
+  departmentWide?: boolean;
 }) {
   const { theme } = useAppTheme();
   const [sections, setSections] = useState<any[]>([]);
@@ -8245,7 +8254,28 @@ function TeacherHierarchyCheckboxes({
 
   useEffect(() => {
     loadAcademicSections()
-      .then(setSections)
+      .then((loaded) => {
+        setSections(loaded);
+        if (departmentWide) {
+          const ids = loaded
+            .filter(
+              (s) =>
+                s.school === DEFAULT_ACADEMIC_SCOPE.school &&
+                s.faculty === DEFAULT_ACADEMIC_SCOPE.faculty &&
+                s.department === DEFAULT_ACADEMIC_SCOPE.department,
+            )
+            .map((s) => s.id);
+          const fixedScope = {
+            school: [DEFAULT_ACADEMIC_SCOPE.school],
+            faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
+            department: [DEFAULT_ACADEMIC_SCOPE.department],
+            program: [],
+            semester: [],
+          };
+          onScopeChange?.(fixedScope);
+          onChange(ids);
+        }
+      })
       .catch(() => setSections([]));
   }, []);
 
@@ -8350,7 +8380,9 @@ function TeacherHierarchyCheckboxes({
         DEPARTMENT PERMISSIONS
       </Text>
       <Text style={[styles.hierarchyScopeDesc, { color: theme.muted }]}>
-        Select the academic programs this instructor can manage:
+        {departmentWide
+          ? "All Computer Science department students will be included in this attendance session."
+          : "Select the academic programs this instructor can manage:"}
       </Text>
       <View style={[styles.lockedScopeNotice, { backgroundColor: theme.cardSubtle, borderColor: theme.border }]}>
         <MaterialCommunityIcons name="lock-outline" size={16} color={theme.cyan} />
@@ -8358,7 +8390,7 @@ function TeacherHierarchyCheckboxes({
           {DEFAULT_ACADEMIC_SCOPE.school} • {DEFAULT_ACADEMIC_SCOPE.faculty} • {DEFAULT_ACADEMIC_SCOPE.department}
         </Text>
       </View>
-      {renderPhase(
+      {!departmentWide && renderPhase(
         "1. Select Program",
         "program",
         getOptions("program", {
@@ -8367,7 +8399,7 @@ function TeacherHierarchyCheckboxes({
           department: [DEFAULT_ACADEMIC_SCOPE.department],
         }),
       )}
-      {selection.program.length > 0 &&
+      {!departmentWide && selection.program.length > 0 &&
         renderPhase(
           "2. Select Semester",
           "semester",
@@ -8590,6 +8622,11 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginBottom: 6,
     letterSpacing: 0.8,
+  },
+  fieldHintText: {
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: 5,
   },
   inputContainerBox: {
     flexDirection: "row",
@@ -9492,6 +9529,20 @@ const styles = StyleSheet.create({
   sectionSelectedSub: {
     fontSize: 11,
     marginTop: 1,
+  },
+  sessionDeleteBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  multiPhotoHint: {
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: "center",
+    marginTop: 10,
   },
   dualPhotoActionsCol: {
     gap: 12,
