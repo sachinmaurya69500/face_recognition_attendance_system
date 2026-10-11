@@ -30,6 +30,8 @@ import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -2177,6 +2179,7 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
       .every((val: any) => raw.includes(String(val).toLowerCase()));
     return matchesQuery && matchesFilters;
   });
+  const hasActiveStudentFilter = Boolean(search.trim() || Object.values(filters).some(Boolean));
 
   return (
     <View style={styles.screenLayout}>
@@ -2186,7 +2189,9 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
             Students Directory
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            {students.length} students enrolled
+            {hasActiveStudentFilter
+              ? `${visible.length} matching student${visible.length === 1 ? "" : "s"}`
+              : `${visible.length} students enrolled`}
           </Text>
         </View>
         <Pressable
@@ -2301,16 +2306,13 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
             ]}
             onPress={() => setSelectedStudent(student)}
           >
-            <View
-              style={[
-                styles.rosterAvatarBox,
-                { backgroundColor: theme.cyanGlow },
-              ]}
-            >
-              <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
-                {(student.name || "S").charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            {student.profile_photo_base64 ? (
+              <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: theme.cyanGlow }} />
+            ) : (
+              <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+                <MaterialCommunityIcons name="account" size={21} color={theme.cyan} />
+              </View>
+            )}
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
               <Text style={[styles.rosterItemName, { color: theme.text }]}>
                 {student.name || "Student Record"}
@@ -2367,21 +2369,13 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
               </View>
 
               <View style={styles.modalProfileHero}>
-                <View
-                  style={[
-                    styles.modalAvatarGlow,
-                    {
-                      backgroundColor: theme.cyanGlow,
-                      borderColor: theme.cyan,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[styles.modalAvatarGlowText, { color: theme.cyan }]}
-                  >
-                    {(selectedStudent.name || "S").charAt(0).toUpperCase()}
-                  </Text>
-                </View>
+                {selectedStudent.profile_photo_base64 ? (
+                  <Image source={{ uri: selectedStudent.profile_photo_base64 }} style={{ width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: theme.cyan }} />
+                ) : (
+                  <View style={[styles.modalAvatarGlow, { backgroundColor: theme.cyanGlow, borderColor: theme.cyan }]}>
+                    <MaterialCommunityIcons name="account" size={32} color={theme.cyan} />
+                  </View>
+                )}
                 <Text style={[styles.modalHeroName, { color: theme.text }]}>
                   {selectedStudent.name}
                 </Text>
@@ -2552,7 +2546,9 @@ function TeacherStudentsRoster() {
             Assigned Roster
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Students in your assigned courses
+            {search.trim()
+              ? `${visible.length} matching student${visible.length === 1 ? "" : "s"} in your assigned roster`
+              : `${visible.length} student${visible.length === 1 ? "" : "s"} in your assigned roster`}
           </Text>
         </View>
         <View
@@ -2608,16 +2604,13 @@ function TeacherStudentsRoster() {
               { backgroundColor: theme.cardGlass, borderColor: theme.border },
             ]}
           >
-            <View
-              style={[
-                styles.rosterAvatarBox,
-                { backgroundColor: theme.cyanGlow },
-              ]}
-            >
-              <Text style={[styles.rosterAvatarInitial, { color: theme.cyan }]}>
-                {(student.name || "S").charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            {student.profile_photo_base64 ? (
+              <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: theme.cyanGlow }} />
+            ) : (
+              <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+                <MaterialCommunityIcons name="account" size={21} color={theme.cyan} />
+              </View>
+            )}
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
               <Text style={[styles.rosterItemName, { color: theme.text }]}>
                 {student.name || "Student Record"}
@@ -2696,7 +2689,9 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
             Faculty Directory
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            {teachers.length} academic instructors
+            {search.trim()
+              ? `${visible.length} matching instructor${visible.length === 1 ? "" : "s"}`
+              : `${visible.length} academic instructor${visible.length === 1 ? "" : "s"}`}
           </Text>
         </View>
         <Pressable
@@ -5929,8 +5924,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const absentCount = Object.values(statusMap).filter(
     (s) => s === "ABSENT",
   ).length;
-  const ratio = items.length
-    ? Math.round((presentCount / items.length) * 100)
+  const shownPresentCount = filteredItems.filter(
+    (student) => statusMap[student.student_id] === "PRESENT",
+  ).length;
+  const shownAbsentCount = filteredItems.length - shownPresentCount;
+  const shownRatio = filteredItems.length
+    ? Math.round((shownPresentCount / filteredItems.length) * 100)
     : 0;
 
   return (
@@ -5960,11 +5959,11 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           { backgroundColor: theme.cardGlass, borderColor: theme.border },
         ]}
       >
-        <Text style={[styles.tallyRatioSubText, { color: theme.cyan, marginBottom: 8 }]}>Selected session roster: {items.length} students</Text>
+        <Text style={[styles.tallyRatioSubText, { color: theme.cyan, marginBottom: 8 }]}>Showing {filteredItems.length} of {items.length} students in this session</Text>
         <View style={styles.tallyStatsRow}>
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
-              {presentCount}
+              {shownPresentCount}
             </Text>
             <Text style={[styles.tallyMeta, { color: theme.muted }]}>
               Present
@@ -5975,7 +5974,7 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           />
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.rose }]}>
-              {absentCount}
+              {shownAbsentCount}
             </Text>
             <Text style={[styles.tallyMeta, { color: theme.muted }]}>
               Absent
@@ -5986,7 +5985,7 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           />
           <View style={styles.tallyStatCol}>
             <Text style={[styles.tallyDigit, { color: theme.text }]}>
-              {items.length}
+              {filteredItems.length}
             </Text>
             <Text style={[styles.tallyMeta, { color: theme.muted }]}>
               Total
@@ -6004,12 +6003,12 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
           <View
             style={[
               styles.tallyProgressBarFill,
-              { width: `${ratio}%`, backgroundColor: theme.emerald },
+              { width: `${shownRatio}%`, backgroundColor: theme.emerald },
             ]}
           />
         </View>
         <Text style={[styles.tallyRatioSubText, { color: theme.muted }]}>
-          {ratio}% Recorded Present
+          {shownRatio}% Recorded Present
         </Text>
       </View>
 
@@ -6086,25 +6085,13 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
               { backgroundColor: theme.cardGlass, borderColor: theme.border },
             ]}
           >
-            <View
-              style={[
-                styles.rosterAvatarBox,
-                {
-                  backgroundColor: isPresent
-                    ? theme.emeraldGlow
-                    : theme.roseGlow,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.rosterAvatarInitial,
-                  { color: isPresent ? theme.emerald : theme.rose },
-                ]}
-              >
-                {(student.name || "S").charAt(0).toUpperCase()}
-              </Text>
-            </View>
+            {student.profile_photo_base64 ? (
+              <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow }} />
+            ) : (
+              <View style={[styles.rosterAvatarBox, { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow }]}>
+                <MaterialCommunityIcons name="account" size={21} color={isPresent ? theme.emerald : theme.rose} />
+              </View>
+            )}
 
             <View style={{ flex: 1, paddingHorizontal: 12 }}>
               <Text style={[styles.checkListName, { color: theme.text }]}>
@@ -6224,7 +6211,7 @@ function AdminAttendanceView() {
             Attendance Audit
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Verified attendance records by date
+            {dayLogs.length} attendance record{dayLogs.length === 1 ? "" : "s"} for the selected date
           </Text>
         </View>
       </View>
@@ -6648,6 +6635,40 @@ function AttendanceHistoryView({ role }: { role: Role }) {
     ]);
   };
 
+  const exportSessionPdf = async () => {
+    if (!selectedSession?.session_id) return;
+    setSessionActionBusy(true);
+    try {
+      const endpoint = `/attendance/${selectedSession.session_id}/pdf`;
+      if (Platform.OS === "web") {
+        const response = await http.get(endpoint, { responseType: "blob" });
+        const url = URL.createObjectURL(response.data);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `attendance-${selectedSession.session_id}.pdf`;
+        link.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      const path = `${FileSystem.cacheDirectory}attendance-${selectedSession.session_id}.pdf`;
+      const authorization = http.defaults.headers.common.Authorization;
+      const download = await FileSystem.downloadAsync(`${API}${endpoint}`, path, {
+        headers: typeof authorization === "string" ? { Authorization: authorization } : {},
+      });
+      if (download.status >= 400) throw new Error("The PDF could not be downloaded.");
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, { mimeType: "application/pdf", dialogTitle: "Attendance PDF" });
+      } else {
+        Alert.alert("PDF saved", `Saved attendance PDF to ${path}`);
+      }
+    } catch (e: any) {
+      Alert.alert("PDF export failed", apiErrorMessage(e, "Could not generate the attendance PDF."));
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
   useEffect(() => {
     setBusy(true);
     refreshSessions()
@@ -6668,7 +6689,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
             Session History
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Review past attendance events
+            {sessions.length} session{sessions.length === 1 ? "" : "s"} in the selected month
           </Text>
         </View>
       </View>
@@ -6776,6 +6797,13 @@ function AttendanceHistoryView({ role }: { role: Role }) {
             </View>
             {sessionBusy ? <ActivityIndicator color={theme.cyan} style={{ margin: 24 }} /> : (
               <ScrollView>
+                {(role === "teacher" || role === "admin") && (
+                  <>
+                    <Pressable disabled={sessionActionBusy} onPress={exportSessionPdf} style={[styles.modalDismissBtn, { backgroundColor: theme.emerald, marginBottom: 8, opacity: sessionActionBusy ? 0.6 : 1 }]}>
+                      {sessionActionBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>EXPORT SESSION PDF</Text>}
+                    </Pressable>
+                  </>
+                )}
                 {role === "teacher" && (
                   <>
                     <Pressable onPress={() => setEditingSession(selectedSession)} style={[styles.modalDismissBtn, { backgroundColor: theme.purple, marginBottom: 8 }]}>
@@ -6793,6 +6821,13 @@ function AttendanceHistoryView({ role }: { role: Role }) {
                 )}
                 {sessionStudents.map((student) => (
                   <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
+                    {student.profile_photo_base64 ? (
+                      <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 42, height: 42, borderRadius: 21, marginRight: 10, backgroundColor: theme.card }} />
+                    ) : (
+                      <View style={{ width: 42, height: 42, borderRadius: 21, marginRight: 10, backgroundColor: theme.card, alignItems: "center", justifyContent: "center" }}>
+                        <MaterialCommunityIcons name="account" size={20} color={theme.muted} />
+                      </View>
+                    )}
                     <Pressable style={{ flex: 1 }} onPress={() => setSelectedStudent(student)}>
                       <Text style={[styles.rosterItemName, { color: theme.text }]}>{student.name}</Text>
                       <Text style={[styles.rosterItemId, { color: theme.muted }]}>{student.student_id}</Text>
@@ -6833,16 +6868,9 @@ function ReportsView() {
   const [busy, setBusy] = useState(true);
 
   useEffect(() => {
-    const month =
-      period === "This Month"
-        ? new Date().toISOString().slice(0, 7)
-        : undefined;
     setBusy(true);
     http
-      .get(
-        "/teacher/attendance/report",
-        month ? { params: { month } } : undefined,
-      )
+      .get("/teacher/attendance/report")
       .then((r) =>
         setRecords(Array.isArray(r.data?.records) ? r.data.records : []),
       )
@@ -6850,10 +6878,25 @@ function ReportsView() {
       .finally(() => setBusy(false));
   }, [period]);
 
+  const filteredRecords = useMemo(() => {
+    if (period === "All Time") return records;
+    const now = new Date();
+    if (period === "This Month") {
+      return records.filter((record) => {
+        const value = new Date(record.event_date || record.timestamp);
+        return value.getFullYear() === now.getFullYear() && value.getMonth() === now.getMonth();
+      });
+    }
+    const weekStart = new Date(now);
+    const daysSinceMonday = (now.getDay() + 6) % 7;
+    weekStart.setDate(now.getDate() - daysSinceMonday);
+    weekStart.setHours(0, 0, 0, 0);
+    return records.filter((record) => new Date(record.event_date || record.timestamp) >= weekStart);
+  }, [period, records]);
   const sessions = Array.from(
-    new Map(records.map((x) => [x.session_id, x])).values(),
+    new Map(filteredRecords.map((x) => [x.session_id, x])).values(),
   );
-  const uniqueStudents = new Set(records.map((x) => x.student_id)).size;
+  const uniqueStudents = new Set(filteredRecords.map((x) => x.student_id)).size;
 
   return (
     <View style={styles.screenLayout}>
@@ -6863,7 +6906,7 @@ function ReportsView() {
             Attendance Reports
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Departmental attendance overview
+            {filteredRecords.length} attendance record{filteredRecords.length === 1 ? "" : "s"} in {period.toLowerCase()}
           </Text>
         </View>
       </View>
@@ -6903,7 +6946,7 @@ function ReportsView() {
       <View style={styles.kpiGridMatrix}>
         <HoloMetricCard
           label="Total Records"
-          value={String(records.length)}
+          value={String(filteredRecords.length)}
           delta="Verified attendances"
           icon="clipboard-text-outline"
           color={theme.cyan}
@@ -6995,7 +7038,7 @@ function ReportsView() {
                 </Text>
               </View>
               <HoloStatusPill
-                label={`${records.filter((r) => r.session_id === sess.session_id).length} logs`}
+                label={`${filteredRecords.filter((r) => r.session_id === sess.session_id).length} logs`}
                 tone="info"
               />
             </View>
@@ -7224,7 +7267,9 @@ function AcademicHierarchyView() {
             Academic Structure
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Schools, Faculties, and Departments
+            {search.trim()
+              ? `${visible.length} matching academic section${visible.length === 1 ? "" : "s"}`
+              : `${visible.length} academic section${visible.length === 1 ? "" : "s"}`}
           </Text>
         </View>
       </View>
@@ -7803,13 +7848,22 @@ function StudentEditModal({
     }
     setBusy(true);
     try {
-      const body = new FormData();
-      Object.entries(form).forEach(([key, value]) =>
-        body.append(key, key === "date_of_birth" ? toApiDate(String(value ?? "")) : String(value ?? "")),
+      const payload = Object.fromEntries(
+        Object.entries(form).map(([key, value]) => [
+          key,
+          key === "date_of_birth" ? toApiDate(String(value ?? "")) : String(value ?? ""),
+        ]),
       );
-      const response = await http.patch(endpoint, body, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      // Administrator updates use JSON so every replacement field reaches the
+      // API consistently. The student's own legacy profile endpoint still
+      // accepts multipart form data.
+      const response = endpoint.startsWith("/admin/students/")
+        ? await http.patch(endpoint, payload)
+        : await (() => {
+            const body = new FormData();
+            Object.entries(payload).forEach(([key, value]) => body.append(key, String(value)));
+            return http.patch(endpoint, body, { headers: { "Content-Type": "multipart/form-data" } });
+          })();
       onSaved(response.data);
       Alert.alert("Details updated", "The student profile was saved successfully.");
     } catch (e: any) {

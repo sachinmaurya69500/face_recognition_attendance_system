@@ -18,7 +18,13 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from app.database import get_db_connection
 from app.cache import cache_available, cache_delete, cache_get, cache_set
 from app.models import face_model
@@ -141,6 +147,19 @@ class SessionUpdateRequest(BaseModel):
     starts_at: str | None = None
     ends_at: str | None = None
     notes: str | None = None
+
+class StudentUpdateRequest(BaseModel):
+    """Editable profile fields sent by the administrator as JSON."""
+    name: str
+    email: str = ""
+    phone: str = ""
+    date_of_birth: str = ""
+    program: str = ""
+    department: str = ""
+    semester: str = ""
+    gpa: str = ""
+    enrollment_year: str = ""
+    roll_number: str = ""
 
 class NotificationRequest(BaseModel):
     user_id: int
@@ -827,15 +846,18 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
                 cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
                     s.program, s.semester, s.department, s.gpa, s.enrollment_year,
                     s.roll_number, s.section_id, s.created_at,
+                    encode(s.profile_photo, 'base64') AS profile_photo_base64,
                     sec.school AS academic_school, sec.faculty AS academic_faculty,
                     sec.department AS academic_department, sec.semester AS academic_semester,
                     sec.section AS academic_section
                     FROM students s LEFT JOIN academic_sections sec ON sec.id=s.section_id
                     ORDER BY s.student_id""")
+                rows = cur.fetchall()
             else:
                 cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
                     s.program, s.semester, s.department, s.gpa, s.enrollment_year,
                     s.roll_number, s.section_id, s.created_at,
+                    encode(s.profile_photo, 'base64') AS profile_photo_base64,
                     sec.school AS academic_school, sec.faculty AS academic_faculty,
                     sec.department AS academic_department, sec.semester AS academic_semester,
                     sec.section AS academic_section
@@ -843,18 +865,10 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
                     JOIN teacher_assignments ta ON ta.section_id=sec.id AND ta.teacher_user_id=%s
                     ORDER BY s.student_id""", (user["sub"],))
                 rows = cur.fetchall()
-                if not rows:
-                    cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
-                        s.program, s.semester, s.department, s.gpa, s.enrollment_year,
-                        s.roll_number, s.section_id, s.created_at,
-                        sec.school AS academic_school, sec.faculty AS academic_faculty,
-                        sec.department AS academic_department, sec.semester AS academic_semester,
-                        sec.section AS academic_section
-                        FROM students s LEFT JOIN academic_sections sec ON sec.id=s.section_id
-                        ORDER BY s.student_id""")
-                    rows = cur.fetchall()
-                return {"students": rows}
-            return {"students": cur.fetchall()}
+            for student in rows:
+                if student.get("profile_photo_base64"):
+                    student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
+            return {"students": rows}
     finally: conn.close()
 
 class AcademicSectionRequest(BaseModel):
@@ -964,7 +978,7 @@ def teacher_attendance_session_detail(session_id: str, user=Depends(require_role
     finally: conn.close()
 
 @app.patch("/teacher/attendance-sessions/{session_id}")
-def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Depends(require_roles("teacher"))):
+def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Depends(require_roles("admin", "teacher"))):
     values = body.model_dump(exclude_none=True)
     if not values:
         raise HTTPException(422, "Provide at least one session field to update")
@@ -977,9 +991,10 @@ def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Dep
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            owner_filter = "AND teacher_id=%s" if user["role"] == "teacher" else ""
             cur.execute(
-                f"UPDATE attendance_sessions SET {assignments} WHERE session_id=%s AND teacher_id=%s RETURNING *",
-                (*values.values(), session_id, user["sub"]),
+                f"UPDATE attendance_sessions SET {assignments} WHERE session_id=%s {owner_filter} RETURNING *",
+                (*values.values(), session_id, *([user["sub"]] if owner_filter else [])),
             )
             updated = cur.fetchone()
             if not updated:
@@ -1081,7 +1096,16 @@ def delete_student(student_id: str, _=Depends(require_roles("admin"))):
     finally: conn.close()
 
 @app.patch("/admin/students/{student_id}")
-def update_student(student_id: str, name: str = Form(...), email: str = Form(""), phone: str = Form(""), date_of_birth: str = Form(""), program: str = Form(""), department: str = Form(""), semester: str = Form(""), gpa: str = Form(""), enrollment_year: str = Form(""), roll_number: str = Form(""), _=Depends(require_roles("admin"))):
+def update_student(student_id: str, body: StudentUpdateRequest, _=Depends(require_roles("admin"))):
+    values = body.model_dump()
+    values = {key: value.strip() if isinstance(value, str) else value for key, value in values.items()}
+    if not values["name"]:
+        raise HTTPException(422, "Student name is required")
+    if values["date_of_birth"]:
+        try:
+            date.fromisoformat(values["date_of_birth"])
+        except ValueError as exc:
+            raise HTTPException(422, "date_of_birth must use YYYY-MM-DD") from exc
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1089,10 +1113,10 @@ def update_student(student_id: str, name: str = Form(...), email: str = Form("")
                          program=NULLIF(%s,''),department=NULLIF(%s,''),semester=NULLIF(%s,''),gpa=NULLIF(%s,''),
                          enrollment_year=NULLIF(%s,''),roll_number=NULLIF(%s,'')
                          WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program,department,semester,gpa,enrollment_year,roll_number""",
-                        (name.strip(), email, phone, date_of_birth, program, department, semester, gpa, enrollment_year, roll_number, student_id))
+                        (values["name"], values["email"], values["phone"], values["date_of_birth"], values["program"], values["department"], values["semester"], values["gpa"], values["enrollment_year"], values["roll_number"], student_id))
             row = cur.fetchone()
             if not row: raise HTTPException(404, "Student not found")
-            cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE student_id=%s", (name.strip(), email, phone, student_id))
+            cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE student_id=%s", (values["name"], values["email"], values["phone"], student_id))
         conn.commit(); return row
     finally: conn.close()
 
@@ -1459,16 +1483,109 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
                 COALESCE(st.semester, sec.semester) AS semester,
                 COALESCE(st.department, sec.department) AS department,
                 st.date_of_birth, st.roll_number,
+                encode(st.profile_photo, 'base64') AS profile_photo_base64,
                 a.confidence_score, a.timestamp,
                 COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
                 a.is_manual_override
                 FROM attendance_sessions sess
-                JOIN students st ON st.section_id=sess.section_id
+                JOIN students st ON st.section_id = ANY(%s)
                 LEFT JOIN academic_sections sec ON sec.id=st.section_id
                 LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
-                WHERE sess.session_id=%s AND st.section_id = ANY(%s) ORDER BY st.name""", (session_id, section_ids))
-            return {"session_id": session_id, "students": cur.fetchall()}
+                WHERE sess.session_id=%s ORDER BY st.name""", (section_ids, session_id))
+            students = cur.fetchall()
+            for student in students:
+                if student.get("profile_photo_base64"):
+                    student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
+            return {"session_id": session_id, "students": students}
     finally: conn.close()
+
+@app.get("/attendance/{session_id}/pdf")
+def export_session_attendance_pdf(session_id: str, user=Depends(require_roles("admin", "teacher"))):
+    """Generate the current session roster as a printable PDF, including face photos."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            owner_filter = "AND sess.teacher_id=%s" if user["role"] == "teacher" else ""
+            cur.execute(
+                f"""SELECT sess.* FROM attendance_sessions sess
+                    WHERE sess.session_id=%s {owner_filter}""",
+                (session_id, *([user["sub"]] if owner_filter else [])),
+            )
+            session = cur.fetchone()
+            if not session:
+                raise HTTPException(404, "Attendance session not found")
+            section_ids = session_section_ids(session)
+            cur.execute("""SELECT st.student_id, st.name, st.roll_number, st.profile_photo,
+                    COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+                    a.is_manual_override
+                FROM students st
+                LEFT JOIN attendance_logs a ON a.session_id=%s AND a.student_id=st.student_id
+                WHERE st.section_id = ANY(%s) ORDER BY st.name""", (session_id, section_ids))
+            students = cur.fetchall()
+    finally:
+        conn.close()
+
+    output = io.BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=A4, rightMargin=12 * mm, leftMargin=12 * mm,
+        topMargin=12 * mm, bottomMargin=12 * mm,
+        title=f"Attendance - {session_id}", author="Pratyaksh Attendance",
+    )
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("Attendance Session Record", styles["Title"]),
+        Spacer(1, 3 * mm),
+        Paragraph(f"<b>{session['title']}</b> &nbsp; | &nbsp; {session['course']}", styles["Heading3"]),
+        Paragraph(
+            f"Session ID: {session_id} &nbsp; | &nbsp; Date: {session['event_date']} &nbsp; | &nbsp; "
+            f"Time: {session['starts_at']} - {session['ends_at']} &nbsp; | &nbsp; Room: {session.get('room') or 'Not set'}",
+            styles["BodyText"],
+        ),
+        Spacer(1, 5 * mm),
+    ]
+    rows = [["#", "Photo", "Student", "Roll no.", "Attendance", "Source"]]
+    for index, student in enumerate(students, 1):
+        photo_cell = Paragraph("No photo", styles["BodyText"])
+        photo_bytes = student.get("profile_photo")
+        if photo_bytes:
+            try:
+                image = Image.open(io.BytesIO(bytes(photo_bytes))).convert("RGB")
+                image.thumbnail((16 * mm, 16 * mm))
+                rendered = io.BytesIO()
+                image.save(rendered, format="JPEG", quality=85)
+                rendered.seek(0)
+                photo_cell = PdfImage(rendered, width=16 * mm, height=16 * mm)
+            except (OSError, ValueError, UnidentifiedImageError):
+                pass
+        status = str(student["status"] or "ABSENT").upper()
+        rows.append([
+            str(index), photo_cell,
+            Paragraph(f"<b>{student['name']}</b><br/>{student['student_id']}", styles["BodyText"]),
+            student.get("roll_number") or "—", status,
+            "Manual" if student.get("is_manual_override") else "Face / default",
+        ])
+    table = Table(rows, colWidths=[8 * mm, 21 * mm, 57 * mm, 25 * mm, 26 * mm, 30 * mm], repeatRows=1, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A5F")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#AAB7C4")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7FA")]),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(table)
+    present_count = sum(str(student["status"] or "").upper() == "PRESENT" for student in students)
+    story.extend([Spacer(1, 4 * mm), Paragraph(
+        f"Total students: {len(students)} &nbsp; | &nbsp; Present: {present_count} &nbsp; | &nbsp; Absent: {len(students) - present_count}",
+        styles["BodyText"],
+    )])
+    document.build(story)
+    filename = f"attendance-{session_id}.pdf"
+    return Response(content=output.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 @app.patch("/attendance/{session_id}/{student_id}")
 def update_session_attendance(session_id: str, student_id: str, body: dict, user=Depends(require_roles("admin", "teacher"))):
