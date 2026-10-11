@@ -158,7 +158,7 @@ const ThemeContext = createContext<{
 
 export const useAppTheme = () => useContext(ThemeContext);
 
-const DEFAULT_TUNNEL_URL = "https://cair-ms-7e06.tail49e3b1.ts.net";
+const DEFAULT_TUNNEL_URL = "http://localhost:8080";
 
 export function resolveApiBaseUrl(): string {
   const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || DEFAULT_TUNNEL_URL).replace(/\/+$/, "");
@@ -965,7 +965,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             <View style={{ gap: 8, marginTop: 6 }}>
               {[
                 {
-                  label: "Tailscale Tunnel (Remote)",
+                  label: "Tailscale Funnel (Remote)",
                   url: "https://cair-ms-7e06.tail49e3b1.ts.net",
                 },
                 {
