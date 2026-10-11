@@ -1106,17 +1106,23 @@ def update_student(student_id: str, body: StudentUpdateRequest, _=Depends(requir
             date.fromisoformat(values["date_of_birth"])
         except ValueError as exc:
             raise HTTPException(422, "date_of_birth must use YYYY-MM-DD") from exc
+    # Use typed NULL parameters for cleared fields. Passing empty strings into
+    # NULLIF expressions can leave PostgreSQL to infer the wrong type (most
+    # notably for the DATE column), causing the whole transaction to fail.
+    for key in ("email", "phone", "date_of_birth", "program", "department", "semester", "gpa", "enrollment_year", "roll_number"):
+        if values[key] == "":
+            values[key] = None
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""UPDATE students SET name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,''),date_of_birth=NULLIF(%s,''),
-                         program=NULLIF(%s,''),department=NULLIF(%s,''),semester=NULLIF(%s,''),gpa=NULLIF(%s,''),
-                         enrollment_year=NULLIF(%s,''),roll_number=NULLIF(%s,'')
+            cur.execute("""UPDATE students SET name=%s,email=%s,phone=%s,date_of_birth=%s,
+                         program=%s,department=%s,semester=%s,gpa=%s,
+                         enrollment_year=%s,roll_number=%s
                          WHERE student_id=%s RETURNING student_id,name,email,phone,date_of_birth,program,department,semester,gpa,enrollment_year,roll_number""",
                         (values["name"], values["email"], values["phone"], values["date_of_birth"], values["program"], values["department"], values["semester"], values["gpa"], values["enrollment_year"], values["roll_number"], student_id))
             row = cur.fetchone()
             if not row: raise HTTPException(404, "Student not found")
-            cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE student_id=%s", (values["name"], values["email"], values["phone"], student_id))
+            cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE student_id=%s", (values["name"], values["email"], values["phone"], student_id))
         conn.commit(); return row
     finally: conn.close()
 

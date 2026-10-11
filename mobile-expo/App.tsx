@@ -6651,12 +6651,17 @@ function AttendanceHistoryView({ role }: { role: Role }) {
         return;
       }
 
-      const path = `${FileSystem.cacheDirectory}attendance-${selectedSession.session_id}.pdf`;
+      const outputDirectory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+      if (!outputDirectory) throw new Error("Device storage is unavailable.");
+      const path = `${outputDirectory}attendance-${selectedSession.session_id}.pdf`;
       const authorization = http.defaults.headers.common.Authorization;
       const download = await FileSystem.downloadAsync(`${API}${endpoint}`, path, {
         headers: typeof authorization === "string" ? { Authorization: authorization } : {},
       });
-      if (download.status >= 400) throw new Error("The PDF could not be downloaded.");
+      const contentType = String(download.headers?.["Content-Type"] || download.headers?.["content-type"] || "").toLowerCase();
+      if (download.status >= 400 || !contentType.includes("application/pdf")) {
+        throw new Error("The server did not return a valid PDF. Restart the backend after rebuilding its dependencies.");
+      }
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(path, { mimeType: "application/pdf", dialogTitle: "Attendance PDF" });
       } else {
