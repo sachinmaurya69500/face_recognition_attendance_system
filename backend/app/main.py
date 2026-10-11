@@ -127,6 +127,7 @@ class AttendanceSessionRequest(BaseModel):
     ends_at: str
     notes: str = ""
     academic_scope: dict[str, list[str]] = {}
+    section_ids: list[int] = []
 
 class SessionStatusRequest(BaseModel):
     status: str
@@ -186,6 +187,15 @@ def require_roles(*roles):
         if user["role"] not in roles: raise HTTPException(403, "Insufficient permissions")
         return user
     return dependency
+
+def session_section_ids(session: dict) -> list[int]:
+    """Return the primary and any additional sections attached to a session."""
+    scope = session.get("academic_scope") or {}
+    if isinstance(scope, str):
+        try: scope = json.loads(scope)
+        except json.JSONDecodeError: scope = {}
+    raw_ids = [session.get("section_id"), *(scope.get("section_ids", []) if isinstance(scope, dict) else [])]
+    return list(dict.fromkeys(int(section_id) for section_id in raw_ids if section_id is not None))
 
 def ensure_auth_tables():
     conn = get_db_connection()
@@ -890,22 +900,25 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
     if not body.title.strip() or not body.course.strip() or not body.school.strip() or not body.program.strip() or not body.semester.strip() or body.section_id is None:
         raise HTTPException(422, "Title, course, school, program, semester, and section are required")
     session_id = f"ATT-{secrets.token_hex(6).upper()}"
+    section_ids = list(dict.fromkeys(body.section_ids or [body.section_id]))
+    if body.section_id not in section_ids:
+        section_ids.insert(0, body.section_id)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
-                WHERE ta.teacher_user_id=%s AND sec.id=%s AND sec.school=%s AND sec.faculty=%s
-                  AND sec.department=%s AND sec.program=%s AND sec.semester=%s LIMIT 1""",
-                (user["sub"], body.section_id, body.school.strip(), body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip()))
-            assigned = cur.fetchone()
-            if not assigned: raise HTTPException(403, "You are not assigned to the selected academic scope")
-            section_id = assigned["id"]
+                WHERE ta.teacher_user_id=%s AND sec.id = ANY(%s)""", (user["sub"], section_ids))
+            assigned_ids = {row["id"] for row in cur.fetchall()}
+            if set(section_ids) != assigned_ids:
+                raise HTTPException(403, "You are not assigned to every selected program and semester")
+            section_id = body.section_id
+            scope = {**body.academic_scope, "section_ids": section_ids}
             cur.execute("""INSERT INTO attendance_sessions
                 (session_id,teacher_id,title,course,school,faculty,department,program,semester,section_id,room,event_date,starts_at,ends_at,notes,academic_scope)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *""", (session_id, user["sub"], body.title.strip(), body.course.strip(), body.school.strip(),
                 body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip(), section_id,
-                body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip(), json.dumps(body.academic_scope)))
+                body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip(), json.dumps(scope)))
             result = cur.fetchone()
         conn.commit()
         cache_delete("academic:sections")
@@ -1278,7 +1291,7 @@ async def student_register_face(
 @app.post("/process-group-attendance")
 async def process_group_attendance(
     session_id: str = Form(...), section_id: int = Form(...), program: str = Form(...), semester: str = Form(...),
-    idempotency_key: str | None = Form(None), files: list[UploadFile] = File(default=[]), file: UploadFile | None = File(default=None),
+    section_ids: str | None = Form(None), idempotency_key: str | None = Form(None), files: list[UploadFile] = File(default=[]), file: UploadFile | None = File(default=None),
     user=Depends(require_roles("teacher")),
 ):
     """Process one bounded, retry-safe photo batch without changing its parent session's scope."""
@@ -1290,6 +1303,12 @@ async def process_group_attendance(
         raise HTTPException(422, f"Upload between 1 and {MAX_BATCH_FILES} photographs per batch")
     if any(upload.content_type and upload.content_type.lower() not in {"image/jpeg", "image/jpg", "image/png", "image/webp"} for upload in uploads):
         raise HTTPException(422, "Only JPEG, PNG, and WebP photographs are supported")
+    try:
+        target_section_ids = list(dict.fromkeys(int(value) for value in json.loads(section_ids))) if section_ids else [section_id]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(422, "section_ids must be a JSON list of section IDs")
+    if not target_section_ids:
+        raise HTTPException(422, "Select at least one academic section")
 
     # Pass canonical UUID text to psycopg2.  PostgreSQL coerces it to the UUID
     # column type, and this does not depend on the optional UUID adapter being
@@ -1298,16 +1317,17 @@ async def process_group_attendance(
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT status FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s FOR UPDATE", (session_id, user["sub"]))
+            cur.execute("SELECT status,section_id,academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s FOR UPDATE", (session_id, user["sub"]))
             session = cur.fetchone()
             if not session:
                 raise HTTPException(404, "Attendance session not found or not owned by this teacher")
             if session["status"] not in {"DRAFT", "ACTIVE"}:
                 raise HTTPException(409, f"Session is {session['status'].lower()} and cannot accept photographs")
-            cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
-                WHERE ta.teacher_user_id=%s AND sec.id=%s AND sec.program=%s AND sec.semester=%s""", (user["sub"], section_id, program, semester))
-            if not cur.fetchone():
-                raise HTTPException(403, "You are not assigned to the selected program and semester")
+            if not set(target_section_ids).issubset(session_section_ids(session)):
+                raise HTTPException(403, "Selected sections are outside this attendance session")
+            cur.execute("SELECT section_id FROM teacher_assignments WHERE teacher_user_id=%s AND section_id = ANY(%s)", (user["sub"], target_section_ids))
+            if {row["section_id"] for row in cur.fetchall()} != set(target_section_ids):
+                raise HTTPException(403, "You are not assigned to every selected program and semester")
             if idempotency_key:
                 cur.execute("SELECT * FROM attendance_upload_batches WHERE session_id=%s AND idempotency_key=%s", (session_id, idempotency_key))
                 previous = cur.fetchone()
@@ -1317,9 +1337,9 @@ async def process_group_attendance(
                                 "recognized_count": previous["recognized_count"], "duplicate_count": previous["duplicate_count"], "unknown_faces": previous["unknown_faces"], "failed_files": previous["failed_files"]}
                     raise HTTPException(409, "This upload batch is already processing")
             cur.execute("""INSERT INTO attendance_upload_batches (id,session_id,submitted_by,section_id,program,semester,idempotency_key,total_files)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (batch_id, session_id, user["sub"], section_id, program, semester, idempotency_key, len(uploads)))
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (batch_id, session_id, user["sub"], target_section_ids[0], program, semester, idempotency_key, len(uploads)))
             cur.execute("UPDATE attendance_sessions SET status='ACTIVE' WHERE session_id=%s", (session_id,))
-            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id) WHERE s.section_id=%s", (section_id,))
+            cur.execute("SELECT s.student_id, s.name, e.embedding FROM students s JOIN student_embeddings e USING (student_id) WHERE s.section_id = ANY(%s)", (target_section_ids,))
             roster = cur.fetchall()
         conn.commit()
     finally:
@@ -1394,14 +1414,15 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT section_id FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (body.session_id, user["sub"]))
+            cur.execute("SELECT section_id,academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (body.session_id, user["sub"]))
             session = cur.fetchone()
             if not session:
                 raise HTTPException(404, "Attendance session not found or not owned by this teacher")
             for row in body.records:
                 student_id, status = row.get("student_id"), row.get("status")
-                cur.execute("SELECT 1 FROM students WHERE student_id=%s AND section_id=%s", (student_id, session["section_id"]))
-                if not cur.fetchone():
+                cur.execute("SELECT section_id FROM students WHERE student_id=%s", (student_id,))
+                student = cur.fetchone()
+                if not student or student["section_id"] not in session_section_ids(session):
                     raise HTTPException(403, "Student is outside this attendance session's selected hierarchy")
                 cur.execute("SELECT initial_attendance_status, recognition_status, confidence_score FROM attendance_logs WHERE student_id=%s AND session_id=%s", (student_id, body.session_id))
                 existing = cur.fetchone()
@@ -1431,6 +1452,9 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
             if user["role"] == "teacher":
                 cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
                 if not cur.fetchone(): raise HTTPException(404, "Attendance session not found")
+            cur.execute("SELECT section_id,academic_scope FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            session = cur.fetchone()
+            section_ids = session_section_ids(session)
             cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program,
                 COALESCE(st.semester, sec.semester) AS semester,
                 COALESCE(st.department, sec.department) AS department,
@@ -1442,7 +1466,7 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
                 JOIN students st ON st.section_id=sess.section_id
                 LEFT JOIN academic_sections sec ON sec.id=st.section_id
                 LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
-                WHERE sess.session_id=%s ORDER BY st.name""", (session_id,))
+                WHERE sess.session_id=%s AND st.section_id = ANY(%s) ORDER BY st.name""", (session_id, section_ids))
             return {"session_id": session_id, "students": cur.fetchall()}
     finally: conn.close()
 
@@ -1454,7 +1478,7 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT section_id, teacher_id, status FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            cur.execute("SELECT section_id, academic_scope, teacher_id, status FROM attendance_sessions WHERE session_id=%s", (session_id,))
             session = cur.fetchone()
             if not session:
                 raise HTTPException(404, "Attendance session not found")
@@ -1462,8 +1486,9 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
                 raise HTTPException(404, "Attendance session not found")
             if session["status"] == "COMPLETED" and user["role"] == "teacher":
                 raise HTTPException(409, "Reopen the session before changing attendance")
-            cur.execute("SELECT 1 FROM students WHERE student_id=%s AND section_id=%s", (student_id, session["section_id"]))
-            if not cur.fetchone():
+            cur.execute("SELECT section_id FROM students WHERE student_id=%s", (student_id,))
+            student = cur.fetchone()
+            if not student or student["section_id"] not in session_section_ids(session):
                 raise HTTPException(403, "Student is outside this attendance session's selected hierarchy")
             cur.execute("SELECT initial_attendance_status, COALESCE(final_attendance_status, initial_attendance_status, 'ABSENT') AS current FROM attendance_logs WHERE session_id=%s AND student_id=%s", (session_id, student_id))
             previous = cur.fetchone()

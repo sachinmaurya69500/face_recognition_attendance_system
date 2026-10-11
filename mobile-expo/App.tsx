@@ -53,6 +53,22 @@ const STATUS_BAR_HEIGHT =
 const DEFAULT_CAMERA_FACING: "front" | "back" =
   Platform.OS === "android" && !Constants.isDevice ? "back" : "front";
 
+// FastAPI returns validation errors as an array in `detail`. React Native's
+// Android Alert bridge only accepts a string message, so normalize API errors
+// before they cross the native boundary.
+function apiErrorMessage(error: any, fallback: string): string {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => typeof item === "string" ? item : item?.msg || item?.message)
+      .filter(Boolean);
+    return messages.length ? messages.join("\n") : fallback;
+  }
+  if (detail && typeof detail === "object") return detail.msg || detail.message || fallback;
+  return typeof error?.message === "string" ? error.message : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // DUAL-ENGINE THEME PALETTES (MIDNIGHT COSMOS DARK  +  CLOUD ATLAS LIGHT)
 // ---------------------------------------------------------------------------
@@ -4928,6 +4944,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const [photoCount, setPhotoCount] = useState(0);
   const [scope, setScope] = useState<any>(null);
   const [batchScope, setBatchScope] = useState<any>(null);
+  const [attendanceMode, setAttendanceMode] = useState<"BATCH" | "MULTI">("BATCH");
+  const [multiSectionIds, setMultiSectionIds] = useState<number[]>([]);
+  const [multiScope, setMultiScope] = useState<any>(null);
+  const [academicSections, setAcademicSections] = useState<any[]>([]);
   const [selectedPhotos, setSelectedPhotos] = useState<any[]>([]);
   const [batchRequestKey, setBatchRequestKey] = useState<string | null>(null);
 
@@ -4964,11 +4984,20 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     restoreActiveSession();
   }, []);
 
+  useEffect(() => {
+    loadAcademicSections().then(setAcademicSections).catch(() => setAcademicSections([]));
+  }, []);
+
+  const multiSections = multiSectionIds
+    .map((id) => academicSections.find((section) => section.id === id))
+    .filter(Boolean);
+
   const createSession = async () => {
-    if (!batchScope?.id || !form.title.trim() || !form.course.trim()) {
+    const primaryScope = attendanceMode === "MULTI" ? multiSections[0] : batchScope;
+    if (!primaryScope?.id || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
-        "Please select an academic section and specify course and title.",
+        "Please select at least one academic section and specify course and title.",
       );
       return;
     }
@@ -4977,13 +5006,16 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     try {
       const res = await http.post("/teacher/attendance-sessions", {
         ...form,
-        school: batchScope.school,
-        faculty: batchScope.faculty,
-        department: batchScope.department,
-        program: batchScope.program,
-        semester: batchScope.semester,
-        academic_scope: { school: [batchScope.school], faculty: [batchScope.faculty], department: [batchScope.department], program: [batchScope.program], semester: [batchScope.semester] },
-        section_id: batchScope.id,
+        school: primaryScope.school,
+        faculty: primaryScope.faculty,
+        department: primaryScope.department,
+        program: primaryScope.program,
+        semester: primaryScope.semester,
+        academic_scope: attendanceMode === "MULTI"
+          ? (multiScope || {})
+          : { school: [primaryScope.school], faculty: [primaryScope.faculty], department: [primaryScope.department], program: [primaryScope.program], semester: [primaryScope.semester] },
+        section_id: primaryScope.id,
+        section_ids: attendanceMode === "MULTI" ? multiSectionIds : [primaryScope.id],
       });
       const session = { ...res.data, session_id: res.data.session_id };
       setScope(session);
@@ -4995,7 +5027,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     } catch (e: any) {
       Alert.alert(
         "Error",
-        e?.response?.data?.detail || "Could not initialize session.",
+        apiErrorMessage(e, "Could not initialize session."),
       );
     } finally {
       setBusy(false);
@@ -5007,7 +5039,11 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       Alert.alert("No Session", "Initialize session details first.");
       return;
     }
-    if (!batchScope?.id || !batchScope?.program || !batchScope?.semester) {
+    const savedSectionIds = Array.isArray(scope?.academic_scope?.section_ids) ? scope.academic_scope.section_ids : [];
+    const targetSectionIds = attendanceMode === "MULTI"
+      ? (savedSectionIds.length ? savedSectionIds : multiSectionIds)
+      : (batchScope?.id ? [batchScope.id] : []);
+    if (!targetSectionIds.length || (attendanceMode === "BATCH" && (!batchScope?.program || !batchScope?.semester))) {
       Alert.alert("Select Batch Context", "Select a program and semester for this photo batch.");
       return;
     }
@@ -5021,9 +5057,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       const requestKey = batchRequestKey || `${scope.session_id}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       if (!batchRequestKey) setBatchRequestKey(requestKey);
       data.append("session_id", scope.session_id);
-      data.append("section_id", String(batchScope.id));
-      data.append("program", batchScope.program);
-      data.append("semester", batchScope.semester);
+      data.append("section_id", String(targetSectionIds[0]));
+      data.append("section_ids", JSON.stringify(targetSectionIds));
+      data.append("program", attendanceMode === "MULTI" ? "Multiple programs" : batchScope.program);
+      data.append("semester", attendanceMode === "MULTI" ? "Multiple semesters" : batchScope.semester);
       data.append("idempotency_key", requestKey);
       selectedPhotos.forEach((asset, index) => data.append("files", {
         uri: asset.uri,
@@ -5063,8 +5100,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     } catch (e: any) {
       Alert.alert(
         "Processing Failed",
-        e?.response?.data?.detail ||
-          "Could not process classroom photo. Please retry.",
+        apiErrorMessage(e, "Could not process classroom photo. Please retry."),
       );
     } finally {
       setBusy(false);
@@ -5104,7 +5140,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
               setPhotoCount(0);
               Alert.alert("Session Deleted", "The attendance session and its records were removed.");
             } catch (e: any) {
-              Alert.alert("Delete Failed", e?.response?.data?.detail || "Could not delete the session.");
+              Alert.alert("Delete Failed", apiErrorMessage(e, "Could not delete the session."));
             } finally {
               setBusy(false);
             }
@@ -5177,11 +5213,26 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        <AcademicCascade
-          onChange={(selection, matchedSection) => {
-            if (matchedSection && selection.program && selection.semester) setBatchScope(matchedSection);
-          }}
-        />
+        <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 14 }]}>ATTENDANCE SCOPE</Text>
+        <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+          {(["BATCH", "MULTI"] as const).map((mode) => (
+            <Pressable key={mode} onPress={() => setAttendanceMode(mode)} style={[styles.filterSegmentBtn, { flex: 1, borderWidth: 1, borderColor: attendanceMode === mode ? theme.cyan : theme.border, backgroundColor: attendanceMode === mode ? theme.cyanGlow : theme.bgElevated, paddingVertical: 10, borderRadius: 10, alignItems: "center" }]}>
+              <Text style={[styles.filterSegmentBtnText, { color: attendanceMode === mode ? theme.cyan : theme.muted }]}>{mode === "BATCH" ? "ONE PROGRAM / SEM" : "MULTIPLE PROGRAMS / SEMS"}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {attendanceMode === "BATCH" ? (
+          <AcademicCascade
+            onChange={(selection, matchedSection) => {
+              if (matchedSection && selection.program && selection.semester) setBatchScope(matchedSection);
+            }}
+          />
+        ) : (
+          <>
+            <TeacherHierarchyCheckboxes selected={multiSectionIds} onChange={setMultiSectionIds} onScopeChange={setMultiScope} />
+            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>Select every required program and semester. One group-photo upload will match faces against the combined student roster.</Text>
+          </>
+        )}
 
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
@@ -5258,8 +5309,10 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           <View style={{ flex: 1, paddingLeft: 10 }}>
             <Text style={[styles.sectionSelectedTitle, { color: theme.cyan }]}>
               {scope
-                ? `${scope.department} • ${scope.program}`
-                : "Select an academic section above"}
+                ? `${scope.department} • ${scope.academic_scope?.section_ids?.length > 1 ? `${scope.academic_scope.section_ids.length} selected sections` : `${scope.program} • ${scope.semester}`}`
+                : attendanceMode === "MULTI" && multiSections.length
+                  ? `${multiSections.length} program/semester sections selected`
+                  : "Select an academic section above"}
             </Text>
             <Text
               style={[
@@ -5350,7 +5403,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             You can upload up to 10 group photos for this session. Recognized students are merged automatically.
           </Text>
           {photoCount > 0 && (
-            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>Batch context is saved with each upload; choose a new program and semester above before the next batch.</Text>
+            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>{attendanceMode === "MULTI" ? "This upload uses every selected program and semester in the session." : "Batch context is saved with each upload; choose a new program and semester above before the next batch."}</Text>
           )}
           {photoCount > 0 && (
             <Pressable
@@ -5718,12 +5771,21 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
 
         if (activeId) setSessionId(activeId);
 
-        // Fetch roster from /students
+        // A session roster is the source of truth: it respects both a single
+        // selected program and a multi-program/semester session.
         let roster: any[] = [];
-        try {
-          const res = await http.get("/students");
-          roster = res.data?.students || [];
-        } catch {}
+        if (activeId) {
+          try {
+            const res = await http.get(`/attendance/${activeId}`);
+            roster = res.data?.students || [];
+          } catch {}
+        }
+        if (roster.length === 0) {
+          try {
+            const res = await http.get("/students");
+            roster = res.data?.students || [];
+          } catch {}
+        }
 
         if (roster.length === 0 && recognizedStudents.length > 0) {
           roster = recognizedStudents;
@@ -5834,12 +5896,21 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     } catch (e: any) {
       Alert.alert(
         "Submission Failed",
-        e?.response?.data?.detail || "Could not finalize attendance records.",
+        apiErrorMessage(e, "Could not finalize attendance records."),
       );
     } finally {
       setSubmitting(false);
     }
   };
+
+  const filteredItems = useMemo(
+    () => items.filter((student) => {
+      if (activeFilter === "ALL") return true;
+      const currentStatus = statusMap[student.student_id] || "ABSENT";
+      return currentStatus === activeFilter;
+    }),
+    [items, activeFilter, statusMap],
+  );
 
   if (busy) {
     return (
@@ -5861,15 +5932,6 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const ratio = items.length
     ? Math.round((presentCount / items.length) * 100)
     : 0;
-
-  const filteredItems = useMemo(
-    () => items.filter((student) => {
-      if (activeFilter === "ALL") return true;
-      const currentStatus = statusMap[student.student_id] || "ABSENT";
-      return currentStatus === activeFilter;
-    }),
-    [items, activeFilter, statusMap],
-  );
 
   return (
     <View style={styles.screenLayout}>
@@ -6050,6 +6112,9 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
               </Text>
               <Text style={[styles.checkListId, { color: theme.muted }]}>
                 ID: {student.student_id}
+              </Text>
+              <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
+                {student.program || "Program not set"} • {student.semester || student.academic_semester || "Semester not set"}
               </Text>
             </View>
 
@@ -6534,7 +6599,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
       await http.patch(`/attendance/${selectedSession.session_id}/${student.student_id}`, { status });
       setSessionStudents((items) => items.map((item) => item.student_id === student.student_id ? { ...item, status, is_manual_override: true } : item));
     } catch (e: any) {
-      Alert.alert("Update failed", e?.response?.data?.detail || "Could not update attendance.");
+      Alert.alert("Update failed", apiErrorMessage(e, "Could not update attendance."));
     }
   };
 
@@ -6554,7 +6619,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
       setSelectedSession((current: any) => ({ ...current, ...response.data }));
       await refreshSessions();
     } catch (e: any) {
-      Alert.alert("Session update failed", e?.response?.data?.detail || "Could not update the session.");
+      Alert.alert("Session update failed", apiErrorMessage(e, "Could not update the session."));
     } finally {
       setSessionActionBusy(false);
     }
@@ -6574,7 +6639,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
             setSessionStudents([]);
             await refreshSessions();
           } catch (e: any) {
-            Alert.alert("Delete failed", e?.response?.data?.detail || "Could not delete the session.");
+            Alert.alert("Delete failed", apiErrorMessage(e, "Could not delete the session."));
           } finally {
             setSessionActionBusy(false);
           }
