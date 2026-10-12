@@ -4945,12 +4945,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const [academicSections, setAcademicSections] = useState<any[]>([]);
   const [selectedPhotos, setSelectedPhotos] = useState<any[]>([]);
   const [batchRequestKey, setBatchRequestKey] = useState<string | null>(null);
+  const [showSessionDatePicker, setShowSessionDatePicker] = useState(false);
 
   const [form, setForm] = useState({
     title: "Class Lecture",
     course: "CS-301 Computer Networks",
     room: "Lab 204",
-    event_date: new Date().toISOString().slice(0, 10),
+    // Build the default from local date components so the session date does
+    // not shift by a day for teachers in time zones ahead of UTC.
+    event_date: toApiDate(formatDisplayDate(new Date())),
     starts_at: "09:00",
     ends_at: "10:00",
     notes: "",
@@ -5247,6 +5250,55 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             placeholder="Room 101"
             placeholderTextColor={theme.muted}
           />
+        </View>
+
+        <View style={styles.formGroup}>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            SESSION DATE
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Choose attendance session date"
+            onPress={() => setShowSessionDatePicker(true)}
+            style={[
+              styles.datePickerCardHolo,
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                marginBottom: 0,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons name="calendar" size={20} color={theme.cyan} />
+            <Text style={[styles.datePickerCardText, { color: theme.text }]}>
+              {parseDisplayDate(fromApiDate(form.event_date)).toLocaleDateString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </Text>
+            <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
+          </Pressable>
+          <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 6 }]}>
+            This selected date will appear on the attendance PDF report.
+          </Text>
+          {showSessionDatePicker && (
+            <DateTimePicker
+              value={parseDisplayDate(fromApiDate(form.event_date))}
+              mode="date"
+              display="calendar"
+              onChange={(_, date) => {
+                setShowSessionDatePicker(false);
+                if (date) {
+                  setForm((current) => ({
+                    ...current,
+                    event_date: toApiDate(formatDisplayDate(date)),
+                  }));
+                }
+              }}
+            />
+          )}
         </View>
 
         <View style={styles.twoColumnGridRow}>
