@@ -1468,6 +1468,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
   const [users, setUsers] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
   // Breathing pulse animation for status pill
   const pulseAnim = useRef(new Animated.Value(0.4)).current;
@@ -1490,20 +1491,40 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
     return () => loop.stop();
   }, []);
 
-  useEffect(() => {
-    Promise.all([
+  const loadDashboard = useCallback(async () => {
+    setBusy(true);
+    setLoadError("");
+    const results = await Promise.allSettled([
       http.get("/students"),
       http.get("/admin/users"),
       http.get("/admin/attendance"),
-    ])
-      .then(([a, b, c]) => {
-        setStudents(a.data?.students || []);
-        setUsers(b.data?.users || []);
-        setAttendance(c.data?.attendance || []);
-      })
-      .catch(() => {})
-      .finally(() => setBusy(false));
+    ]);
+    const [studentResult, userResult, attendanceResult] = results;
+
+    if (studentResult.status === "fulfilled") {
+      setStudents(studentResult.value.data?.students || []);
+    }
+    if (userResult.status === "fulfilled") {
+      setUsers(userResult.value.data?.users || []);
+    }
+    if (attendanceResult.status === "fulfilled") {
+      setAttendance(attendanceResult.value.data?.attendance || []);
+    }
+
+    const failed = results.filter((result) => result.status === "rejected");
+    if (failed.length) {
+      setLoadError(
+        failed.length === results.length
+          ? "Unable to load dashboard data. Check the API server connection and sign in again if your session has expired."
+          : "Some dashboard data could not be loaded. The available information is shown below.",
+      );
+    }
+    setBusy(false);
   }, []);
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   if (busy) {
     return (
@@ -1573,6 +1594,16 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
           Automated face-recognition attendance across all enrolled faculties
         </Text>
       </View>
+
+      {!!loadError && (
+        <HoloEmptyState
+          icon="cloud-alert-outline"
+          title="Dashboard data needs attention"
+          desc={loadError}
+          actionText="Retry"
+          onAction={loadDashboard}
+        />
+      )}
 
       {/* 2x2 KPI Grid (Zero Overflow Math) */}
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
@@ -2127,16 +2158,34 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<any>({});
   const [busy, setBusy] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [editingStudent, setEditingStudent] = useState<any>(null);
 
-  useEffect(() => {
-    http
-      .get("/students")
-      .then((r) => setStudents(r.data?.students || []))
-      .catch(() => setStudents([]))
-      .finally(() => setBusy(false));
+  const loadStudents = useCallback(async () => {
+    setBusy(true);
+    setLoadError("");
+    try {
+      const response = await http.get("/students");
+      if (!Array.isArray(response.data?.students)) {
+        throw new Error("The server returned an invalid student list.");
+      }
+      setStudents(response.data.students);
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      setLoadError(
+        typeof detail === "string"
+          ? detail
+          : error?.message || "Unable to load students. Check the API connection and sign in again.",
+      );
+    } finally {
+      setBusy(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadStudents();
+  }, [loadStudents]);
 
   const handleDeleteStudent = (studentId: string, studentName: string) => {
     Alert.alert(
@@ -2189,7 +2238,9 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
             Students Directory
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            {hasActiveStudentFilter
+            {loadError && students.length === 0
+              ? "Student data unavailable"
+              : hasActiveStudentFilter
               ? `${visible.length} matching student${visible.length === 1 ? "" : "s"}`
               : `${visible.length} students enrolled`}
           </Text>
@@ -2288,6 +2339,14 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           color={theme.cyan}
           style={{ margin: 30 }}
         />
+      ) : loadError && students.length === 0 ? (
+        <HoloEmptyState
+          icon="cloud-alert-outline"
+          title="Unable to load students"
+          desc={loadError}
+          actionText="Retry"
+          onAction={loadStudents}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="account-search-outline"
@@ -2297,7 +2356,17 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
           onAction={() => go("Add Student")}
         />
       ) : (
-        visible.map((student, i) => (
+        <>
+        {!!loadError && (
+          <HoloEmptyState
+            icon="cloud-alert-outline"
+            title="Student list refresh failed"
+            desc={loadError}
+            actionText="Retry"
+            onAction={loadStudents}
+          />
+        )}
+        {visible.map((student, i) => (
           <Pressable
             key={student.student_id || i}
             style={[
@@ -2330,7 +2399,8 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
               color={theme.muted}
             />
           </Pressable>
-        ))
+        ))}
+        </>
       )}
 
       {/* Student Profile Detail Modal Sheet */}
@@ -2525,14 +2595,32 @@ function TeacherStudentsRoster() {
   const [students, setStudents] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  const loadStudents = useCallback(async () => {
+    setBusy(true);
+    setLoadError("");
+    try {
+      const response = await http.get("/students");
+      if (!Array.isArray(response.data?.students)) {
+        throw new Error("The server returned an invalid student list.");
+      }
+      setStudents(response.data.students);
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      setLoadError(
+        typeof detail === "string"
+          ? detail
+          : error?.message || "Unable to load students. Check the API connection and sign in again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
-    http
-      .get("/students")
-      .then((r) => setStudents(r.data?.students || []))
-      .catch(() => setStudents([]))
-      .finally(() => setBusy(false));
-  }, []);
+    loadStudents();
+  }, [loadStudents]);
 
   const visible = students.filter((x) =>
     JSON.stringify(x).toLowerCase().includes(search.toLowerCase()),
@@ -2589,6 +2677,14 @@ function TeacherStudentsRoster() {
           color={theme.cyan}
           style={{ margin: 30 }}
         />
+      ) : loadError && students.length === 0 ? (
+        <HoloEmptyState
+          icon="cloud-alert-outline"
+          title="Unable to load roster"
+          desc={loadError}
+          actionText="Retry"
+          onAction={loadStudents}
+        />
       ) : visible.length === 0 ? (
         <HoloEmptyState
           icon="account-group"
@@ -2596,7 +2692,17 @@ function TeacherStudentsRoster() {
           desc="Ensure you are assigned to active academic department sections."
         />
       ) : (
-        visible.map((student, i) => (
+        <>
+        {!!loadError && (
+          <HoloEmptyState
+            icon="cloud-alert-outline"
+            title="Roster refresh failed"
+            desc={loadError}
+            actionText="Retry"
+            onAction={loadStudents}
+          />
+        )}
+        {visible.map((student, i) => (
           <View
             key={student.student_id || i}
             style={[
@@ -2623,7 +2729,8 @@ function TeacherStudentsRoster() {
               </Text>
             </View>
           </View>
-        ))
+        ))}
+        </>
       )}
     </View>
   );

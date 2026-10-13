@@ -28,6 +28,7 @@ from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, 
 from app.database import get_db_connection
 from app.cache import cache_available, cache_delete, cache_get, cache_set
 from app.models import face_model
+from app.student_photos import student_photo_data_uri
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 warnings.filterwarnings(
@@ -846,7 +847,7 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
                 cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
                     s.program, s.semester, s.department, s.gpa, s.enrollment_year,
                     s.roll_number, s.section_id, s.created_at,
-                    encode(s.profile_photo, 'base64') AS profile_photo_base64,
+                    s.profile_photo,
                     sec.school AS academic_school, sec.faculty AS academic_faculty,
                     sec.department AS academic_department, sec.semester AS academic_semester,
                     sec.section AS academic_section
@@ -857,7 +858,7 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
                 cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
                     s.program, s.semester, s.department, s.gpa, s.enrollment_year,
                     s.roll_number, s.section_id, s.created_at,
-                    encode(s.profile_photo, 'base64') AS profile_photo_base64,
+                    s.profile_photo,
                     sec.school AS academic_school, sec.faculty AS academic_faculty,
                     sec.department AS academic_department, sec.semester AS academic_semester,
                     sec.section AS academic_section
@@ -866,8 +867,16 @@ def list_students(user=Depends(require_roles("admin", "teacher"))):
                     ORDER BY s.student_id""", (user["sub"],))
                 rows = cur.fetchall()
             for student in rows:
-                if student.get("profile_photo_base64"):
-                    student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
+                photo = student.pop("profile_photo", None)
+                try:
+                    student["profile_photo_base64"] = student_photo_data_uri(photo)
+                except (OSError, ValueError) as exc:
+                    logger.warning(
+                        "student_photo_thumbnail_failed student_id=%s error=%s",
+                        student["student_id"],
+                        exc,
+                    )
+                    student["profile_photo_base64"] = None
             return {"students": rows}
     finally: conn.close()
 
