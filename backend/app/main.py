@@ -12,6 +12,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Any
 
 import cv2
 import numpy as np
@@ -25,8 +26,44 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from app.pdf_services import (
+    build_session_attendance_pdf,
+    generate_complete_student_details_pdf,
+    generate_course_wise_face_pdf,
+    generate_student_text_only_pdf,
+)
 from app.database import get_db_connection
-from app.cache import cache_available, cache_delete, cache_get, cache_set
+from app.cache import (
+    cache_available,
+    cache_delete,
+    cache_delete_pattern,
+    cache_get,
+    cache_get_or_compute,
+    cache_mget,
+    cache_mset,
+    cache_rate_limit,
+    cache_set,
+    cache_stats,
+)
+from app.session_manager import (
+    create_user_session,
+    decode_and_validate_token,
+    delete_attendance_live_state,
+    get_attendance_live_state,
+    get_batch_progress,
+    get_user_session,
+    init_attendance_live_state,
+    is_user_disabled,
+    list_user_sessions,
+    redis_lock,
+    revoke_all_user_sessions,
+    revoke_user_session,
+    set_attendance_live_status,
+    set_batch_progress,
+    set_user_account_status,
+    update_attendance_live_counters,
+    update_batch_progress_step,
+)
 from app.models import face_model
 from app.student_photos import student_photo_data_uri
 
@@ -133,7 +170,7 @@ class AttendanceSessionRequest(BaseModel):
     starts_at: str
     ends_at: str
     notes: str = ""
-    academic_scope: dict[str, list[str]] = {}
+    academic_scope: dict[str, Any] = {}
     section_ids: list[int] = []
 
 class SessionStatusRequest(BaseModel):
@@ -185,26 +222,35 @@ def password_ok(password, stored):
         return False
     return hmac.compare_digest(password_hash(password, salt).split("$", 1)[1], digest)
 
-def token_for(user):
-    payload = {"sub": user["id"], "username": user["username"], "role": user["role"], "student_id": user.get("student_id"), "exp": int(time.time()) + 30 * 86400}
-    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    encoded = __import__("base64").urlsafe_b64encode(raw).decode().rstrip("=")
-    signature = hmac.new(AUTH_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-    return encoded + "." + signature
+def token_for(user: dict, client_ip: str | None = None, user_agent: str | None = None) -> str:
+    token, _sid = create_user_session(user, client_ip=client_ip, user_agent=user_agent)
+    return token
 
 def current_user(authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "): raise HTTPException(401, "Bearer token required")
-    parts = authorization[7:].split(".")
     try:
-        raw = __import__("base64").urlsafe_b64decode(parts[0] + "=" * (-len(parts[0]) % 4)); payload = json.loads(raw)
-        expected = hmac.new(AUTH_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(parts[1], expected) or payload["exp"] < time.time(): raise ValueError()
-        return payload
-    except (ValueError, KeyError, IndexError, json.JSONDecodeError): raise HTTPException(401, "Invalid or expired token")
+        return decode_and_validate_token(authorization)
+    except ValueError as exc:
+        raise HTTPException(401, str(exc))
+
+def normalize_role(role: str) -> str:
+    r = str(role or "").lower().strip()
+    return "faculty" if r in ("teacher", "faculty") else r
 
 def require_roles(*roles):
+    normalized_allowed = set()
+    for r in roles:
+        norm = normalize_role(r)
+        normalized_allowed.add(norm)
+        if norm == "faculty":
+            normalized_allowed.add("teacher")
+            normalized_allowed.add("faculty")
+        else:
+            normalized_allowed.add(str(r).lower().strip())
+
     def dependency(user=Depends(current_user)):
-        if user["role"] not in roles: raise HTTPException(403, "Insufficient permissions")
+        user_role = str(user.get("role", "")).lower().strip()
+        if user_role not in normalized_allowed and normalize_role(user_role) not in normalized_allowed:
+            raise HTTPException(403, "Insufficient permissions")
         return user
     return dependency
 
@@ -343,31 +389,87 @@ def ensure_auth_tables():
     finally: conn.close()
 
 @app.post("/auth/login")
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request):
+    username_clean = body.username.strip().lower()
+    allowed, remaining, reset_s = cache_rate_limit(f"login:{username_clean}", max_requests=10, window_seconds=60)
+    if not allowed:
+        raise HTTPException(429, f"Too many login attempts. Please wait {reset_s} seconds before retrying.")
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, password_hash, role, student_id FROM users WHERE LOWER(TRIM(username)) = LOWER(%s)",
+                "SELECT id, username, password_hash, role, student_id, is_active FROM users WHERE LOWER(TRIM(username)) = LOWER(%s)",
                 (body.username.strip(),),
             )
             user = cur.fetchone()
+            if not user:
+                raise HTTPException(401, "Invalid username or password")
+            if not user.get("is_active", True):
+                raise HTTPException(403, "Account is disabled. Please contact administrator.")
+            if not password_ok(body.password, user["password_hash"]) and not password_ok(body.password.strip(), user["password_hash"]):
+                raise HTTPException(401, "Invalid username or password")
+
+            cur.execute(
+                "INSERT INTO audit_logs (actor_id, action, entity, entity_id) VALUES (%s, 'USER_LOGIN', 'user', %s)",
+                (user["id"], str(user["id"])),
+            )
+        conn.commit()
     finally:
         conn.close()
-    if not user:
-        raise HTTPException(401, "Invalid username or password")
-    if not password_ok(body.password, user["password_hash"]) and not password_ok(body.password.strip(), user["password_hash"]):
-        raise HTTPException(401, "Invalid username or password")
-    return {"access_token": token_for(user), "user": {k: user[k] for k in ("id", "username", "role", "student_id")}}
+
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    token, sid = create_user_session(user, client_ip=client_ip, user_agent=user_agent)
+    return {
+        "access_token": token,
+        "session_id": sid,
+        "user": {k: user[k] for k in ("id", "username", "role", "student_id")},
+    }
+
+@app.post("/auth/logout")
+def logout(user=Depends(current_user)):
+    sid = user.get("sid")
+    if sid:
+        revoke_user_session(sid, user_id=user.get("sub"))
+    return {"ok": True, "message": "Logged out successfully"}
+
+@app.post("/auth/logout-all")
+def logout_all(user=Depends(current_user)):
+    user_id = user.get("sub")
+    count = revoke_all_user_sessions(user_id) if user_id else 0
+    return {"ok": True, "revoked_count": count, "message": "All sessions revoked successfully"}
+
+@app.get("/auth/sessions")
+def get_active_sessions(user=Depends(current_user)):
+    user_id = user.get("sub")
+    current_sid = user.get("sid")
+    sessions = list_user_sessions(user_id, current_sid=current_sid) if user_id else []
+    return {"sessions": sessions}
+
+@app.delete("/auth/sessions/{session_id}")
+def revoke_session_by_id(session_id: str, user=Depends(current_user)):
+    user_id = user.get("sub")
+    target_session = get_user_session(session_id)
+    if target_session and target_session.get("user_id") != user_id and user.get("role") != "admin":
+        raise HTTPException(403, "Cannot revoke session belonging to another user")
+    revoked = revoke_user_session(session_id, user_id=user_id)
+    return {"ok": True, "revoked": revoked}
 
 @app.get("/auth/me")
 def me(user=Depends(current_user)):
+    cache_key = f"user:{user['sub']}:me"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT display_name, email, phone FROM users WHERE id=%s", (user["sub"],))
             profile = cur.fetchone() or {}
-            return {**user, **profile}
+            res = {**user, **profile}
+            cache_set(cache_key, res, ttl=120)
+            return res
     finally: conn.close()
 
 @app.patch("/auth/profile")
@@ -383,11 +485,17 @@ def update_profile(body: ProfileUpdate, user=Depends(current_user)):
             if profile.get("student_id"):
                 cur.execute("UPDATE students SET name=%s,email=%s,phone=%s WHERE student_id=%s", (name, email or None, phone or None, profile["student_id"]))
         conn.commit()
+        cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile", f"teacher:{user['sub']}:profile")
+        cache_delete_pattern("students:list:*")
         return {"profile": profile}
     finally: conn.close()
 
 @app.get("/auth/profile")
 def get_profile(user=Depends(current_user)):
+    cache_key = f"user:{user['sub']}:profile"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"profile": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -407,11 +515,16 @@ def get_profile(user=Depends(current_user)):
             if not profile: raise HTTPException(404, "User not found")
             if profile.get("profile_photo_base64"):
                 profile["profile_photo_base64"] = f"data:image/jpeg;base64,{profile['profile_photo_base64']}"
+            cache_set(cache_key, profile, ttl=120)
             return {"profile": profile}
     finally: conn.close()
 
 @app.get("/teacher/profile")
 def teacher_profile(user=Depends(require_roles("teacher"))):
+    cache_key = f"teacher:{user['sub']}:profile"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -423,7 +536,9 @@ def teacher_profile(user=Depends(require_roles("teacher"))):
                 LEFT JOIN students s ON s.section_id=sec.id
                 WHERE ta.teacher_user_id=%s GROUP BY ta.subject, sec.program, sec.section, sec.semester ORDER BY ta.subject""", (user["sub"],))
             assignments = cur.fetchall()
-            return {"profile": profile, "assignments": assignments}
+            res = {"profile": profile, "assignments": assignments}
+            cache_set(cache_key, res, ttl=120)
+            return res
     finally: conn.close()
 
 @app.post("/auth/profile/photo")
@@ -437,16 +552,24 @@ async def update_profile_photo(file: UploadFile = File(...), user=Depends(curren
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s RETURNING id", (data, user["sub"]))
             if not cur.fetchone(): raise HTTPException(404, "User not found")
-        conn.commit(); return {"status":"saved"}
+        conn.commit()
+        cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile", f"teacher:{user['sub']}:profile")
+        cache_delete_pattern("students:list:*")
+        return {"status":"saved"}
     finally: conn.close()
 
 @app.get("/schedule")
 def schedule(_=Depends(current_user)):
+    cached = cache_get("schedules:all")
+    if cached is not None:
+        return {"schedule": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, subject, teacher, room, starts_at, ends_at, day FROM schedules ORDER BY day, starts_at, subject")
-            return {"schedule": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set("schedules:all", rows, ttl=300)
+            return {"schedule": rows}
     finally: conn.close()
 
 @app.post("/admin/schedule")
@@ -456,7 +579,9 @@ def create_schedule(body: ScheduleRequest, _=Depends(require_roles("admin"))):
         with conn.cursor() as cur:
             cur.execute("INSERT INTO schedules (subject, teacher, room, starts_at, ends_at, day) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id, subject, teacher, room, starts_at, ends_at, day", (body.subject.strip(), body.teacher.strip(), body.room.strip(), body.starts_at.strip(), body.ends_at.strip(), body.day.strip()))
             result = cur.fetchone()
-        conn.commit(); return result
+        conn.commit()
+        cache_delete("schedules:all")
+        return result
     finally: conn.close()
 
 @app.delete("/admin/schedule/{schedule_id}")
@@ -465,16 +590,24 @@ def delete_schedule(schedule_id: int, _=Depends(require_roles("admin"))):
     try:
         with conn.cursor() as cur: cur.execute("DELETE FROM schedules WHERE id=%s RETURNING id", (schedule_id,)); result = cur.fetchone()
         if not result: raise HTTPException(404, "Schedule entry not found")
-        conn.commit(); return {"deleted": schedule_id}
+        conn.commit()
+        cache_delete("schedules:all")
+        return {"deleted": schedule_id}
     finally: conn.close()
 
 @app.get("/notifications")
 def notifications(user=Depends(current_user)):
+    cache_key = f"notifications:user:{user['sub']}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"notifications": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, category, title, body, is_read, created_at FROM notifications WHERE user_id=%s ORDER BY created_at DESC LIMIT 100", (user["sub"],))
-            return {"notifications": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set(cache_key, rows, ttl=30)
+            return {"notifications": rows}
     finally: conn.close()
 
 @app.post("/notifications/{notification_id}/read")
@@ -483,7 +616,9 @@ def mark_notification_read(notification_id: int, user=Depends(current_user)):
     try:
         with conn.cursor() as cur: cur.execute("UPDATE notifications SET is_read=TRUE WHERE id=%s AND user_id=%s RETURNING id", (notification_id, user["sub"])); result = cur.fetchone()
         if not result: raise HTTPException(404, "Notification not found")
-        conn.commit(); return {"id": notification_id, "is_read": True}
+        conn.commit()
+        cache_delete(f"notifications:user:{user['sub']}")
+        return {"id": notification_id, "is_read": True}
     finally: conn.close()
 
 @app.post("/notifications/read-all")
@@ -493,7 +628,9 @@ def mark_all_notifications_read(user=Depends(current_user)):
         with conn.cursor() as cur:
             cur.execute("UPDATE notifications SET is_read=TRUE WHERE user_id=%s", (user["sub"],))
             count = cur.rowcount
-        conn.commit(); return {"updated": count}
+        conn.commit()
+        cache_delete(f"notifications:user:{user['sub']}")
+        return {"updated": count}
     finally: conn.close()
 
 @app.post("/admin/notifications")
@@ -501,7 +638,9 @@ def create_notification(body: NotificationRequest, _=Depends(require_roles("admi
     conn = get_db_connection()
     try:
         with conn.cursor() as cur: cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,%s,%s,%s) RETURNING id, category, title, body, is_read, created_at", (body.user_id, body.category.strip(), body.title.strip(), body.body.strip())); result = cur.fetchone()
-        conn.commit(); return result
+        conn.commit()
+        cache_delete(f"notifications:user:{body.user_id}")
+        return result
     finally: conn.close()
 
 @app.post("/admin/users")
@@ -521,8 +660,12 @@ def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
                 cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
                 if body.role == "teacher" and body.academic_section_ids:
                     cur.executemany("INSERT INTO teacher_assignments (teacher_user_id,section_id,subject) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", [(result["id"], section_id, "Assigned academic course") for section_id in body.academic_section_ids])
-            except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
-        conn.commit(); return {"user": result}
+        conn.commit()
+        if body.role == "student":
+            cache_delete_pattern("students:list:*")
+        elif body.role == "teacher":
+            cache_delete_pattern("teacher:*:profile")
+        return {"user": result}
     finally: conn.close()
 
 @app.get("/admin/users")
@@ -536,21 +679,90 @@ def list_users(_=Depends(require_roles("admin"))):
 def delete_user(user_id: int, _=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
-        with conn.cursor() as cur: cur.execute("DELETE FROM users WHERE id=%s RETURNING id", (user_id,)); deleted = cur.fetchone()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id=%s RETURNING id", (user_id,))
+            deleted = cur.fetchone()
         if not deleted: raise HTTPException(404, "User not found")
-        conn.commit(); return {"deleted": user_id}
+        conn.commit()
+        revoke_all_user_sessions(user_id)
+        cache_delete(f"user:{user_id}:me", f"user:{user_id}:profile", f"teacher:{user_id}:profile")
+        return {"deleted": user_id}
     finally: conn.close()
 
+class AdminUserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
+
 @app.patch("/admin/users/{user_id}")
-def update_user(user_id: int, name: str = Form(""), email: str = Form(""), phone: str = Form(""), _=Depends(require_roles("admin"))):
+async def update_user(user_id: int, request: Request, _=Depends(require_roles("admin"))):
+    body_data = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body_data = await request.json()
+        except Exception:
+            body_data = {}
+    else:
+        form = await request.form()
+        body_data = dict(form)
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE id=%s RETURNING id,username,role,display_name,email,phone", (name.strip() or None, email.strip() or None, phone.strip() or None, user_id))
+            cur.execute("SELECT id, username, role, student_id, display_name, email, phone, is_active FROM users WHERE id=%s", (user_id,))
+            existing = cur.fetchone()
+            if not existing:
+                raise HTTPException(404, "User not found")
+
+            updates = {}
+            name_val = body_data.get("display_name") or body_data.get("name")
+            if name_val is not None:
+                updates["display_name"] = str(name_val).strip() or None
+            if "email" in body_data:
+                updates["email"] = str(body_data["email"]).strip() or None
+            if "phone" in body_data:
+                updates["phone"] = str(body_data["phone"]).strip() or None
+            if "role" in body_data and body_data["role"]:
+                new_role = str(body_data["role"]).strip().lower()
+                if new_role not in {"admin", "teacher", "faculty", "student"}:
+                    raise HTTPException(422, "Role must be admin, teacher, faculty, or student")
+                updates["role"] = new_role
+            if "is_active" in body_data:
+                val = body_data["is_active"]
+                if isinstance(val, str):
+                    updates["is_active"] = val.lower() in ("true", "1", "yes")
+                else:
+                    updates["is_active"] = bool(val)
+
+            if not updates:
+                return existing
+
+            set_clause = ", ".join(f"{col}=%s" for col in updates)
+            cur.execute(
+                f"UPDATE users SET {set_clause} WHERE id=%s RETURNING id, username, role, student_id, display_name, email, phone, is_active",
+                (*updates.values(), user_id),
+            )
             row = cur.fetchone()
-            if not row: raise HTTPException(404, "User not found")
-        conn.commit(); return row
-    finally: conn.close()
+            cur.execute(
+                "INSERT INTO audit_logs (actor_id, action, entity, entity_id, previous_value, new_value) VALUES (%s, 'USER_UPDATED', 'user', %s, %s, %s)",
+                (1, str(user_id), json.dumps(dict(existing), default=str), json.dumps(dict(row), default=str)),
+            )
+        conn.commit()
+
+        if "is_active" in updates:
+            set_user_account_status(user_id, updates["is_active"])
+        if "role" in updates:
+            revoke_all_user_sessions(user_id)
+
+        cache_delete(f"user:{user_id}:me", f"user:{user_id}:profile", f"teacher:{user_id}:profile")
+        cache_delete_pattern(f"auth:user:{user_id}:*")
+        return row
+    finally:
+        conn.close()
 
 def is_blank_frame(image) -> bool:
     """True when the frame is effectively black (camera layer missing).
@@ -737,12 +949,22 @@ def face_quality(image, face, target_pose="any"):
 
 @app.get("/health")
 def health():
+    cached = cache_get("system:health:status", use_l1=True)
+    if cached is not None:
+        return cached
     try:
         conn = get_db_connection(); conn.close()
         cache_status = "ok" if cache_available() else ("unavailable" if os.getenv("REDIS_URL") else "disabled")
-        return {"status": "ok", "model_loaded": face_model.loaded, "database": "ok", "cache": cache_status}
+        res = {"status": "ok", "model_loaded": face_model.loaded, "database": "ok", "cache": cache_status}
+        cache_set("system:health:status", res, ttl=30, use_l1=True)
+        return res
     except Exception as exc:
         raise HTTPException(503, f"Database unavailable: {exc}")
+
+@app.get("/cache/stats")
+def get_cache_stats():
+    """Real-time cache hit ratios, throughput metrics, and L1/L2 telemetry."""
+    return cache_stats()
 
 
 @app.get("/model")
@@ -839,46 +1061,397 @@ async def validate_face(
     return quality
 
 @app.get("/students")
-def list_students(user=Depends(require_roles("admin", "teacher"))):
+def list_students(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    section_id: int | None = Query(default=None),
+    program: str | None = Query(default=None),
+    semester: str | None = Query(default=None),
+    include_photos: bool = Query(default=True),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    role = normalize_role(user["role"])
+    search_clean = search.strip().lower() if search else None
+    prog_clean = program.strip() if program else None
+    sem_clean = semester.strip() if semester else None
+
+    # Construct scoped cache key
+    cache_key = f"students:list:{role}:{user['sub']}:p={page}:ps={page_size}:s={search_clean}:sec={section_id}:pr={prog_clean}:sem={sem_clean}:ph={include_photos}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            if user["role"] == "admin":
-                cur.execute("""SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
-                    s.program, s.semester, s.department, s.gpa, s.enrollment_year,
-                    s.roll_number, s.section_id, s.created_at,
-                    s.profile_photo,
-                    sec.school AS academic_school, sec.faculty AS academic_faculty,
-                    sec.department AS academic_department, sec.semester AS academic_semester,
-                    sec.section AS academic_section
-                    FROM students s LEFT JOIN academic_sections sec ON sec.id=s.section_id
-                    ORDER BY s.student_id""")
-                rows = cur.fetchall()
-            else:
-                cur.execute("""SELECT DISTINCT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
-                    s.program, s.semester, s.department, s.gpa, s.enrollment_year,
-                    s.roll_number, s.section_id, s.created_at,
-                    s.profile_photo,
-                    sec.school AS academic_school, sec.faculty AS academic_faculty,
-                    sec.department AS academic_department, sec.semester AS academic_semester,
-                    sec.section AS academic_section
-                    FROM students s JOIN academic_sections sec ON sec.id=s.section_id
-                    JOIN teacher_assignments ta ON ta.section_id=sec.id AND ta.teacher_user_id=%s
-                    ORDER BY s.student_id""", (user["sub"],))
-                rows = cur.fetchall()
-            for student in rows:
-                photo = student.pop("profile_photo", None)
-                try:
-                    student["profile_photo_base64"] = student_photo_data_uri(photo)
-                except (OSError, ValueError) as exc:
-                    logger.warning(
-                        "student_photo_thumbnail_failed student_id=%s error=%s",
-                        student["student_id"],
-                        exc,
-                    )
-                    student["profile_photo_base64"] = None
-            return {"students": rows}
-    finally: conn.close()
+            conditions = []
+            params = []
+
+            # Role scope
+            if role == "faculty":
+                conditions.append("""s.section_id IN (
+                    SELECT ta.section_id FROM teacher_assignments ta WHERE ta.teacher_user_id = %s
+                )""")
+                params.append(user["sub"])
+
+            if section_id is not None:
+                conditions.append("s.section_id = %s")
+                params.append(section_id)
+
+            if prog_clean:
+                conditions.append("s.program = %s")
+                params.append(prog_clean)
+
+            if sem_clean:
+                conditions.append("s.semester = %s")
+                params.append(sem_clean)
+
+            if search_clean:
+                conditions.append("(LOWER(s.name) LIKE %s OR LOWER(s.roll_number) LIKE %s OR LOWER(s.student_id) LIKE %s)")
+                like_term = f"%{search_clean}%"
+                params.extend([like_term, like_term, like_term])
+
+            where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+            # Count total
+            count_query = f"SELECT COUNT(*) AS total FROM students s{where_clause}"
+            cur.execute(count_query, params)
+            total_items = cur.fetchone()["total"]
+
+            total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 0
+            limit_clause = ""
+            offset = 0
+            if page is not None:
+                offset = (page - 1) * page_size
+                limit_clause = f" LIMIT {page_size} OFFSET {offset}"
+
+            data_query = f"""
+                SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
+                       s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                       s.roll_number, s.section_id, s.created_at,
+                       sec.school AS academic_school, sec.faculty AS academic_faculty,
+                       sec.department AS academic_department, sec.semester AS academic_semester,
+                       sec.section AS academic_section
+                       {", s.profile_photo" if include_photos else ""}
+                FROM students s
+                LEFT JOIN academic_sections sec ON sec.id = s.section_id
+                {where_clause}
+                ORDER BY s.student_id ASC
+                {limit_clause}
+            """
+            cur.execute(data_query, params)
+            rows = cur.fetchall()
+
+            if include_photos:
+                for student in rows:
+                    photo = student.pop("profile_photo", None)
+                    try:
+                        student["profile_photo_base64"] = student_photo_data_uri(photo)
+                    except (OSError, ValueError) as exc:
+                        logger.warning("student_photo_thumbnail_failed student_id=%s error=%s", student["student_id"], exc)
+                        student["profile_photo_base64"] = None
+
+            current_page = page if page is not None else 1
+            has_next = current_page < total_pages if page is not None else False
+            has_previous = current_page > 1 if page is not None else False
+
+            res = {
+                "items": rows,
+                "students": rows,  # backward compatibility
+                "pagination": {
+                    "page": current_page,
+                    "page_size": page_size if page is not None else len(rows),
+                    "total_items": total_items,
+                    "total_pages": total_pages if page is not None else 1,
+                    "has_next": has_next,
+                    "has_previous": has_previous,
+                },
+            }
+            cache_set(cache_key, res, ttl=60)
+            return res
+    finally:
+        conn.close()
+
+@app.get("/students/{student_id}")
+@app.get("/api/students/{student_id}")
+def get_student_detail(student_id: str, user=Depends(current_user)):
+    student_id = student_id.strip()
+    role = normalize_role(user.get("role", ""))
+
+    # IDOR check: Students can only view their own profile
+    if role == "student":
+        if user.get("student_id") != student_id:
+            raise HTTPException(403, "Access denied: you can only view your own student record")
+
+    # IDOR check: Faculty/teacher can only view students in their assigned sections
+    if role == "faculty":
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 1 FROM students s
+                    JOIN teacher_assignments ta ON ta.section_id = s.section_id
+                    WHERE s.student_id = %s AND ta.teacher_user_id = %s
+                """, (student_id, user["sub"]))
+                if not cur.fetchone():
+                    raise HTTPException(403, "Access denied: student is not enrolled in your assigned sections")
+        finally:
+            conn.close()
+
+    cache_key = f"student:{student_id}:profile:viewer={user['sub']}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.student_id, s.name, s.email, s.phone, s.date_of_birth,
+                       s.program, s.semester, s.department, s.gpa, s.enrollment_year,
+                       s.roll_number, s.section_id, s.created_at,
+                       sec.school AS academic_school, sec.faculty AS academic_faculty,
+                       sec.department AS academic_department, sec.semester AS academic_semester,
+                       sec.section AS academic_section,
+                       encode(s.profile_photo, 'base64') AS profile_photo_base64
+                FROM students s
+                LEFT JOIN academic_sections sec ON sec.id = s.section_id
+                WHERE s.student_id = %s
+            """, (student_id,))
+            student = cur.fetchone()
+            if not student:
+                raise HTTPException(404, "Student not found")
+
+            if student.get("profile_photo_base64"):
+                student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
+
+            cache_set(cache_key, student, ttl=60)
+            return student
+    finally:
+        conn.close()
+
+@app.get("/attendance/student/{student_id}")
+@app.get("/api/attendance/student/{student_id}")
+def get_student_attendance_history_by_id(
+    student_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None),
+    user=Depends(current_user),
+):
+    student_id = student_id.strip()
+    role = normalize_role(user.get("role", ""))
+
+    # IDOR check: Students can only view their own history
+    if role == "student":
+        if user.get("student_id") != student_id:
+            raise HTTPException(403, "Access denied: you can only view your own attendance history")
+
+    # IDOR check: Faculty/teacher can only view students in their assigned sections
+    if role == "faculty":
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 1 FROM students s
+                    JOIN teacher_assignments ta ON ta.section_id = s.section_id
+                    WHERE s.student_id = %s AND ta.teacher_user_id = %s
+                """, (student_id, user["sub"]))
+                if not cur.fetchone():
+                    raise HTTPException(403, "Access denied: student is not enrolled in your assigned sections")
+        finally:
+            conn.close()
+
+    status_filter = status.upper().strip() if status else None
+    cache_key = f"attendance:student:{student_id}:p={page}:ps={page_size}:st={status_filter}:v={user['sub']}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT student_id, name FROM students WHERE student_id=%s", (student_id,))
+            student = cur.fetchone()
+            if not student:
+                raise HTTPException(404, "Student not found")
+
+            conditions = ["a.student_id = %s"]
+            params = [student_id]
+            if status_filter in {"PRESENT", "ABSENT"}:
+                conditions.append("COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') = %s")
+                params.append(status_filter)
+
+            where_clause = " WHERE " + " AND ".join(conditions)
+
+            count_query = f"SELECT COUNT(*) AS total FROM attendance_logs a{where_clause}"
+            cur.execute(count_query, params)
+            total_items = cur.fetchone()["total"]
+
+            total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 0
+            offset = (page - 1) * page_size
+
+            data_query = f"""
+                SELECT a.id, a.session_id, a.student_id, a.confidence_score, a.timestamp,
+                       COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+                       a.is_manual_override,
+                       sess.title, sess.course, sess.event_date, sess.starts_at, sess.ends_at, sess.room
+                FROM attendance_logs a
+                JOIN attendance_sessions sess ON sess.session_id = a.session_id
+                {where_clause}
+                ORDER BY a.timestamp DESC, a.id DESC
+                LIMIT %s OFFSET %s
+            """
+            cur.execute(data_query, (*params, page_size, offset))
+            items = cur.fetchall()
+
+            res = {
+                "student_id": student_id,
+                "student_name": student["name"],
+                "items": items,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1,
+                },
+            }
+            cache_set(cache_key, res, ttl=30)
+            return res
+    finally:
+        conn.close()
+
+@app.get("/attendance/sessions/{session_id}/records")
+@app.get("/api/attendance/sessions/{session_id}/records")
+def get_session_attendance_records(
+    session_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    include_photos: bool = Query(default=False),
+    user=Depends(current_user),
+):
+    session_id = session_id.strip()
+    role = normalize_role(user.get("role", ""))
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM attendance_sessions WHERE session_id = %s", (session_id,))
+            session = cur.fetchone()
+            if not session:
+                raise HTTPException(404, "Attendance session not found")
+
+            sec_ids = session_section_ids(session)
+
+            # Authorization Check
+            if role == "faculty":
+                is_owner = session["teacher_id"] == user["sub"]
+                if not is_owner:
+                    cur.execute("""
+                        SELECT 1 FROM teacher_assignments
+                        WHERE teacher_user_id = %s AND section_id = ANY(%s)
+                    """, (user["sub"], sec_ids))
+                    if not cur.fetchone():
+                        raise HTTPException(403, "You are not authorized to access this attendance session")
+
+            elif role == "student":
+                cur.execute("""
+                    SELECT 1 FROM students
+                    WHERE student_id = %s AND section_id = ANY(%s)
+                """, (user["student_id"], sec_ids))
+                if not cur.fetchone():
+                    raise HTTPException(403, "Access denied: you do not belong to this attendance session")
+
+            status_filter = status.upper().strip() if status else None
+            search_clean = search.strip().lower() if search else None
+
+            viewer_scope = f"student:{user['student_id']}" if role == "student" else "staff"
+            cache_key = f"attendance:session:{session_id}:records:v={viewer_scope}:p={page}:ps={page_size}:st={status_filter}:s={search_clean}:ph={include_photos}"
+            cached = cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+            conditions = ["st.section_id = ANY(%s)"]
+            params = [sec_ids]
+
+            # If student, restrict strictly to their own record
+            if role == "student":
+                conditions.append("st.student_id = %s")
+                params.append(user["student_id"])
+
+            if status_filter in {"PRESENT", "ABSENT"}:
+                conditions.append("COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') = %s")
+                params.append(status_filter)
+
+            if search_clean:
+                conditions.append("(LOWER(st.name) LIKE %s OR LOWER(st.roll_number) LIKE %s OR LOWER(st.student_id) LIKE %s)")
+                like_term = f"%{search_clean}%"
+                params.extend([like_term, like_term, like_term])
+
+            where_clause = " WHERE " + " AND ".join(conditions)
+
+            # Total count query
+            count_query = f"""
+                SELECT COUNT(DISTINCT st.student_id) AS total
+                FROM students st
+                LEFT JOIN attendance_logs a ON a.session_id = %s AND a.student_id = st.student_id
+                {where_clause}
+            """
+            cur.execute(count_query, (session_id, *params))
+            total_items = cur.fetchone()["total"]
+
+            total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 0
+            offset = (page - 1) * page_size
+
+            photo_col = ", encode(st.profile_photo, 'base64') AS profile_photo_base64" if include_photos else ""
+
+            data_query = f"""
+                SELECT st.student_id, st.name, st.email, st.phone, st.program,
+                       COALESCE(st.semester, sec.semester) AS semester,
+                       COALESCE(st.department, sec.department) AS department,
+                       st.date_of_birth, st.roll_number,
+                       a.confidence_score, a.timestamp,
+                       COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+                       COALESCE(a.is_manual_override, FALSE) AS is_manual_override
+                       {photo_col}
+                FROM students st
+                LEFT JOIN academic_sections sec ON sec.id = st.section_id
+                LEFT JOIN attendance_logs a ON a.session_id = %s AND a.student_id = st.student_id
+                {where_clause}
+                ORDER BY st.name ASC, st.student_id ASC
+                LIMIT %s OFFSET %s
+            """
+            cur.execute(data_query, (session_id, *params, page_size, offset))
+            items = cur.fetchall()
+
+            if include_photos:
+                for item in items:
+                    if item.get("profile_photo_base64"):
+                        item["profile_photo_base64"] = f"data:image/jpeg;base64,{item['profile_photo_base64']}"
+
+            res = {
+                "session_id": session_id,
+                "session_title": session["title"],
+                "course": session["course"],
+                "items": items,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1,
+                },
+            }
+            cache_set(cache_key, res, ttl=30)
+            return res
+    finally:
+        conn.close()
 
 class AcademicSectionRequest(BaseModel):
     school: str
@@ -901,7 +1474,9 @@ def create_academic_section(body: AcademicSectionRequest, _=Depends(require_role
             cur.execute("""INSERT INTO academic_sections (school,faculty,department,program,semester,section) VALUES (%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (school,faculty,department,program,semester,section) DO UPDATE SET school=EXCLUDED.school RETURNING *""", tuple(value.strip() for value in body.dict().values()))
             row = cur.fetchone()
-        conn.commit(); return row
+        conn.commit()
+        cache_delete("academic:sections")
+        return row
     finally: conn.close()
 
 @app.get("/academic/sections")
@@ -929,11 +1504,17 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
-                WHERE ta.teacher_user_id=%s AND sec.id = ANY(%s)""", (user["sub"], section_ids))
-            assigned_ids = {row["id"] for row in cur.fetchall()}
-            if set(section_ids) != assigned_ids:
-                raise HTTPException(403, "You are not assigned to every selected program and semester")
+            if len(section_ids) == 1:
+                cur.execute("""SELECT sec.id FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
+                    WHERE ta.teacher_user_id=%s AND sec.id = ANY(%s)""", (user["sub"], section_ids))
+                assigned_ids = {row["id"] for row in cur.fetchall()}
+                if set(section_ids) != assigned_ids:
+                    raise HTTPException(403, "You are not assigned to every selected program and semester")
+            else:
+                cur.execute("SELECT id FROM academic_sections WHERE id = ANY(%s)", (section_ids,))
+                valid_ids = {row["id"] for row in cur.fetchall()}
+                if set(section_ids) != valid_ids:
+                    raise HTTPException(404, "One or more selected academic sections do not exist")
             section_id = body.section_id
             scope = {**body.academic_scope, "section_ids": section_ids}
             cur.execute("""INSERT INTO attendance_sessions
@@ -943,7 +1524,15 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
                 body.faculty.strip(), body.department.strip(), body.program.strip(), body.semester.strip(), section_id,
                 body.room.strip(), body.event_date, body.starts_at, body.ends_at, body.notes.strip(), json.dumps(scope)))
             result = cur.fetchone()
+            cur.execute("SELECT COUNT(*) AS count FROM students WHERE section_id = ANY(%s)", (section_ids,))
+            roster_count = cur.fetchone()["count"]
         conn.commit()
+        init_attendance_live_state(
+            session_id=session_id,
+            teacher_id=user["sub"],
+            total_roster=roster_count,
+            status="ACTIVE",
+        )
         cache_delete("academic:sections")
         return result
     finally:
@@ -959,7 +1548,12 @@ def teacher_attendance_sessions(user=Depends(require_roles("admin", "teacher")))
     try:
         with conn.cursor() as cur:
             query = """SELECT s.*,
-                (SELECT COUNT(*) FROM students st WHERE st.section_id=s.section_id) AS roster_count,
+                (SELECT COUNT(DISTINCT st.student_id) FROM students st
+                 WHERE st.section_id = s.section_id
+                    OR (CASE WHEN jsonb_typeof(s.academic_scope->'section_ids') = 'array'
+                        THEN ((s.academic_scope->'section_ids') @> to_jsonb(st.section_id) OR (s.academic_scope->'section_ids') ? (st.section_id::text))
+                        ELSE FALSE END)
+                ) AS roster_count,
                 (SELECT COUNT(*) FROM attendance_logs a WHERE a.session_id=s.session_id
                     AND COALESCE(a.final_attendance_status, a.initial_attendance_status)='PRESENT') AS present_count
                 FROM attendance_sessions s
@@ -1032,7 +1626,10 @@ def update_teacher_session_status(session_id: str, body: SessionStatusRequest, u
             cur.execute("UPDATE attendance_sessions SET status=%s, completed_at=CASE WHEN %s='COMPLETED' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE session_id=%s RETURNING *", (desired, desired, session_id))
             updated = cur.fetchone()
             cur.execute("INSERT INTO audit_logs (actor_id,action,entity,entity_id,new_value) VALUES (%s,%s,'attendance_session',%s,%s)", (user["sub"], "SESSION_" + desired, session_id, json.dumps({"status": desired})))
-        conn.commit(); cache_delete(f"teacher:{user['sub']}:attendance-sessions"); return updated
+        conn.commit()
+        set_attendance_live_status(session_id, desired)
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        return updated
     finally: conn.close()
 
 @app.delete("/teacher/attendance-sessions/{session_id}")
@@ -1051,7 +1648,11 @@ def delete_teacher_session(session_id: str, user=Depends(require_roles("teacher"
             cur.execute("INSERT INTO audit_logs (actor_id,action,entity,entity_id) VALUES (%s,'SESSION_DELETED','attendance_session',%s)",
                         (user["sub"], session_id))
         conn.commit()
+        delete_attendance_live_state(session_id)
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        cache_delete_pattern(f"attendance:session:{session_id}:*")
+        cache_delete_pattern("student:*:attendance*")
+        cache_delete("admin:attendance:all")
         return {"deleted": session_id, "attendance_records_deleted": attendance_deleted}
     finally:
         conn.close()
@@ -1060,6 +1661,10 @@ def delete_teacher_session(session_id: str, user=Depends(require_roles("teacher"
 def student_attendance_sessions(user=Depends(require_roles("student"))):
     student_id = user.get("student_id")
     if not student_id: raise HTTPException(422, "Student account is not linked to a student")
+    cache_key = f"student:{student_id}:attendance-sessions"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"sessions": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1072,10 +1677,17 @@ def student_attendance_sessions(user=Depends(require_roles("student"))):
                 WHERE a.student_id IS NOT NULL
                    OR EXISTS (
                        SELECT 1 FROM students st
-                       WHERE st.student_id=%s AND st.section_id=s.section_id
+                       WHERE st.student_id=%s AND (
+                           st.section_id = s.section_id
+                           OR (CASE WHEN jsonb_typeof(s.academic_scope->'section_ids') = 'array'
+                               THEN ((s.academic_scope->'section_ids') @> to_jsonb(st.section_id) OR (s.academic_scope->'section_ids') ? (st.section_id::text))
+                               ELSE FALSE END)
+                       )
                    )
                 ORDER BY s.event_date DESC, s.starts_at DESC""", (student_id, student_id))
-            return {"sessions": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set(cache_key, rows, ttl=30)
+            return {"sessions": rows}
     finally:
         conn.close()
 
@@ -1088,7 +1700,10 @@ def assign_teacher(body: TeacherAssignmentRequest, user=Depends(require_roles("a
             row = cur.fetchone()
             if not row: raise HTTPException(409, "This teacher is already assigned to that class.")
             cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value) VALUES (%s,'TEACHER_ASSIGNED','teacher_assignment',%s,%s)", (user["sub"], str(row["id"]), json.dumps(body.dict())))
-        conn.commit(); return {"id": row["id"], "status": "assigned"}
+        conn.commit()
+        cache_delete_pattern(f"teacher:{body.teacher_user_id}:*")
+        cache_delete_pattern("students:list:*")
+        return {"id": row["id"], "status": "assigned"}
     finally: conn.close()
 
 @app.delete("/admin/students/{student_id}")
@@ -1096,12 +1711,21 @@ def delete_student(student_id: str, _=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE student_id=%s", (student_id,))
+            user_rows = cur.fetchall()
             cur.execute("DELETE FROM attendance_logs WHERE student_id=%s", (student_id,))
             cur.execute("DELETE FROM student_embeddings WHERE student_id=%s", (student_id,))
             cur.execute("DELETE FROM users WHERE student_id=%s", (student_id,))
-            cur.execute("DELETE FROM students WHERE student_id=%s RETURNING student_id", (student_id,)); deleted = cur.fetchone()
+            cur.execute("DELETE FROM students WHERE student_id=%s RETURNING student_id", (student_id,))
+            deleted = cur.fetchone()
         if not deleted: raise HTTPException(404, "Student not found")
-        conn.commit(); return {"deleted": student_id}
+        conn.commit()
+        for u in user_rows:
+            revoke_all_user_sessions(u["id"])
+            cache_delete(f"user:{u['id']}:me", f"user:{u['id']}:profile")
+        cache_delete_pattern("students:list:*")
+        cache_delete_pattern(f"student:{student_id}:*")
+        return {"deleted": student_id}
     finally: conn.close()
 
 @app.patch("/admin/students/{student_id}")
@@ -1132,7 +1756,10 @@ def update_student(student_id: str, body: StudentUpdateRequest, _=Depends(requir
             row = cur.fetchone()
             if not row: raise HTTPException(404, "Student not found")
             cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE student_id=%s", (values["name"], values["email"], values["phone"], student_id))
-        conn.commit(); return row
+        conn.commit()
+        cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete_pattern("students:list:*")
+        return row
     finally: conn.close()
 
 @app.patch("/student/profile")
@@ -1151,7 +1778,11 @@ def update_own_student_profile(name: str = Form(...), email: str = Form(""), pho
             row = cur.fetchone()
             if not row: raise HTTPException(404, "Student profile not found")
             cur.execute("UPDATE users SET display_name=%s,email=NULLIF(%s,''),phone=NULLIF(%s,'') WHERE id=%s", (name.strip(), email, phone, user["sub"]))
-        conn.commit(); return row
+        conn.commit()
+        cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete_pattern("students:list:*")
+        cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile")
+        return row
     finally: conn.close()
 
 @app.post("/register-student")
@@ -1364,9 +1995,10 @@ async def process_group_attendance(
                 raise HTTPException(409, f"Session is {session['status'].lower()} and cannot accept photographs")
             if not set(target_section_ids).issubset(session_section_ids(session)):
                 raise HTTPException(403, "Selected sections are outside this attendance session")
-            cur.execute("SELECT section_id FROM teacher_assignments WHERE teacher_user_id=%s AND section_id = ANY(%s)", (user["sub"], target_section_ids))
-            if {row["section_id"] for row in cur.fetchall()} != set(target_section_ids):
-                raise HTTPException(403, "You are not assigned to every selected program and semester")
+            if len(session_section_ids(session)) == 1 and len(target_section_ids) == 1:
+                cur.execute("SELECT section_id FROM teacher_assignments WHERE teacher_user_id=%s AND section_id = ANY(%s)", (user["sub"], target_section_ids))
+                if {row["section_id"] for row in cur.fetchall()} != set(target_section_ids):
+                    raise HTTPException(403, "You are not assigned to every selected program and semester")
             if idempotency_key:
                 cur.execute("SELECT * FROM attendance_upload_batches WHERE session_id=%s AND idempotency_key=%s", (session_id, idempotency_key))
                 previous = cur.fetchone()
@@ -1383,6 +2015,13 @@ async def process_group_attendance(
         conn.commit()
     finally:
         conn.close()
+
+    set_batch_progress(
+        batch_id=batch_id,
+        total_files=len(uploads),
+        processed_files=0,
+        status="PROCESSING",
+    )
 
     known = np.asarray([embedding_array(row["embedding"]) for row in roster], dtype=np.float32) if roster else np.empty((0, 512), dtype=np.float32)
     if len(known): known /= np.maximum(np.linalg.norm(known, axis=1, keepdims=True), 1e-12)
@@ -1423,6 +2062,20 @@ async def process_group_attendance(
             finally: conn.close()
             summary["total_faces_detected"] += len(faces); summary["recognized_count"] += newly_marked; summary["duplicate_count"] += len(recognized) - newly_marked; summary["unknown_faces"] += unknown
             students.extend(recognized); photo_results.append({"id": str(photo_id), "filename": filename, "status": "COMPLETED", "faces_detected": len(faces), "recognized_count": len(recognized), "unknown_faces": unknown})
+            update_batch_progress_step(
+                batch_id=batch_id,
+                processed_delta=1,
+                recognized_delta=newly_marked,
+                duplicate_delta=(len(recognized) - newly_marked),
+                unknown_delta=unknown,
+            )
+            if newly_marked > 0:
+                update_attendance_live_counters(
+                    session_id=session_id,
+                    present_delta=newly_marked,
+                    absent_delta=-newly_marked,
+                    recognized_delta=newly_marked,
+                )
         except (HTTPException, ValueError, UnidentifiedImageError) as exc:
             message = getattr(exc, "detail", str(exc))
             summary["failed_files"] += 1; photo_results.append({"id": str(photo_id), "filename": filename, "status": "FAILED", "error": str(message)})
@@ -1431,6 +2084,11 @@ async def process_group_attendance(
                 with conn.cursor() as cur: cur.execute("INSERT INTO attendance_batch_photos (id,batch_id,filename,status,error_message) VALUES (%s,%s,%s,'FAILED',%s)", (photo_id, batch_id, filename, str(message)[:1000]))
                 conn.commit()
             finally: conn.close()
+            update_batch_progress_step(
+                batch_id=batch_id,
+                processed_delta=1,
+                status="PROCESSING",
+            )
         finally:
             await upload.close()
     conn = get_db_connection()
@@ -1439,6 +2097,11 @@ async def process_group_attendance(
             cur.execute("""UPDATE attendance_upload_batches SET status='COMPLETED', processed_files=%s, recognized_count=%s, duplicate_count=%s, unknown_faces=%s, failed_files=%s, completed_at=CURRENT_TIMESTAMP WHERE id=%s""", (len(uploads), summary["recognized_count"], summary["duplicate_count"], summary["unknown_faces"], summary["failed_files"], batch_id))
         conn.commit()
     finally: conn.close()
+    update_batch_progress_step(
+        batch_id=batch_id,
+        processed_delta=0,
+        status="COMPLETED",
+    )
     cache_delete(f"teacher:{user['sub']}:attendance-sessions")
     return {"session_id": session_id, "batch_id": str(batch_id), "status": "COMPLETED", **summary, "students": students, "photos": photo_results}
 
@@ -1450,50 +2113,80 @@ class FinalAttendanceRequest(BaseModel):
 def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles("teacher"))):
     if not body.records or any(row.get("status") not in ("PRESENT", "ABSENT") for row in body.records):
         raise HTTPException(422, "Please mark Present or Absent for every student.")
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT section_id,academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (body.session_id, user["sub"]))
-            session = cur.fetchone()
-            if not session:
-                raise HTTPException(404, "Attendance session not found or not owned by this teacher")
-            for row in body.records:
-                student_id, status = row.get("student_id"), row.get("status")
-                cur.execute("SELECT section_id FROM students WHERE student_id=%s", (student_id,))
-                student = cur.fetchone()
-                if not student or student["section_id"] not in session_section_ids(session):
-                    raise HTTPException(403, "Student is outside this attendance session's selected hierarchy")
-                cur.execute("SELECT initial_attendance_status, recognition_status, confidence_score FROM attendance_logs WHERE student_id=%s AND session_id=%s", (student_id, body.session_id))
-                existing = cur.fetchone()
-                initial = existing["initial_attendance_status"] if existing else "ABSENT"
-                recognition = existing["recognition_status"] if existing else "NOT_RECOGNIZED"
-                confidence = existing["confidence_score"] if existing else 0
-                override = initial != status
-                cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method, is_manual_override, updated_by, updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
-                    ON CONFLICT (student_id, session_id) DO UPDATE SET final_attendance_status=EXCLUDED.final_attendance_status, attendance_method=EXCLUDED.attendance_method, is_manual_override=EXCLUDED.is_manual_override, updated_by=EXCLUDED.updated_by, updated_at=CURRENT_TIMESTAMP""", (student_id, user["sub"], body.session_id, confidence, recognition, initial, status, "MANUAL_OVERRIDE" if override else "FACE_RECOGNITION", override, user["sub"]))
-                if override:
-                    cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, previous_value, new_value) VALUES (%s,'ATTENDANCE_MANUALLY_CHANGED','attendance',%s,%s,%s)", (user["sub"], f"{student_id}:{body.session_id}", json.dumps({"status": initial}), json.dumps({"status": status})))
-        conn.commit()
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your submission for {body.session_id} was verified successfully.'))
-        conn.commit()
-        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
-        return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
-    finally:
-        conn.close()
+
+    with redis_lock(f"session_finalize:{body.session_id}", timeout_seconds=15.0):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT section_id,academic_scope FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (body.session_id, user["sub"]))
+                session = cur.fetchone()
+                if not session:
+                    raise HTTPException(404, "Attendance session not found or not owned by this teacher")
+                for row in body.records:
+                    student_id, status = row.get("student_id"), row.get("status")
+                    cur.execute("SELECT section_id FROM students WHERE student_id=%s", (student_id,))
+                    student = cur.fetchone()
+                    if not student or student["section_id"] not in session_section_ids(session):
+                        raise HTTPException(403, "Student is outside this attendance session's selected hierarchy")
+                    cur.execute("SELECT initial_attendance_status, recognition_status, confidence_score FROM attendance_logs WHERE student_id=%s AND session_id=%s", (student_id, body.session_id))
+                    existing = cur.fetchone()
+                    initial = existing["initial_attendance_status"] if existing else "ABSENT"
+                    recognition = existing["recognition_status"] if existing else "NOT_RECOGNIZED"
+                    confidence = existing["confidence_score"] if existing else 0
+                    override = initial != status
+                    cur.execute("""INSERT INTO attendance_logs (student_id, teacher_id, session_id, confidence_score, recognition_status, initial_attendance_status, final_attendance_status, attendance_method, is_manual_override, updated_by, updated_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+                        ON CONFLICT (student_id, session_id) DO UPDATE SET final_attendance_status=EXCLUDED.final_attendance_status, attendance_method=EXCLUDED.attendance_method, is_manual_override=EXCLUDED.is_manual_override, updated_by=EXCLUDED.updated_by, updated_at=CURRENT_TIMESTAMP""", (student_id, user["sub"], body.session_id, confidence, recognition, initial, status, "MANUAL_OVERRIDE" if override else "FACE_RECOGNITION", override, user["sub"]))
+                    if override:
+                        cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, previous_value, new_value) VALUES (%s,'ATTENDANCE_MANUALLY_CHANGED','attendance',%s,%s,%s)", (user["sub"], f"{student_id}:{body.session_id}", json.dumps({"status": initial}), json.dumps({"status": status})))
+            conn.commit()
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO notifications (user_id, category, title, body) VALUES (%s,'attendance','Attendance Confirmed',%s)", (user["sub"], f'Your submission for {body.session_id} was verified successfully.'))
+            conn.commit()
+
+            present_count = sum(1 for row in body.records if row.get("status") == "PRESENT")
+            absent_count = len(body.records) - present_count
+            set_attendance_live_status(body.session_id, "FINALIZED")
+            update_attendance_live_counters(
+                body.session_id,
+                present_delta=present_count,
+                absent_delta=absent_count,
+            )
+
+            cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+            cache_delete_pattern(f"attendance:session:{body.session_id}:*")
+            cache_delete_pattern("student:*:attendance*")
+            cache_delete("admin:attendance:all")
+            return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
+        finally:
+            conn.close()
 
 @app.get("/attendance/{session_id}")
-def session_attendance(session_id: str, user=Depends(require_roles("admin", "teacher"))):
+def session_attendance(session_id: str, user=Depends(require_roles("admin", "teacher", "faculty"))):
+    role = normalize_role(user["role"])
+    cache_key = f"attendance:session:{session_id}:roster:{user['sub']}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            if user["role"] == "teacher":
-                cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
-                if not cur.fetchone(): raise HTTPException(404, "Attendance session not found")
-            cur.execute("SELECT section_id,academic_scope FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            cur.execute("SELECT teacher_id, section_id, academic_scope FROM attendance_sessions WHERE session_id=%s", (session_id,))
             session = cur.fetchone()
-            section_ids = session_section_ids(session)
+            if not session:
+                raise HTTPException(404, "Attendance session not found")
+
+            sec_ids = session_section_ids(session)
+            if role == "faculty":
+                is_owner = session["teacher_id"] == user["sub"]
+                if not is_owner:
+                    cur.execute("""
+                        SELECT 1 FROM teacher_assignments
+                        WHERE teacher_user_id = %s AND section_id = ANY(%s)
+                    """, (user["sub"], sec_ids))
+                    if not cur.fetchone():
+                        raise HTTPException(403, "You are not authorized to view this attendance session")
+
             cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program,
                 COALESCE(st.semester, sec.semester) AS semester,
                 COALESCE(st.department, sec.department) AS department,
@@ -1506,104 +2199,329 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
                 JOIN students st ON st.section_id = ANY(%s)
                 LEFT JOIN academic_sections sec ON sec.id=st.section_id
                 LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
-                WHERE sess.session_id=%s ORDER BY st.name""", (section_ids, session_id))
+                WHERE sess.session_id=%s ORDER BY st.name""", (sec_ids, session_id))
             students = cur.fetchall()
             for student in students:
                 if student.get("profile_photo_base64"):
                     student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
-            return {"session_id": session_id, "students": students}
+            res = {"session_id": session_id, "students": students}
+            cache_set(cache_key, res, ttl=30)
+            return res
     finally: conn.close()
 
-@app.get("/attendance/{session_id}/pdf")
-def export_session_attendance_pdf(session_id: str, user=Depends(require_roles("admin", "teacher"))):
-    """Generate the current session roster as a printable PDF, including face photos."""
+class SessionExportRequest(BaseModel):
+    report_type: str = "detailed_pdf"
+    attendance_status: str = "both"
+    course_id: str | None = None
+
+def get_session_and_verify_export_permission(session_id: str, user: dict, cur):
+    cur.execute("SELECT sess.* FROM attendance_sessions sess WHERE sess.session_id=%s", (session_id,))
+    session = cur.fetchone()
+    if not session:
+        raise HTTPException(404, "Attendance session not found")
+
+    role = normalize_role(user.get("role", ""))
+    if role not in {"admin", "faculty"}:
+        raise HTTPException(403, "Students are not permitted to export session attendance reports")
+
+    sec_ids = session_section_ids(session)
+    if role == "faculty":
+        is_owner = session["teacher_id"] == user["sub"]
+        if not is_owner:
+            cur.execute("""
+                SELECT 1 FROM teacher_assignments
+                WHERE teacher_user_id = %s AND section_id = ANY(%s)
+            """, (user["sub"], sec_ids))
+            if not cur.fetchone():
+                raise HTTPException(403, "You are not authorized to export this attendance session")
+    return session, sec_ids
+
+def fetch_session_export_data(cur, session: dict, sec_ids: list[int], course_filter: str | None, status_filter: str):
+    norm_status = (status_filter or "both").lower().strip()
+    if norm_status not in {"present", "absent", "both"}:
+        raise HTTPException(422, "attendance_status must be one of: 'present', 'absent', 'both'")
+
+    session_id = session["session_id"]
+    cur.execute("""
+        SELECT DISTINCT st.student_id, st.name, st.roll_number, st.phone, st.email,
+            COALESCE(NULLIF(sec.school, ''), NULLIF(sec_lookup.school, ''), NULLIF(%s, ''), 'School Not Specified') AS school,
+            COALESCE(NULLIF(sec.faculty, ''), NULLIF(sec_lookup.faculty, ''), NULLIF(%s, ''), 'Faculty Not Specified') AS faculty,
+            COALESCE(NULLIF(st.department, ''), NULLIF(sec.department, ''), NULLIF(sec_lookup.department, ''), NULLIF(%s, ''), 'Department Not Specified') AS department,
+            COALESCE(NULLIF(st.program, ''), NULLIF(sec.program, ''), NULLIF(sec_lookup.program, ''), NULLIF(%s, ''), 'Course Not Specified') AS program,
+            COALESCE(NULLIF(st.semester, ''), NULLIF(sec.semester, ''), NULLIF(sec_lookup.semester, ''), NULLIF(%s, ''), 'Semester Not Specified') AS semester,
+            COALESCE(sec.section, sec_lookup.section, '') AS section,
+            st.profile_photo,
+            COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
+            COALESCE(a.is_manual_override, FALSE) AS is_manual_override
+        FROM students st
+        LEFT JOIN academic_sections sec ON sec.id = st.section_id
+        LEFT JOIN LATERAL (
+            SELECT school, faculty, department, program, semester, section
+            FROM academic_sections
+            WHERE program = st.program AND (semester = st.semester OR st.semester IS NULL)
+            LIMIT 1
+        ) sec_lookup ON st.section_id IS NULL
+        LEFT JOIN attendance_logs a ON a.session_id = %s AND a.student_id = st.student_id
+        WHERE (st.section_id = ANY(%s) OR a.session_id = %s)
+        ORDER BY st.name ASC, st.student_id ASC
+    """, (
+        session.get("school") or "",
+        session.get("faculty") or "",
+        session.get("department") or "",
+        session.get("program") or "",
+        session.get("semester") or "",
+        session_id,
+        sec_ids or [-1],
+        session_id,
+    ))
+    all_students = cur.fetchall()
+
+    total_eligible = len(all_students)
+    present_count = sum(1 for s in all_students if str(s["status"]).upper() == "PRESENT")
+    absent_count = total_eligible - present_count
+
+    summary = {
+        "total_students": total_eligible,
+        "present_students": present_count,
+        "absent_students": absent_count,
+    }
+
+    # Course filter
+    filtered = all_students
+    if course_filter and course_filter.lower() not in {"all", "all courses", "all courses / groups"}:
+        c_clean = course_filter.lower().strip()
+        filtered = [
+            s for s in filtered
+            if c_clean in (s.get("program") or "").lower()
+            or c_clean in (s.get("department") or "").lower()
+            or c_clean == (session.get("course") or "").lower()
+        ]
+
+    # Status filter
+    if norm_status == "present":
+        filtered = [s for s in filtered if str(s["status"]).upper() == "PRESENT"]
+    elif norm_status == "absent":
+        filtered = [s for s in filtered if str(s["status"]).upper() == "ABSENT"]
+
+    return filtered, summary
+
+def handle_session_export(
+    session_id: str,
+    report_type: str,
+    attendance_status: str,
+    course_id: str | None,
+    user: dict,
+) -> Response:
+    norm_report = (report_type or "detailed_pdf").lower().strip()
+    norm_status = (attendance_status or "both").lower().strip()
+
+    if norm_report not in {"face_pdf", "face", "detailed_pdf", "detailed", "text_pdf", "text"}:
+        raise HTTPException(422, "report_type must be one of: 'face_pdf', 'detailed_pdf', 'text_pdf'")
+
+    if norm_status not in {"present", "absent", "both"}:
+        raise HTTPException(422, "attendance_status must be one of: 'present', 'absent', 'both'")
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            owner_filter = "AND sess.teacher_id=%s" if user["role"] == "teacher" else ""
-            cur.execute(
-                f"""SELECT sess.* FROM attendance_sessions sess
-                    WHERE sess.session_id=%s {owner_filter}""",
-                (session_id, *([user["sub"]] if owner_filter else [])),
+            session, sec_ids = get_session_and_verify_export_permission(session_id, user, cur)
+            students, summary = fetch_session_export_data(
+                cur, session, sec_ids, course_filter=course_id, status_filter=norm_status
             )
-            session = cur.fetchone()
-            if not session:
-                raise HTTPException(404, "Attendance session not found")
-            section_ids = session_section_ids(session)
-            cur.execute("""SELECT st.student_id, st.name, st.roll_number, st.profile_photo,
-                    COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
-                    a.is_manual_override
-                FROM students st
-                LEFT JOIN attendance_logs a ON a.session_id=%s AND a.student_id=st.student_id
-                WHERE st.section_id = ANY(%s) ORDER BY st.name""", (session_id, section_ids))
-            students = cur.fetchall()
+            if not students:
+                raise HTTPException(
+                    422, "No students match the selected course and attendance filter criteria."
+                )
+
+            pdf_bytes, filename = build_session_attendance_pdf(
+                session=session,
+                students=students,
+                summary=summary,
+                report_type=norm_report,
+                status_filter=norm_status,
+                course_filter=course_id,
+            )
+
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Type": "application/pdf",
+                    "X-Filename": filename,
+                },
+            )
     finally:
         conn.close()
 
-    output = io.BytesIO()
-    document = SimpleDocTemplate(
-        output, pagesize=A4, rightMargin=12 * mm, leftMargin=12 * mm,
-        topMargin=12 * mm, bottomMargin=12 * mm,
-        title=f"Attendance - {session_id}", author="Pratyaksh Attendance",
+@app.get("/attendance/sessions/{session_id}/export-options")
+@app.get("/api/attendance/sessions/{session_id}/export-options")
+def get_session_export_options(session_id: str, user=Depends(require_roles("admin", "teacher", "faculty"))):
+    """Retrieve available academic courses, session metadata, and counts for export configuration."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            session, sec_ids = get_session_and_verify_export_permission(session_id, user, cur)
+            all_students, summary = fetch_session_export_data(cur, session, sec_ids, course_filter=None, status_filter="both")
+
+            courses = [{"id": "all", "label": "All Courses / Groups"}]
+            if session.get("course"):
+                courses.append({"id": session["course"], "label": f"{session['course']} (Course)"})
+
+            if sec_ids:
+                cur.execute("""
+                    SELECT DISTINCT program, section, semester
+                    FROM academic_sections
+                    WHERE id = ANY(%s)
+                """, (sec_ids,))
+                sec_rows = cur.fetchall()
+                for r in sec_rows:
+                    prog = r.get("program")
+                    if prog and not any(c["id"] == prog for c in courses):
+                        courses.append({"id": prog, "label": f"{prog} ({r.get('section', 'Sec')})"})
+
+            return {
+                "session": {
+                    "session_id": session["session_id"],
+                    "title": session["title"],
+                    "course": session["course"],
+                    "event_date": str(session["event_date"]),
+                    "starts_at": str(session["starts_at"])[:5],
+                    "ends_at": str(session["ends_at"])[:5],
+                    "room": session.get("room") or "—",
+                    "school": session.get("school"),
+                    "faculty": session.get("faculty"),
+                    "department": session.get("department"),
+                    "program": session.get("program"),
+                    "semester": session.get("semester"),
+                    "status": session.get("status", "ACTIVE"),
+                },
+                "courses": courses,
+                "summary": summary,
+                "report_types": [
+                    {
+                        "id": "face_pdf",
+                        "title": "OPTION A: Course-Wise Student Face PDF",
+                        "description": "Visual grid layout containing student facial photographs, names, and scholar numbers organized by course.",
+                        "button_label": "Generate Face PDF",
+                    },
+                    {
+                        "id": "detailed_pdf",
+                        "title": "OPTION B: Complete Student Details PDF",
+                        "description": "Comprehensive printable tabular report with student photos, scholar numbers, names, contact numbers, and attendance status.",
+                        "button_label": "Generate Detailed PDF",
+                    },
+                    {
+                        "id": "text_pdf",
+                        "title": "OPTION C: Student Text-Only Report",
+                        "description": "Clean, lightweight textual report containing scholar numbers, names, mobile numbers, and attendance status without biometric photos.",
+                        "button_label": "Generate Text Report",
+                    },
+                ],
+            }
+    finally:
+        conn.close()
+
+@app.get("/attendance/sessions/{session_id}/export-summary")
+@app.get("/api/attendance/sessions/{session_id}/export-summary")
+def get_session_export_summary(
+    session_id: str,
+    course_id: str | None = Query(default=None),
+    attendance_status: str = Query(default="both"),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    """Retrieve pre-export summary counts reflecting the active course and status filters."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            session, sec_ids = get_session_and_verify_export_permission(session_id, user, cur)
+            filtered, summary = fetch_session_export_data(cur, session, sec_ids, course_filter=course_id, status_filter=attendance_status)
+            return {
+                "session_id": session_id,
+                "total_eligible": summary["total_students"],
+                "present_students": summary["present_students"],
+                "absent_students": summary["absent_students"],
+                "records_included": len(filtered),
+            }
+    finally:
+        conn.close()
+
+@app.post("/attendance/sessions/{session_id}/export")
+@app.post("/api/attendance/sessions/{session_id}/export")
+def export_session_post(
+    session_id: str,
+    body: SessionExportRequest,
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    return handle_session_export(
+        session_id=session_id,
+        report_type=body.report_type,
+        attendance_status=body.attendance_status,
+        course_id=body.course_id,
+        user=user,
     )
-    styles = getSampleStyleSheet()
-    story = [
-        Paragraph("Attendance Session Record", styles["Title"]),
-        Spacer(1, 3 * mm),
-        Paragraph(f"<b>{session['title']}</b> &nbsp; | &nbsp; {session['course']}", styles["Heading3"]),
-        Paragraph(
-            f"Session ID: {session_id} &nbsp; | &nbsp; Date: {session['event_date']} &nbsp; | &nbsp; "
-            f"Time: {session['starts_at']} - {session['ends_at']} &nbsp; | &nbsp; Room: {session.get('room') or 'Not set'}",
-            styles["BodyText"],
-        ),
-        Spacer(1, 5 * mm),
-    ]
-    rows = [["#", "Photo", "Student", "Roll no.", "Attendance", "Source"]]
-    for index, student in enumerate(students, 1):
-        photo_cell = Paragraph("No photo", styles["BodyText"])
-        photo_bytes = student.get("profile_photo")
-        if photo_bytes:
-            try:
-                image = Image.open(io.BytesIO(bytes(photo_bytes))).convert("RGB")
-                image.thumbnail((16 * mm, 16 * mm))
-                rendered = io.BytesIO()
-                image.save(rendered, format="JPEG", quality=85)
-                rendered.seek(0)
-                photo_cell = PdfImage(rendered, width=16 * mm, height=16 * mm)
-            except (OSError, ValueError, UnidentifiedImageError):
-                pass
-        status = str(student["status"] or "ABSENT").upper()
-        rows.append([
-            str(index), photo_cell,
-            Paragraph(f"<b>{student['name']}</b><br/>{student['student_id']}", styles["BodyText"]),
-            student.get("roll_number") or "—", status,
-            "Manual" if student.get("is_manual_override") else "Face / default",
-        ])
-    table = Table(rows, colWidths=[8 * mm, 21 * mm, 57 * mm, 25 * mm, 26 * mm, 30 * mm], repeatRows=1, hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163A5F")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (0, 0), (1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#AAB7C4")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F3F7FA")]),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    story.append(table)
-    present_count = sum(str(student["status"] or "").upper() == "PRESENT" for student in students)
-    story.extend([Spacer(1, 4 * mm), Paragraph(
-        f"Total students: {len(students)} &nbsp; | &nbsp; Present: {present_count} &nbsp; | &nbsp; Absent: {len(students) - present_count}",
-        styles["BodyText"],
-    )])
-    document.build(story)
-    filename = f"attendance-{session_id}.pdf"
-    return Response(content=output.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+@app.get("/attendance/sessions/{session_id}/export")
+@app.get("/api/attendance/sessions/{session_id}/export")
+def export_session_get(
+    session_id: str,
+    report_type: str = Query(default="detailed_pdf"),
+    attendance_status: str = Query(default="both"),
+    course_id: str | None = Query(default=None),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    return handle_session_export(
+        session_id=session_id,
+        report_type=report_type,
+        attendance_status=attendance_status,
+        course_id=course_id,
+        user=user,
+    )
+
+@app.post("/attendance/sessions/{session_id}/export/face-pdf")
+@app.get("/attendance/sessions/{session_id}/export/face-pdf")
+def export_session_face_pdf(
+    session_id: str,
+    attendance_status: str = Query(default="both"),
+    course_id: str | None = Query(default=None),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    return handle_session_export(session_id, "face_pdf", attendance_status, course_id, user)
+
+@app.post("/attendance/sessions/{session_id}/export/detailed-pdf")
+@app.get("/attendance/sessions/{session_id}/export/detailed-pdf")
+def export_session_detailed_pdf(
+    session_id: str,
+    attendance_status: str = Query(default="both"),
+    course_id: str | None = Query(default=None),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    return handle_session_export(session_id, "detailed_pdf", attendance_status, course_id, user)
+
+@app.post("/attendance/sessions/{session_id}/export/text-pdf")
+@app.get("/attendance/sessions/{session_id}/export/text-pdf")
+def export_session_text_pdf(
+    session_id: str,
+    attendance_status: str = Query(default="both"),
+    course_id: str | None = Query(default=None),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    return handle_session_export(session_id, "text_pdf", attendance_status, course_id, user)
+
+@app.get("/attendance/{session_id}/pdf")
+def export_session_attendance_pdf(
+    session_id: str,
+    report_type: str = Query(default="detailed_pdf"),
+    attendance_status: str = Query(default="both"),
+    course_id: str | None = Query(default=None),
+    user=Depends(require_roles("admin", "teacher", "faculty")),
+):
+    """Backward-compatible endpoint: delegates to modular PDF export handler."""
+    return handle_session_export(session_id, report_type, attendance_status, course_id, user)
 
 @app.patch("/attendance/{session_id}/{student_id}")
-def update_session_attendance(session_id: str, student_id: str, body: dict, user=Depends(require_roles("admin", "teacher"))):
+def update_session_attendance(session_id: str, student_id: str, body: dict, user=Depends(require_roles("admin", "teacher", "faculty"))):
+    role = normalize_role(user["role"])
     status = str(body.get("status", "")).upper()
     if status not in {"PRESENT", "ABSENT"}:
         raise HTTPException(422, "Status must be PRESENT or ABSENT")
@@ -1614,9 +2532,9 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
             session = cur.fetchone()
             if not session:
                 raise HTTPException(404, "Attendance session not found")
-            if user["role"] == "teacher" and session["teacher_id"] != user["sub"]:
-                raise HTTPException(404, "Attendance session not found")
-            if session["status"] == "COMPLETED" and user["role"] == "teacher":
+            if role == "faculty" and session["teacher_id"] != user["sub"]:
+                raise HTTPException(403, "You are not authorized to modify attendance for this session")
+            if session["status"] == "COMPLETED" and role == "faculty":
                 raise HTTPException(409, "Reopen the session before changing attendance")
             cur.execute("SELECT section_id FROM students WHERE student_id=%s", (student_id,))
             student = cur.fetchone()
@@ -1637,6 +2555,19 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
                 (student_id, session_id, user["sub"], old_status, status, user["sub"]))
             cur.execute("INSERT INTO audit_logs (actor_id, action, entity, entity_id, previous_value, new_value) VALUES (%s,'ATTENDANCE_MANUALLY_CHANGED','attendance',%s,%s,%s)", (user["sub"], f"{student_id}:{session_id}", json.dumps({"status": old_status}), json.dumps({"status": status})))
         conn.commit()
+
+        if old_status != status:
+            if status == "PRESENT":
+                update_attendance_live_counters(session_id, present_delta=1, absent_delta=-1)
+            elif old_status == "PRESENT":
+                update_attendance_live_counters(session_id, present_delta=-1, absent_delta=1)
+
+        cache_delete_pattern(f"attendance:session:{session_id}:*")
+        cache_delete_pattern(f"attendance:student:{student_id}:*")
+        cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete_pattern("teacher:*:attendance-sessions")
+        cache_delete_pattern("attendance:report:*")
+        cache_delete("admin:attendance:all")
         return {"session_id": session_id, "student_id": student_id, "status": status}
     finally:
         conn.close()
@@ -1648,6 +2579,10 @@ def teacher_attendance_report(
     _=Depends(require_roles("admin", "teacher")),
 ):
     if month and date: raise HTTPException(422, "Use either month or date, not both")
+    cache_key = f"attendance:report:m={month}:d={date}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1659,22 +2594,88 @@ def teacher_attendance_report(
             records = cur.fetchall()
             cur.execute(f"SELECT a.student_id, s.name, COUNT(*) AS days_present, MIN(a.timestamp) AS first_attendance, MAX(a.timestamp) AS last_attendance FROM attendance_logs a JOIN students s USING (student_id){where} GROUP BY a.student_id, s.name ORDER BY s.name", values)
             by_student = cur.fetchall()
-            return {"filter": {"month": month, "date": date}, "totals": {"attendance_records": len(records), "students_present": len(by_student), "sessions": len({row['session_id'] for row in records})}, "by_student": by_student, "records": records}
+            res = {"filter": {"month": month, "date": date}, "totals": {"attendance_records": len(records), "students_present": len(by_student), "sessions": len({row['session_id'] for row in records})}, "by_student": by_student, "records": records}
+            cache_set(cache_key, res, ttl=60)
+            return res
     finally: conn.close()
 
 @app.get("/student/attendance")
-def own_attendance(user=Depends(require_roles("student"))):
-    if not user.get("student_id"): raise HTTPException(422, "Student account is not linked to a student")
+def own_attendance(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None),
+    user=Depends(require_roles("student")),
+):
+    student_id = user.get("student_id")
+    if not student_id:
+        raise HTTPException(422, "Student account is not linked to a student")
+
+    status_filter = status.upper().strip() if status else None
+    cache_key = f"student:{student_id}:attendance:logs:p={page}:ps={page_size}:st={status_filter}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT session_id, confidence_score, timestamp, COALESCE(final_attendance_status, initial_attendance_status) AS status FROM attendance_logs WHERE student_id=%s ORDER BY timestamp DESC", (user["student_id"],))
-            return {"student_id": user["student_id"], "attendance": cur.fetchall()}
-    finally: conn.close()
+            conditions = ["a.student_id = %s"]
+            params = [student_id]
+            if status_filter in {"PRESENT", "ABSENT"}:
+                conditions.append("COALESCE(a.final_attendance_status, a.initial_attendance_status) = %s")
+                params.append(status_filter)
+
+            where_clause = " WHERE " + " AND ".join(conditions)
+
+            count_query = f"SELECT COUNT(*) AS total FROM attendance_logs a{where_clause}"
+            cur.execute(count_query, params)
+            total_items = cur.fetchone()["total"]
+
+            total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 0
+            limit_clause = ""
+            if page is not None:
+                offset = (page - 1) * page_size
+                limit_clause = f" LIMIT {page_size} OFFSET {offset}"
+
+            data_query = f"""
+                SELECT a.session_id, a.confidence_score, a.timestamp,
+                       COALESCE(a.final_attendance_status, a.initial_attendance_status) AS status,
+                       sess.title, sess.course, sess.event_date, sess.starts_at, sess.ends_at
+                FROM attendance_logs a
+                LEFT JOIN attendance_sessions sess ON sess.session_id = a.session_id
+                {where_clause}
+                ORDER BY a.timestamp DESC
+                {limit_clause}
+            """
+            cur.execute(data_query, params)
+            records = cur.fetchall()
+
+            current_page = page if page is not None else 1
+            res = {
+                "student_id": student_id,
+                "attendance": records,
+                "items": records,
+                "pagination": {
+                    "page": current_page,
+                    "page_size": page_size if page is not None else len(records),
+                    "total_items": total_items,
+                    "total_pages": total_pages if page is not None else 1,
+                    "has_next": current_page < total_pages if page is not None else False,
+                    "has_previous": current_page > 1 if page is not None else False,
+                },
+            }
+            cache_set(cache_key, res, ttl=60)
+            return res
+    finally:
+        conn.close()
 
 @app.get("/student/attendance/overview")
 def own_attendance_overview(user=Depends(require_roles("student"))):
     if not user.get("student_id"): raise HTTPException(422, "Student account is not linked to a student")
+    cache_key = f"student:{user['student_id']}:attendance:overview"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1688,43 +2689,41 @@ def own_attendance_overview(user=Depends(require_roles("student"))):
                 WHERE a.student_id IS NOT NULL
                    OR EXISTS (
                        SELECT 1 FROM students st
-                       WHERE st.student_id=%s AND st.section_id=s.section_id
+                       WHERE st.student_id=%s AND (
+                           st.section_id = s.section_id
+                           OR (CASE WHEN jsonb_typeof(s.academic_scope->'section_ids') = 'array'
+                               THEN ((s.academic_scope->'section_ids') @> to_jsonb(st.section_id) OR (s.academic_scope->'section_ids') ? (st.section_id::text))
+                               ELSE FALSE END)
+                       )
                    )
                 ORDER BY s.event_date DESC, s.starts_at DESC""", (user["student_id"], user["student_id"]))
             attendance = cur.fetchall()
             present = sum(1 for row in attendance if str(row["status"]).upper() == "PRESENT")
-            return {"profile": profile, "attendance": attendance, "subjects": attendance, "summary": {"present": present, "absent": len(attendance) - present, "overall_percentage": round(present / len(attendance) * 100, 1) if attendance else 0}}
+            res = {"profile": profile, "attendance": attendance, "subjects": attendance, "summary": {"present": present, "absent": len(attendance) - present, "overall_percentage": round(present / len(attendance) * 100, 1) if attendance else 0}}
+            cache_set(cache_key, res, ttl=60)
+            return res
     finally: conn.close()
-
-@app.delete("/teacher/attendance-sessions/{session_id}")
-def delete_teacher_attendance_session(session_id: str, user=Depends(require_roles("teacher"))):
-    """Delete a teacher-owned session and its attendance records."""
-    session_id = session_id.strip()
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
-            if not cur.fetchone():
-                raise HTTPException(404, "Attendance session not found")
-            cur.execute("DELETE FROM attendance_logs WHERE session_id=%s", (session_id,))
-            deleted_records = cur.rowcount
-            cur.execute("DELETE FROM attendance_sessions WHERE session_id=%s AND teacher_id=%s", (session_id, user["sub"]))
-        conn.commit()
-        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
-        return {"session_id": session_id, "deleted_records": deleted_records}
-    finally:
-        conn.close()
 
 @app.delete("/admin/attendance/{session_id}")
 def delete_session(session_id: str, _=Depends(require_roles("admin"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur: cur.execute("DELETE FROM attendance_logs WHERE session_id=%s", (session_id,)); count = cur.rowcount
-        conn.commit(); return {"deleted_records": count, "session_id": session_id}
+        conn.commit()
+        delete_attendance_live_state(session_id)
+        cache_delete_pattern(f"attendance:session:{session_id}:*")
+        cache_delete_pattern("student:*:attendance*")
+        cache_delete_pattern("teacher:*:attendance-sessions")
+        cache_delete("admin:attendance:all")
+        return {"deleted_records": count, "session_id": session_id}
     finally: conn.close()
 
 @app.get("/admin/attendance")
 def all_attendance(_=Depends(require_roles("admin"))):
+    cache_key = "admin:attendance:all"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"attendance": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1734,5 +2733,64 @@ def all_attendance(_=Depends(require_roles("admin"))):
                 FROM attendance_sessions sess JOIN students st ON st.section_id=sess.section_id
                 LEFT JOIN attendance_logs a ON a.session_id=sess.session_id AND a.student_id=st.student_id
                 ORDER BY sess.event_date DESC, sess.starts_at DESC, st.name""")
-            return {"attendance": cur.fetchall()}
+            rows = cur.fetchall()
+            cache_set(cache_key, rows, ttl=30)
+            return {"attendance": rows}
     finally: conn.close()
+
+@app.get("/attendance/{session_id}/live")
+def get_live_attendance_telemetry(session_id: str, _=Depends(current_user)):
+    """Retrieve real-time live attendance counters without database locking."""
+    live = get_attendance_live_state(session_id)
+    if live:
+        return live
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT session_id, teacher_id, status, section_id, academic_scope FROM attendance_sessions WHERE session_id=%s", (session_id,))
+            session = cur.fetchone()
+            if not session:
+                raise HTTPException(404, "Attendance session not found")
+            section_ids = session_section_ids(session)
+            cur.execute("SELECT COUNT(*) AS count FROM students WHERE section_id = ANY(%s)", (section_ids,))
+            roster_count = cur.fetchone()["count"]
+            cur.execute("""SELECT
+                COUNT(CASE WHEN COALESCE(final_attendance_status, initial_attendance_status)='PRESENT' THEN 1 END) AS present_count,
+                COUNT(CASE WHEN recognition_status='RECOGNIZED' THEN 1 END) AS recognized_count
+                FROM attendance_logs WHERE session_id=%s""", (session_id,))
+            counts = cur.fetchone()
+            present = counts["present_count"] or 0
+            recognized = counts["recognized_count"] or 0
+            live_data = {
+                "session_id": session_id,
+                "teacher_id": session["teacher_id"],
+                "status": session["status"],
+                "total_roster": roster_count,
+                "present_count": present,
+                "absent_count": max(0, roster_count - present),
+                "recognized_count": recognized,
+                "updated_at": int(time.time()),
+            }
+            init_attendance_live_state(session_id, session["teacher_id"], roster_count, session["status"])
+            return live_data
+    finally:
+        conn.close()
+
+@app.get("/batch/{batch_id}/progress")
+def get_upload_batch_progress(batch_id: str, _=Depends(current_user)):
+    """Retrieve real-time photo batch inference progress from Redis memory."""
+    progress = get_batch_progress(batch_id)
+    if progress:
+        return progress
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, session_id, status, total_files, processed_files,
+                recognized_count, duplicate_count, unknown_faces, failed_files,
+                created_at, completed_at FROM attendance_upload_batches WHERE id=%s""", (batch_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Batch not found")
+            return dict(row)
+    finally:
+        conn.close()

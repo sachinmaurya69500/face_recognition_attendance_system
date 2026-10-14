@@ -20,7 +20,7 @@ Deploy through Cloudflare Tunnel:
 Verify the GPU provider and public API:
 
 ```bash
-docker compose -f docker-compose.gpu.yml exec -T api \
+docker compose exec -T api \
   python -c 'import onnxruntime as ort; print(ort.get_available_providers())'
 curl https://attendai.sachinmaurya.me/health
 ```

@@ -13,10 +13,12 @@ import {
   Animated,
   Dimensions,
   Easing,
+  FlatList,
   Image,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar as RNStatusBar,
@@ -72,75 +74,75 @@ function apiErrorMessage(error: any, fallback: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// DUAL-ENGINE THEME PALETTES (MIDNIGHT COSMOS DARK  +  CLOUD ATLAS LIGHT)
+// ENTERPRISE DESIGN SYSTEM THEMES (SLATE OBSIDIAN DARK + COOL SLATE LIGHT)
 // ---------------------------------------------------------------------------
 export const darkTheme = {
   mode: "dark" as const,
-  bg: "#080D18",
-  bgElevated: "#101A2B",
-  card: "#142037",
-  cardGlass: "rgba(20, 32, 55, 0.94)",
-  cardSubtle: "#0A101D",
-  cardHover: "#17263E",
-  divider: "rgba(255,255,255,0.07)",
-  border: "rgba(255, 255, 255, 0.09)",
-  borderBright: "rgba(255, 255, 255, 0.17)",
-  borderAccent: "rgba(111, 191, 232, 0.42)",
-  cyan: "#8FD0D4",
-  cyanGlow: "rgba(143, 208, 212, 0.16)",
-  cyanStrong: "#C0EEF0",
-  blue: "#82A9F4",
-  blueDark: "#263F70",
-  blueGlow: "rgba(130, 169, 244, 0.18)",
-  amber: "#E9B968",
-  amberGlow: "rgba(233, 185, 104, 0.18)",
-  emerald: "#48BB78",
-  emeraldGlow: "rgba(72, 187, 120, 0.18)",
-  rose: "#FC8181",
-  roseGlow: "rgba(252, 129, 129, 0.18)",
-  purple: "#B794F4",
-  purpleGlow: "rgba(183, 148, 244, 0.18)",
-  gold: "#ECC94B",
-  goldGlow: "rgba(236, 201, 75, 0.16)",
-  text: "#EDF2F7",
-  textSecondary: "#A0AEC0",
-  muted: "#4A5568",
-  navBg: "rgba(7, 11, 19, 0.97)",
+  bg: "#0B0F19",
+  bgElevated: "#111827",
+  card: "#151E32",
+  cardGlass: "rgba(21, 30, 50, 0.94)",
+  cardSubtle: "#0E1524",
+  cardHover: "#1A253E",
+  divider: "rgba(255, 255, 255, 0.06)",
+  border: "rgba(255, 255, 255, 0.08)",
+  borderBright: "rgba(255, 255, 255, 0.14)",
+  borderAccent: "rgba(59, 130, 246, 0.35)",
+  cyan: "#3B82F6",
+  cyanGlow: "rgba(59, 130, 246, 0.12)",
+  cyanStrong: "#60A5FA",
+  blue: "#3B82F6",
+  blueDark: "#1D4ED8",
+  blueGlow: "rgba(59, 130, 246, 0.12)",
+  amber: "#F59E0B",
+  amberGlow: "rgba(245, 158, 11, 0.12)",
+  emerald: "#10B981",
+  emeraldGlow: "rgba(16, 185, 129, 0.12)",
+  rose: "#EF4444",
+  roseGlow: "rgba(239, 68, 68, 0.12)",
+  purple: "#8B5CF6",
+  purpleGlow: "rgba(139, 92, 246, 0.12)",
+  gold: "#F59E0B",
+  goldGlow: "rgba(245, 158, 11, 0.12)",
+  text: "#F8FAFC",
+  textSecondary: "#94A3B8",
+  muted: "#64748B",
+  navBg: "rgba(11, 15, 25, 0.95)",
   statusBarStyle: "light" as const,
 };
 
 export const lightTheme = {
   mode: "light" as const,
-  bg: "#F7F6F2",
+  bg: "#F8FAFC",
   bgElevated: "#FFFFFF",
   card: "#FFFFFF",
-  cardGlass: "rgba(255, 255, 255, 0.94)",
-  cardSubtle: "#F2F4F4",
-  cardHover: "#EDF1F0",
-  divider: "rgba(0,0,0,0.05)",
-  border: "#E4E8EE",
-  borderBright: "#CDD6E2",
-  borderAccent: "rgba(35, 76, 130, 0.25)",
-  cyan: "#1F6670",
-  cyanGlow: "rgba(31, 102, 112, 0.10)",
-  cyanStrong: "#174D55",
-  blue: "#345A91",
-  blueDark: "#1E385D",
-  blueGlow: "rgba(52, 90, 145, 0.10)",
-  amber: "#A76D1B",
-  amberGlow: "rgba(167, 109, 27, 0.12)",
+  cardGlass: "rgba(255, 255, 255, 0.96)",
+  cardSubtle: "#F1F5F9",
+  cardHover: "#E2E8F0",
+  divider: "rgba(0, 0, 0, 0.05)",
+  border: "#E2E8F0",
+  borderBright: "#CBD5E1",
+  borderAccent: "rgba(37, 99, 235, 0.22)",
+  cyan: "#2563EB",
+  cyanGlow: "rgba(37, 99, 235, 0.08)",
+  cyanStrong: "#1D4ED8",
+  blue: "#2563EB",
+  blueDark: "#1E40AF",
+  blueGlow: "rgba(37, 99, 235, 0.08)",
+  amber: "#D97706",
+  amberGlow: "rgba(217, 119, 6, 0.08)",
   emerald: "#059669",
-  emeraldGlow: "rgba(5, 150, 105, 0.10)",
+  emeraldGlow: "rgba(5, 150, 105, 0.08)",
   rose: "#DC2626",
-  roseGlow: "rgba(220, 38, 38, 0.10)",
-  purple: "#7656A8",
-  purpleGlow: "rgba(118, 86, 168, 0.10)",
-  gold: "#A46F18",
-  goldGlow: "rgba(183, 121, 31, 0.10)",
-  text: "#182231",
-  textSecondary: "#596777",
-  muted: "#8995A5",
-  navBg: "rgba(247, 248, 250, 0.97)",
+  roseGlow: "rgba(220, 38, 38, 0.08)",
+  purple: "#7C3AED",
+  purpleGlow: "rgba(124, 58, 237, 0.08)",
+  gold: "#D97706",
+  goldGlow: "rgba(217, 119, 6, 0.08)",
+  text: "#0F172A",
+  textSecondary: "#475569",
+  muted: "#64748B",
+  navBg: "rgba(255, 255, 255, 0.96)",
   statusBarStyle: "dark" as const,
 };
 
@@ -462,31 +464,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     >
       <StatusBar style={theme.statusBarStyle} />
 
-      {/* Ambient glow blobs */}
-      <View
-        style={[
-          styles.loginAmbientCircle,
-          {
-            backgroundColor: theme.cyanGlow,
-            top: -80,
-            left: -60,
-          },
-        ]}
-      />
-      <View
-        style={[
-          styles.loginAmbientCircle,
-          {
-            backgroundColor: theme.purpleGlow,
-            top: SCREEN_HEIGHT * 0.4,
-            right: -80,
-            width: 200,
-            height: 200,
-            borderRadius: 100,
-          },
-        ]}
-      />
-
       <ScrollView
         contentContainerStyle={styles.loginScroll}
         keyboardShouldPersistTaps="handled"
@@ -502,15 +479,15 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               styles.themePillBtn,
               {
                 backgroundColor: isDark
-                  ? "rgba(255,255,255,0.07)"
-                  : "rgba(37,99,235,0.08)",
+                  ? "rgba(255,255,255,0.06)"
+                  : "rgba(37,99,235,0.06)",
                 borderColor: theme.border,
               },
             ]}
           >
             <MaterialCommunityIcons
               name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
-              size={17}
+              size={16}
               color={isDark ? theme.amber : theme.blue}
             />
             <Text
@@ -523,25 +500,19 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
         {/* ── Brand Hero Section ── */}
         <View style={styles.loginBrandHeader}>
-          {/* Logo with Glow Ring */}
+          {/* Logo Badge */}
           <View style={styles.loginLogoRingWrap}>
-            <View
-              style={[
-                styles.loginLogoRingOuter,
-                { borderColor: theme.borderAccent },
-              ]}
-            />
             <View
               style={[
                 styles.logoBadgeCard,
                 {
                   backgroundColor: theme.card,
-                  borderColor: theme.borderAccent,
-                  shadowColor: theme.cyan,
-                  shadowOffset: { width: 0, height: 0 },
-                  shadowOpacity: 0.5,
-                  shadowRadius: 16,
-                  elevation: 8,
+                  borderColor: theme.borderBright,
+                  shadowColor: "#000",
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: isDark ? 0.3 : 0.06,
+                  shadowRadius: 8,
+                  elevation: 2,
                 },
               ]}
             >
@@ -555,12 +526,12 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
           {/* Brand Name */}
           <Text style={[styles.brandTitleText, { color: theme.text }]}>
-            PRATYAKSH<Text style={{ color: theme.cyan }}>.AI</Text>
+            Pratyaksh<Text style={{ color: theme.cyan }}>.ai</Text>
           </Text>
           <Text
             style={[styles.loginBrandTagline, { color: theme.textSecondary }]}
           >
-            Intelligent Academic Attendance
+            Intelligent Biometric & Attendance Platform
           </Text>
 
           {/* Status Badge */}
@@ -577,7 +548,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               style={[styles.brandStatusDot, { backgroundColor: theme.cyan }]}
             />
             <Text style={[styles.brandStatusTagText, { color: theme.cyan }]}>
-              SECURE INSTITUTION NETWORK ACTIVE
+              Verified Campus Network
             </Text>
           </View>
         </View>
@@ -589,11 +560,11 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             {
               backgroundColor: theme.cardGlass,
               borderColor: theme.borderBright,
-              shadowColor: theme.mode === "dark" ? "#000" : "#9FB3CE",
-              shadowOffset: { width: 0, height: 8 },
-              shadowOpacity: 0.25,
-              shadowRadius: 20,
-              elevation: 8,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: isDark ? 0.3 : 0.06,
+              shadowRadius: 16,
+              elevation: 3,
             },
           ]}
         >
@@ -603,7 +574,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           <Text
             style={[styles.cardHeaderSubtitle, { color: theme.textSecondary }]}
           >
-            Sign in to your campus portal
+            Sign in to access your campus portal
           </Text>
 
           {/* Role Selector */}
@@ -628,11 +599,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                       styles.roleTabItemActive,
                       {
                         backgroundColor: theme.card,
-                        borderColor: theme.borderAccent,
-                        shadowColor: theme.cyan,
-                        shadowOpacity: 0.25,
-                        shadowRadius: 6,
-                        elevation: 3,
+                        borderColor: theme.borderBright,
                       },
                     ],
                   ]}
@@ -646,7 +613,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     style={[
                       styles.roleTabLabel,
                       { color: active ? theme.cyan : theme.muted },
-                      active && { fontWeight: "800" },
+                      active && { fontWeight: "700" },
                     ]}
                   >
                     {item.label}
@@ -658,8 +625,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
           {/* Username */}
           <View style={styles.formGroup}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              IDENTIFIER
+            <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+              Username or ID
             </Text>
             <View
               style={[
@@ -682,6 +649,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 value={username}
                 onChangeText={setUsername}
                 placeholderTextColor={theme.muted}
+                placeholder="Enter username"
                 autoCapitalize="none"
               />
             </View>
@@ -689,8 +657,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 
           {/* Password */}
           <View style={styles.formGroup}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              PASSWORD
+            <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+              Password
             </Text>
             <View
               style={[
@@ -713,6 +681,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
+                placeholder="Enter password"
                 placeholderTextColor={theme.muted}
               />
               <Pressable
@@ -754,10 +723,10 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               {
                 backgroundColor: theme.cyan,
                 shadowColor: theme.cyan,
-                shadowOffset: { width: 0, height: 6 },
-                shadowOpacity: 0.45,
-                shadowRadius: 14,
-                elevation: 6,
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.25,
+                shadowRadius: 6,
+                elevation: 3,
               },
               busy && { opacity: 0.75 },
             ]}
@@ -766,26 +735,26 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           >
             {busy ? (
               <ActivityIndicator
-                color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"}
+                color="#FFFFFF"
               />
             ) : (
               <View style={styles.submitRow}>
                 <Text
                   style={[
                     styles.submitTextAction,
-                    { color: theme.mode === "dark" ? "#070B13" : "#FFFFFF" },
+                    { color: "#FFFFFF" },
                   ]}
                 >
                   {role === "admin"
-                    ? "SIGN IN AS ADMIN"
+                    ? "Sign In as Administrator"
                     : role === "teacher"
-                      ? "SIGN IN AS FACULTY"
-                      : "SIGN IN AS STUDENT"}
+                      ? "Sign In as Faculty"
+                      : "Sign In as Student"}
                 </Text>
                 <MaterialCommunityIcons
                   name="arrow-right"
                   size={18}
-                  color={theme.mode === "dark" ? "#070B13" : "#FFFFFF"}
+                  color="#FFFFFF"
                 />
               </View>
             )}
@@ -794,7 +763,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
         </View>
 
         <Text style={[styles.loginFootnote, { color: theme.muted }]}>
-          Secure · Verified · Encrypted
+          Pratyaksh Academic Portal • Enterprise Biometric Attendance
         </Text>
       </ScrollView>
 
@@ -1144,12 +1113,7 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
               styles.brandBadgeWrap,
               {
                 backgroundColor: theme.card,
-                borderColor: theme.borderAccent,
-                shadowColor: theme.cyan,
-                shadowOffset: { width: 0, height: 0 },
-                shadowOpacity: 0.35,
-                shadowRadius: 6,
-                elevation: 3,
+                borderColor: theme.borderBright,
               },
             ]}
           >
@@ -1199,15 +1163,15 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
               styles.topIconBtn,
               {
                 backgroundColor: isDark
-                  ? "rgba(255,255,255,0.07)"
-                  : "rgba(37,99,235,0.08)",
+                  ? "rgba(255,255,255,0.06)"
+                  : "rgba(37,99,235,0.06)",
                 borderColor: theme.border,
               },
             ]}
           >
             <MaterialCommunityIcons
               name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
-              size={18}
+              size={17}
               color={isDark ? theme.amber : theme.blue}
             />
           </Pressable>
@@ -1224,8 +1188,8 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                   activeTab === "Alerts"
                     ? theme.cyanGlow
                     : isDark
-                      ? "rgba(255,255,255,0.07)"
-                      : "rgba(37,99,235,0.08)",
+                      ? "rgba(255,255,255,0.06)"
+                      : "rgba(37,99,235,0.06)",
                 borderColor:
                   activeTab === "Alerts" ? theme.borderAccent : theme.border,
               },
@@ -1233,7 +1197,7 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
           >
             <MaterialCommunityIcons
               name={unreadCount > 0 ? "bell-badge-outline" : "bell-outline"}
-              size={18}
+              size={17}
               color={
                 activeTab === "Alerts"
                   ? theme.cyan
@@ -1268,11 +1232,6 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                   activeTab === "Profile" ? theme.cyanGlow : theme.card,
                 borderColor:
                   activeTab === "Profile" ? theme.cyan : theme.borderBright,
-                shadowColor: theme.cyan,
-                shadowOffset: { width: 0, height: 0 },
-                shadowOpacity: activeTab === "Profile" ? 0.4 : 0,
-                shadowRadius: 6,
-                elevation: activeTab === "Profile" ? 4 : 0,
               },
             ]}
           >
@@ -1309,18 +1268,18 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         </Animated.View>
       </ScrollView>
 
-      {/* ── Premium Floating Island Bottom Navigation ── */}
+      {/* ── Premium Floating Bottom Navigation Dock ── */}
       <View
         style={[
           styles.bottomFloatingIsland,
           {
             backgroundColor: theme.navBg,
             borderColor: theme.borderBright,
-            shadowColor: theme.mode === "dark" ? "#000" : "#1E3A8A",
+            shadowColor: "#000",
             shadowOffset: { width: 0, height: -2 },
-            shadowOpacity: theme.mode === "dark" ? 0.6 : 0.12,
-            shadowRadius: 20,
-            elevation: 16,
+            shadowOpacity: theme.mode === "dark" ? 0.35 : 0.08,
+            shadowRadius: 16,
+            elevation: 8,
           },
         ]}
       >
@@ -1343,12 +1302,8 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                     styles.tabIconContainerActive,
                     {
                       backgroundColor: theme.cyanGlow,
-                      borderRadius: 14,
-                      paddingHorizontal: 14,
-                      shadowColor: theme.cyan,
-                      shadowOpacity: 0.4,
-                      shadowRadius: 8,
-                      elevation: 3,
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
                     },
                   ],
                 ]}
@@ -1359,7 +1314,7 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                       ? (iconInfo.name.replace("-outline", "") as any)
                       : (iconInfo.name as any)
                   }
-                  size={21}
+                  size={20}
                   color={isActive ? theme.cyan : theme.muted}
                 />
               </View>
@@ -1368,8 +1323,7 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                   styles.tabLabelText,
                   {
                     color: isActive ? theme.cyan : theme.muted,
-                    fontWeight: isActive ? "800" : "600",
-                    letterSpacing: isActive ? 0.2 : 0,
+                    fontWeight: isActive ? "700" : "500",
                   },
                 ]}
                 numberOfLines={1}
@@ -1579,7 +1533,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
               ]}
             />
             <Text style={[styles.executiveStatusText, { color: theme.cyan }]}>
-              ATTENDANCE SYSTEM ACTIVE
+              System Operational • Live Sync
             </Text>
           </View>
           <Text style={[styles.executiveDateText, { color: theme.muted }]}>
@@ -1588,10 +1542,10 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
         </View>
 
         <Text style={[styles.executiveHeroHeading, { color: theme.text }]}>
-          Campus Academic Overview
+          Academic Overview
         </Text>
         <Text style={[styles.executiveHeroSub, { color: theme.textSecondary }]}>
-          Automated face-recognition attendance across all enrolled faculties
+          Real-time biometric attendance across enrolled faculties
         </Text>
       </View>
 
@@ -1605,9 +1559,9 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
         />
       )}
 
-      {/* 2x2 KPI Grid (Zero Overflow Math) */}
+      {/* 2x2 KPI Grid */}
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-        CAMPUS PERFORMANCE
+        Campus Metrics
       </Text>
       <View style={styles.kpiGridMatrix}>
         <HoloMetricCard
@@ -1646,7 +1600,7 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
 
       {/* Rapid Commands Grid */}
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-        QUICK ACTIONS
+        Quick Actions
       </Text>
       <View style={styles.rapidCommandsGrid}>
         <RapidCommandButton
@@ -1682,11 +1636,11 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
       {/* Recent Attendance Stream */}
       <View style={styles.sectionTitleRow}>
         <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-          RECENT ATTENDANCE
+          Recent Attendance Logs
         </Text>
         <Pressable onPress={() => go("Attendance")}>
           <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>
-            View All Records
+            View all
           </Text>
         </Pressable>
       </View>
@@ -1820,7 +1774,7 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             color={theme.cyan}
           />
           <Text style={[styles.teacherHeroPillText, { color: theme.cyan }]}>
-            AUTOMATED RECOGNITION READY
+            Facial Recognition Ready
           </Text>
         </View>
 
@@ -1842,30 +1796,29 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
             styles.teacherLaunchButton,
             {
               backgroundColor: theme.cyan,
-              shadowColor: theme.cyan,
             },
           ]}
           onPress={() => go("Attendance")}
         >
           <MaterialCommunityIcons
             name="camera-enhance"
-            size={20}
-            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+            size={18}
+            color="#FFFFFF"
           />
           <Text
             style={[
               styles.teacherLaunchButtonText,
-              { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+              { color: "#FFFFFF" },
             ]}
           >
-            START ATTENDANCE SESSION
+            Start Attendance Session
           </Text>
         </Pressable>
       </View>
 
       {/* Metrics Row */}
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-        TODAY'S STATS
+        Today's Stats
       </Text>
       <View style={styles.teacherMetricsRow}>
         <View
@@ -1927,7 +1880,7 @@ function TeacherDashboard({ go }: { go: (x: string) => void }) {
       {/* Today's Timetable */}
       <View style={styles.sectionTitleRow}>
         <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-          TODAY'S CLASSES
+          Today's Classes
         </Text>
         <Pressable onPress={() => go("Attendance")}>
           <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>
@@ -2015,7 +1968,7 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
       <View style={styles.screenCenterLoader}>
         <ActivityIndicator size="large" color={theme.cyan} />
         <Text style={[styles.loaderSubText, { color: theme.muted }]}>
-          Loading Attendance Fidelity...
+          Loading Attendance Overview...
         </Text>
       </View>
     );
@@ -2029,7 +1982,7 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
 
   return (
     <View style={styles.screenLayout}>
-      {/* Concentric Scorecard Holographic Card */}
+      {/* Concentric Scorecard Card */}
       <View
         style={[
           styles.studentScorecardGlass,
@@ -2050,7 +2003,7 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
               {rate}%
             </Text>
             <Text style={[styles.radialDialTitle, { color: theme.muted }]}>
-              ATTENDANCE
+              Attendance
             </Text>
           </View>
         </View>
@@ -2076,7 +2029,7 @@ function StudentDashboard({ go }: { go: (x: string) => void }) {
 
       {/* Record Tally Grid */}
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-        RECORD BREAKDOWN
+        Attendance Breakdown
       </Text>
       <View style={styles.studentBreakdownGrid}>
         <View
@@ -2522,7 +2475,7 @@ function AdminStudentsDirectory({ go }: { go: (x: string) => void }) {
                   style={[styles.modalDismissBtnFlex, { backgroundColor: theme.cyanGlow, borderWidth: 1, borderColor: theme.cyan }]}
                   onPress={() => setEditingStudent(selectedStudent)}
                 >
-                  <Text style={[styles.modalDismissBtnText, { color: theme.cyan }]}>EDIT</Text>
+                  <Text style={[styles.modalDismissBtnText, { color: theme.cyan }]}>Edit</Text>
                 </Pressable>
                 <Pressable
                   style={[
@@ -3324,7 +3277,7 @@ function BiometricCameraModal({
               ) : (
                 <>
                   <MaterialCommunityIcons name="camera" size={21} color="#FFFFFF" />
-                  <Text style={styles.nativeCaptureButtonText}>TAKE PHOTO & UPLOAD</Text>
+                  <Text style={styles.nativeCaptureButtonText}>Take Photo & Upload</Text>
                 </>
               )}
             </Pressable>
@@ -3358,10 +3311,10 @@ function BiometricCameraModal({
               <Text
                 style={[
                   styles.primaryNeonButtonText,
-                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                  { color: "#FFFFFF" },
                 ]}
               >
-                GRANT CAMERA ACCESS
+                Grant Camera Access
               </Text>
             </Pressable>
           </View>
@@ -3402,7 +3355,7 @@ function BiometricCameraModal({
                       { color: theme.cyan, marginLeft: 6 },
                     ]}
                   >
-                    ANALYZING FACE...
+                    Analyzing face...
                   </Text>
                 </View>
               ) : validationInfo?.valid ? (
@@ -3950,7 +3903,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>ROLL NUMBER</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>Roll Number</Text>
           <TextInput
             style={[styles.textInputHoloPlain, { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text }]}
             value={rollNumber}
@@ -5098,7 +5051,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     .filter(Boolean);
 
   const createSession = async () => {
-    const primaryScope = attendanceMode === "MULTI" ? multiSections[0] : batchScope;
+    const isMulti = attendanceMode === "MULTI";
+    if (isMulti && multiSectionIds.length === 0) {
+      Alert.alert(
+        "Select Programs & Semesters",
+        "Please select at least one program and semester section.",
+      );
+      return;
+    }
+    const primaryScope = isMulti ? multiSections[0] : batchScope;
     if (!primaryScope?.id || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
@@ -5109,25 +5070,48 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     setBusy(true);
     setUploadProgress(0);
     try {
+      const distinctSchools = Array.from(new Set(multiSections.map((s) => s.school)));
+      const distinctDepts = Array.from(new Set(multiSections.map((s) => s.department)));
+      const distinctPrograms = Array.from(new Set(multiSections.map((s) => s.program)));
+      const distinctSemesters = Array.from(new Set(multiSections.map((s) => s.semester)));
+
       const res = await http.post("/teacher/attendance-sessions", {
         ...form,
-        school: primaryScope.school,
-        faculty: primaryScope.faculty,
-        department: primaryScope.department,
-        program: primaryScope.program,
-        semester: primaryScope.semester,
-        academic_scope: attendanceMode === "MULTI"
-          ? (multiScope || {})
+        school: isMulti
+          ? (distinctSchools.length === 1 ? distinctSchools[0] : "University Wide")
+          : primaryScope.school,
+        faculty: isMulti
+          ? (multiSections.every((s) => s.faculty === primaryScope.faculty) ? primaryScope.faculty : "Multiple Faculties")
+          : primaryScope.faculty,
+        department: isMulti
+          ? (distinctDepts.length === 1 ? distinctDepts[0] : "Multiple Departments")
+          : primaryScope.department,
+        program: isMulti
+          ? (distinctPrograms.length === 1 ? distinctPrograms[0] : "Multiple Programs")
+          : primaryScope.program,
+        semester: isMulti
+          ? (distinctSemesters.length === 1 ? distinctSemesters[0] : "Multiple Semesters")
+          : primaryScope.semester,
+        academic_scope: isMulti
+          ? (multiScope || {
+              schools: distinctSchools,
+              departments: distinctDepts,
+              programs: distinctPrograms,
+              semesters: distinctSemesters,
+              section_ids: multiSectionIds,
+            })
           : { school: [primaryScope.school], faculty: [primaryScope.faculty], department: [primaryScope.department], program: [primaryScope.program], semester: [primaryScope.semester] },
         section_id: primaryScope.id,
-        section_ids: attendanceMode === "MULTI" ? multiSectionIds : [primaryScope.id],
+        section_ids: isMulti ? multiSectionIds : [primaryScope.id],
       });
       const session = { ...res.data, session_id: res.data.session_id };
       setScope(session);
       await AsyncStorage.setItem("active_attendance_session_id", session.session_id);
       Alert.alert(
         "Session Created",
-        "Attendance session created. You may now upload classroom group photos.",
+        isMulti
+          ? `Attendance session created for ${multiSectionIds.length} programs/semesters across schools and departments. You may now upload multiple classroom photos at once.`
+          : "Attendance session created. You may now upload classroom group photos.",
       );
     } catch (e: any) {
       Alert.alert(
@@ -5145,7 +5129,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       return;
     }
     const savedSectionIds = Array.isArray(scope?.academic_scope?.section_ids) ? scope.academic_scope.section_ids : [];
-    const targetSectionIds = attendanceMode === "MULTI"
+    const isMultiMode = attendanceMode === "MULTI" || savedSectionIds.length > 1;
+    const targetSectionIds = isMultiMode
       ? (savedSectionIds.length ? savedSectionIds : multiSectionIds)
       : (batchScope?.id ? [batchScope.id] : []);
     if (!targetSectionIds.length || (attendanceMode === "BATCH" && (!batchScope?.program || !batchScope?.semester))) {
@@ -5164,8 +5149,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       data.append("session_id", scope.session_id);
       data.append("section_id", String(targetSectionIds[0]));
       data.append("section_ids", JSON.stringify(targetSectionIds));
-      data.append("program", attendanceMode === "MULTI" ? "Multiple programs" : batchScope.program);
-      data.append("semester", attendanceMode === "MULTI" ? "Multiple semesters" : batchScope.semester);
+      data.append("program", targetSectionIds.length > 1 ? "Multiple programs" : (batchScope?.program || scope.program || "General"));
+      data.append("semester", targetSectionIds.length > 1 ? "Multiple semesters" : (batchScope?.semester || scope.semester || "All"));
       data.append("idempotency_key", requestKey);
       selectedPhotos.forEach((asset, index) => data.append("files", {
         uri: asset.uri,
@@ -5191,15 +5176,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         );
       }
 
-      setPhotoCount((count) => count + 1);
+      setPhotoCount((count) => count + selectedPhotos.length);
       setSelectedPhotos([]);
       setBatchRequestKey(null);
       Alert.alert(
         "Batch Processed",
-        `${res.data.recognized_count || 0} new student(s) marked present. Continue with another program/semester or finish this session.`,
+        `${res.data.recognized_count || 0} student(s) recognized & marked present across ${targetSectionIds.length > 1 ? `${targetSectionIds.length} programs/semesters` : "the class"}.`,
         [
-          { text: "Continue Same Session", style: "cancel" },
-          { text: "Finish Session", onPress: async () => { await http.patch(`/teacher/attendance-sessions/${scope.session_id}/status`, { status: "COMPLETED" }); await AsyncStorage.removeItem("active_attendance_session_id"); go("Recognition Results"); } },
+          { text: "Add More Photos", style: "cancel" },
+          { text: "View Results / Finalize", onPress: () => go("Recognition Results") },
         ],
       );
     } catch (e: any) {
@@ -5318,11 +5303,11 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           />
         </View>
 
-        <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 14 }]}>ATTENDANCE SCOPE</Text>
+        <Text style={[styles.formGroupHeading, { color: theme.muted, marginTop: 14 }]}>Attendance Scope</Text>
         <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
           {(["BATCH", "MULTI"] as const).map((mode) => (
             <Pressable key={mode} onPress={() => setAttendanceMode(mode)} style={[styles.filterSegmentBtn, { flex: 1, borderWidth: 1, borderColor: attendanceMode === mode ? theme.cyan : theme.border, backgroundColor: attendanceMode === mode ? theme.cyanGlow : theme.bgElevated, paddingVertical: 10, borderRadius: 10, alignItems: "center" }]}>
-              <Text style={[styles.filterSegmentBtnText, { color: attendanceMode === mode ? theme.cyan : theme.muted }]}>{mode === "BATCH" ? "ONE PROGRAM / SEM" : "MULTIPLE PROGRAMS / SEMS"}</Text>
+              <Text style={[styles.filterSegmentBtnText, { color: attendanceMode === mode ? theme.cyan : theme.muted }]}>{mode === "BATCH" ? "Single Program / Semester" : "Multiple Programs / Semesters"}</Text>
             </Pressable>
           ))}
         </View>
@@ -5334,8 +5319,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           />
         ) : (
           <>
-            <TeacherHierarchyCheckboxes selected={multiSectionIds} onChange={setMultiSectionIds} onScopeChange={setMultiScope} />
-            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>Select every required program and semester. One group-photo upload will match faces against the combined student roster.</Text>
+            <MultiProgramAttendanceSelector selected={multiSectionIds} onChange={setMultiSectionIds} onScopeChange={setMultiScope} />
+            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>Select every required program and semester across schools and departments. Uploading multiple photos will match and mark attendance for students across all selected sections.</Text>
           </>
         )}
 
@@ -5464,9 +5449,13 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             <Text style={[styles.sectionSelectedTitle, { color: theme.cyan }]}>
               {scope
                 ? `${scope.department} • ${scope.academic_scope?.section_ids?.length > 1 ? `${scope.academic_scope.section_ids.length} selected sections` : `${scope.program} • ${scope.semester}`}`
-                : attendanceMode === "MULTI" && multiSections.length
-                  ? `${multiSections.length} program/semester sections selected`
-                  : "Select an academic section above"}
+                : attendanceMode === "MULTI"
+                  ? multiSections.length > 0
+                    ? `${multiSections.length} section(s) selected across ${new Set(multiSections.map((s) => s.school)).size} school(s)`
+                    : "Select academic sections below"
+                  : batchScope?.program
+                    ? `${batchScope.program} • ${batchScope.semester}`
+                    : "Select an academic section above"}
             </Text>
             <Text
               style={[
@@ -5565,15 +5554,15 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
               onPress={() => go("Recognition Results")}
             >
               <MaterialCommunityIcons name="clipboard-text-outline" size={18} color={theme.text} />
-              <Text style={[styles.viewResultsBtnText, { color: theme.text }]}>VIEW LATEST RESULTS</Text>
+              <Text style={[styles.viewResultsBtnText, { color: theme.text }]}>View Latest Results</Text>
             </Pressable>
           )}
           {busy && uploadProgress > 0 && (
-            <UploadDonut progress={uploadProgress} label="UPLOADING CLASS PHOTO" />
+            <UploadDonut progress={uploadProgress} label="Uploading Class Photo" />
           )}
           {selectedPhotos.length > 0 && (
             <View style={{ marginTop: 14 }}>
-              <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{selectedPhotos.length} PHOTO{selectedPhotos.length === 1 ? "" : "S"} READY</Text>
+              <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"} Selected</Text>
               {selectedPhotos.map((asset, index) => (
                 <View key={`${asset.uri}-${index}`} style={{ flexDirection: "row", alignItems: "center", marginTop: 8 }}>
                   <Image source={{ uri: asset.uri }} style={{ width: 38, height: 38, borderRadius: 6 }} />
@@ -5584,7 +5573,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
                 </View>
               ))}
               <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 14 }, busy && { opacity: .6 }]} onPress={processPhotos} disabled={busy}>
-                <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>PROCESS {selectedPhotos.length} PHOTO{selectedPhotos.length === 1 ? "" : "S"}</Text>
+                <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Process {selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"}</Text>
               </Pressable>
             </View>
           )}
@@ -5893,117 +5882,142 @@ function RecognitionResultsView({ go }: { go: (x: string) => void }) {
 function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
-  const [statusMap, setStatusMap] = useState<
+  const [statusOverrides, setStatusOverrides] = useState<
     Record<string, "PRESENT" | "ABSENT">
   >({});
   const [activeFilter, setActiveFilter] = useState<
     "ALL" | "PRESENT" | "ABSENT"
   >("ALL");
   const [sessionId, setSessionId] = useState("");
+  const [sessionTitle, setSessionTitle] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [search, setSearch] = useState("");
+  const [pagination, setPagination] = useState({
+    page: 1,
+    page_size: 20,
+    total_items: 0,
+    total_pages: 1,
+    has_next: false,
+    has_previous: false,
+  });
   const [busy, setBusy] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState("");
 
-  const loadData = useCallback(async () => {
-      setBusy(true);
+  const loadData = useCallback(
+    async (
+      targetPage = page,
+      targetPageSize = pageSize,
+      targetFilter = activeFilter,
+      targetSearch = search,
+    ) => {
       setLoadError("");
       try {
-        const storedSession = await AsyncStorage.getItem(
-          "active_attendance_session_id",
-        );
-        const storedResult = await AsyncStorage.getItem(
-          "latest_recognition_result",
-        );
-        let activeId = storedSession || "";
-        let recognizedStudents: any[] = [];
-
-        if (storedResult) {
-          const parsed = JSON.parse(storedResult);
-          recognizedStudents = parsed.students || [];
-          if (!activeId && parsed.session_id) activeId = parsed.session_id;
+        let activeId = sessionId;
+        if (!activeId) {
+          activeId =
+            (await AsyncStorage.getItem("active_attendance_session_id")) || "";
         }
-
+        if (!activeId) {
+          const storedResult = await AsyncStorage.getItem(
+            "latest_recognition_result",
+          );
+          if (storedResult) {
+            const parsed = JSON.parse(storedResult);
+            if (parsed.session_id) activeId = parsed.session_id;
+          }
+        }
         if (activeId) setSessionId(activeId);
 
-        // A session roster is the source of truth: it respects both a single
-        // selected program and a multi-program/semester session.
-        let roster: any[] = [];
         if (activeId) {
-          try {
-            const res = await http.get(`/attendance/${activeId}`);
-            roster = res.data?.students || [];
-          } catch {}
-        }
-        if (roster.length === 0) {
-          try {
-            const res = await http.get("/students");
-            roster = res.data?.students || [];
-          } catch {}
-        }
+          const params: Record<string, any> = {
+            page: targetPage,
+            page_size: targetPageSize,
+            include_photos: true,
+          };
+          if (targetFilter !== "ALL") params.status = targetFilter;
+          if (targetSearch.trim()) params.search = targetSearch.trim();
 
-        if (roster.length === 0 && recognizedStudents.length > 0) {
-          roster = recognizedStudents;
-        }
-
-        // Also check attendance report or session attendance if available
-        let reportRecords: any[] = [];
-        try {
-          const rep = await http.get("/teacher/attendance/report");
-          reportRecords = rep.data?.records || [];
-          if (
-            !activeId &&
-            reportRecords.length > 0 &&
-            reportRecords[0].session_id
-          ) {
-            setSessionId(reportRecords[0].session_id);
+          const res = await http.get(
+            `/attendance/sessions/${activeId}/records`,
+            { params },
+          );
+          const data = res.data || {};
+          setItems(data.items || []);
+          if (data.session_title) setSessionTitle(data.session_title);
+          if (data.pagination) {
+            setPagination(data.pagination);
+          } else {
+            setPagination({
+              page: targetPage,
+              page_size: targetPageSize,
+              total_items: (data.items || []).length,
+              total_pages: 1,
+              has_next: false,
+              has_previous: false,
+            });
           }
-        } catch {}
+        } else {
+          // Fallback to general students roster if no session exists yet
+          const params: Record<string, any> = {
+            page: targetPage,
+            page_size: targetPageSize,
+          };
+          if (targetSearch.trim()) params.search = targetSearch.trim();
 
-        if (roster.length === 0) {
-          roster = reportRecords;
+          const res = await http.get("/students", { params });
+          const stList = res.data?.students || [];
+          setItems(stList);
+          const total = res.data?.total || stList.length;
+          const totalPages = Math.ceil(total / targetPageSize) || 1;
+          setPagination({
+            page: targetPage,
+            page_size: targetPageSize,
+            total_items: total,
+            total_pages: totalPages,
+            has_next: targetPage < totalPages,
+            has_previous: targetPage > 1,
+          });
         }
-
-        const recognizedIds = new Set(
-          recognizedStudents.map((s) => s.student_id),
+      } catch (e: any) {
+        setLoadError(
+          apiErrorMessage(e, "Could not load session attendance roster."),
         );
-        reportRecords.forEach((r) => {
-          if (String(r.status || "").toUpperCase() === "PRESENT")
-            recognizedIds.add(r.student_id);
-        });
-
-        const initialMap: Record<string, "PRESENT" | "ABSENT"> = {};
-        roster.forEach((row: any) => {
-          const isPres =
-            recognizedIds.has(row.student_id) ||
-            String(row.status || "").toUpperCase() === "PRESENT";
-          initialMap[row.student_id] = isPres ? "PRESENT" : "ABSENT";
-        });
-
-        setItems(roster);
-        setStatusMap(initialMap);
-      } catch {
-        setItems([]);
-        setLoadError("Could not load the selected session roster.");
       } finally {
         setBusy(false);
+        setRefreshing(false);
       }
-    }, []);
+    },
+    [sessionId, page, pageSize, activeFilter, search],
+  );
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    loadData(page, pageSize, activeFilter, search);
+  }, [loadData, page, pageSize, activeFilter, search]);
 
-  const toggleStatus = (studentId: string) => {
-    setStatusMap((prev) => ({
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadData(page, pageSize, activeFilter, search);
+  };
+
+  const toggleStatus = (studentId: string, current: "PRESENT" | "ABSENT") => {
+    const nextStatus = current === "PRESENT" ? "ABSENT" : "PRESENT";
+    setStatusOverrides((prev) => ({
       ...prev,
-      [studentId]: prev[studentId] === "PRESENT" ? "ABSENT" : "PRESENT",
+      [studentId]: nextStatus,
     }));
   };
 
-  const markAllPresent = () => {
-    const updated: Record<string, "PRESENT" | "ABSENT"> = {};
-    items.forEach((r) => (updated[r.student_id] = "PRESENT"));
-    setStatusMap(updated);
+  const markPagePresent = () => {
+    setStatusOverrides((prev) => {
+      const next = { ...prev };
+      items.forEach((st) => {
+        next[st.student_id] = "PRESENT";
+      });
+      return next;
+    });
   };
 
   const finalizeAttendance = async () => {
@@ -6019,9 +6033,11 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
       );
       return;
     }
+
+    const overriddenCount = Object.keys(statusOverrides).length;
     Alert.alert(
       "Confirm Attendance",
-      `Submit attendance for ${items.length} students? Present: ${presentCount}, Absent: ${absentCount}. You can still edit records later from session history.`,
+      `Submit attendance for ${pagination.total_items} students? Overridden changes on ${overriddenCount} student(s) will be applied.`,
       [
         { text: "Review", style: "cancel" },
         { text: "Submit", onPress: () => submitAttendance(currentSession) },
@@ -6032,10 +6048,18 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
   const submitAttendance = async (currentSession: string) => {
     setSubmitting(true);
     try {
-      const records = Object.entries(statusMap).map(([student_id, status]) => ({
-        student_id,
-        status,
+      // Build records payload merging current page records and overrides
+      const records = items.map((student) => ({
+        student_id: student.student_id,
+        status: statusOverrides[student.student_id] || student.status || "ABSENT",
       }));
+
+      // Add any overrides for students on other pages
+      Object.entries(statusOverrides).forEach(([student_id, status]) => {
+        if (!records.some((r) => r.student_id === student_id)) {
+          records.push({ student_id, status });
+        }
+      });
 
       await http.post("/teacher/attendance/finalize", {
         session_id: currentSession,
@@ -6057,16 +6081,15 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     }
   };
 
-  const filteredItems = useMemo(
-    () => items.filter((student) => {
-      if (activeFilter === "ALL") return true;
-      const currentStatus = statusMap[student.student_id] || "ABSENT";
-      return currentStatus === activeFilter;
-    }),
-    [items, activeFilter, statusMap],
-  );
+  const pagePresentCount = items.filter(
+    (st) => (statusOverrides[st.student_id] ?? st.status) === "PRESENT",
+  ).length;
+  const pageAbsentCount = items.length - pagePresentCount;
+  const pageRatio = items.length
+    ? Math.round((pagePresentCount / items.length) * 100)
+    : 0;
 
-  if (busy) {
+  if (busy && !refreshing && items.length === 0) {
     return (
       <View style={styles.screenCenterLoader}>
         <ActivityIndicator size="large" color={theme.cyan} />
@@ -6077,263 +6100,489 @@ function VerifyAttendanceView({ go }: { go: (x: string) => void }) {
     );
   }
 
-  const presentCount = Object.values(statusMap).filter(
-    (s) => s === "PRESENT",
-  ).length;
-  const absentCount = Object.values(statusMap).filter(
-    (s) => s === "ABSENT",
-  ).length;
-  const shownPresentCount = filteredItems.filter(
-    (student) => statusMap[student.student_id] === "PRESENT",
-  ).length;
-  const shownAbsentCount = filteredItems.length - shownPresentCount;
-  const shownRatio = filteredItems.length
-    ? Math.round((shownPresentCount / filteredItems.length) * 100)
-    : 0;
-
   return (
-    <View style={styles.screenLayout}>
-      <View style={styles.screenTopHeader}>
-        <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
-            Verify Roster
-          </Text>
-          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Review and adjust student status
-          </Text>
-        </View>
-      </View>
-
-      {loadError && (
-        <View style={[styles.errorBannerBox, { backgroundColor: theme.roseGlow, borderColor: theme.rose }]}>
-          <Text style={[styles.errorBannerText, { color: theme.rose }]}>{loadError}</Text>
-          <Pressable onPress={loadData}><Text style={{ color: theme.cyan, fontWeight: "800" }}>RETRY</Text></Pressable>
-        </View>
-      )}
-
-      {/* Roster Ratio & Tally HUD */}
-      <View
-        style={[
-          styles.tallyHUDCard,
-          { backgroundColor: theme.cardGlass, borderColor: theme.border },
-        ]}
-      >
-        <Text style={[styles.tallyRatioSubText, { color: theme.cyan, marginBottom: 8 }]}>Showing {filteredItems.length} of {items.length} students in this session</Text>
-        <View style={styles.tallyStatsRow}>
-          <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
-              {shownPresentCount}
-            </Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
-              Present
-            </Text>
-          </View>
-          <View
-            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
+    <View style={[styles.screenLayout, { flex: 1 }]}>
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.student_id}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.cyan}
           />
-          <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.rose }]}>
-              {shownAbsentCount}
-            </Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
-              Absent
-            </Text>
-          </View>
-          <View
-            style={[styles.tallyDividerLine, { backgroundColor: theme.border }]}
-          />
-          <View style={styles.tallyStatCol}>
-            <Text style={[styles.tallyDigit, { color: theme.text }]}>
-              {filteredItems.length}
-            </Text>
-            <Text style={[styles.tallyMeta, { color: theme.muted }]}>
-              Total
-            </Text>
-          </View>
-        </View>
-
-        {/* Attendance Ratio Bar */}
-        <View
-          style={[
-            styles.tallyProgressBarTrack,
-            { backgroundColor: theme.bgElevated },
-          ]}
-        >
-          <View
-            style={[
-              styles.tallyProgressBarFill,
-              { width: `${shownRatio}%`, backgroundColor: theme.emerald },
-            ]}
-          />
-        </View>
-        <Text style={[styles.tallyRatioSubText, { color: theme.muted }]}>
-          {shownRatio}% Recorded Present
-        </Text>
-      </View>
-
-      {/* Quick Filter Segment Pills & Bulk Button */}
-      <View style={styles.verifyToolbarRow}>
-        <View
-          style={[
-            styles.filterSegmentPillWrap,
-            { backgroundColor: theme.bgElevated },
-          ]}
-        >
-          {(["ALL", "PRESENT", "ABSENT"] as const).map((filterKey) => {
-            const active = activeFilter === filterKey;
-            return (
-              <Pressable
-                key={filterKey}
-                style={[
-                  styles.filterSegmentBtn,
-                  active && [
-                    styles.filterSegmentBtnActive,
-                    {
-                      backgroundColor: theme.card,
-                      borderColor: theme.borderAccent,
-                    },
-                  ],
-                ]}
-                onPress={() => setActiveFilter(filterKey)}
-              >
-                <Text
-                  style={[
-                    styles.filterSegmentBtnText,
-                    { color: active ? theme.cyan : theme.muted },
-                    active && { fontWeight: "800" },
-                  ]}
-                >
-                  {filterKey === "ALL"
-                    ? `All (${items.length})`
-                    : filterKey === "PRESENT"
-                      ? `Present (${presentCount})`
-                      : `Absent (${absentCount})`}
+        }
+        contentContainerStyle={{ paddingBottom: 40 }}
+        ListHeaderComponent={
+          <View>
+            <View style={styles.screenTopHeader}>
+              <View>
+                <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+                  Verify Roster
                 </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        <Pressable
-          style={[
-            styles.quickBulkBtn,
-            { backgroundColor: theme.bgElevated, borderColor: theme.border },
-          ]}
-          onPress={markAllPresent}
-        >
-          <MaterialCommunityIcons
-            name="check-all"
-            size={16}
-            color={theme.cyan}
-          />
-          <Text style={[styles.quickBulkBtnText, { color: theme.cyan }]}>
-            All Present
-          </Text>
-        </Pressable>
-      </View>
-
-      {/* Checklist Rows */}
-      {filteredItems.map((student, i) => {
-        const currentStatus = statusMap[student.student_id] || "ABSENT";
-        const isPresent = currentStatus === "PRESENT";
-        return (
-          <View
-            key={student.student_id || i}
-            style={[
-              styles.checklistCard,
-              { backgroundColor: theme.cardGlass, borderColor: theme.border },
-            ]}
-          >
-            {student.profile_photo_base64 ? (
-              <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow }} />
-            ) : (
-              <View style={[styles.rosterAvatarBox, { backgroundColor: isPresent ? theme.emeraldGlow : theme.roseGlow }]}>
-                <MaterialCommunityIcons name="account" size={21} color={isPresent ? theme.emerald : theme.rose} />
+                <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+                  {sessionTitle ? `${sessionTitle} • ` : ""}Review and adjust student status
+                </Text>
               </View>
-            )}
+            </View>
 
-            <View style={{ flex: 1, paddingHorizontal: 12 }}>
-              <Text style={[styles.checkListName, { color: theme.text }]}>
-                {student.name || student.student_id}
+            {/* Live Search Input Bar */}
+            <View
+              style={[
+                styles.searchInputWrap,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="magnify"
+                size={18}
+                color={theme.muted}
+              />
+              <TextInput
+                style={[styles.searchTextInput, { color: theme.text }]}
+                placeholder="Search by student name or roll number..."
+                placeholderTextColor={theme.muted}
+                value={search}
+                onChangeText={(val) => {
+                  setSearch(val);
+                  setPage(1);
+                }}
+              />
+              {search ? (
+                <Pressable onPress={() => setSearch("")}>
+                  <MaterialCommunityIcons
+                    name="close-circle"
+                    size={16}
+                    color={theme.muted}
+                  />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {loadError ? (
+              <View
+                style={[
+                  styles.errorBannerBox,
+                  {
+                    backgroundColor: theme.roseGlow,
+                    borderColor: theme.rose,
+                    marginTop: 10,
+                  },
+                ]}
+              >
+                <Text style={[styles.errorBannerText, { color: theme.rose }]}>
+                  {loadError}
+                </Text>
+                <Pressable onPress={() => loadData(page)}>
+                  <Text style={{ color: theme.cyan, fontWeight: "600" }}>
+                    Retry
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {/* Roster Ratio & Tally HUD */}
+            <View
+              style={[
+                styles.tallyHUDCard,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.border,
+                  marginTop: 12,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tallyRatioSubText,
+                  { color: theme.cyan, marginBottom: 8 },
+                ]}
+              >
+                Page {pagination.page} of {pagination.total_pages || 1} • Total {pagination.total_items} students
               </Text>
-              <Text style={[styles.checkListId, { color: theme.muted }]}>
-                ID: {student.student_id}
-              </Text>
-              <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
-                {student.program || "Program not set"} • {student.semester || student.academic_semester || "Semester not set"}
+              <View style={styles.tallyStatsRow}>
+                <View style={styles.tallyStatCol}>
+                  <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
+                    {pagePresentCount}
+                  </Text>
+                  <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+                    Present (Page)
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.tallyDividerLine,
+                    { backgroundColor: theme.border },
+                  ]}
+                />
+                <View style={styles.tallyStatCol}>
+                  <Text style={[styles.tallyDigit, { color: theme.rose }]}>
+                    {pageAbsentCount}
+                  </Text>
+                  <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+                    Absent (Page)
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.tallyDividerLine,
+                    { backgroundColor: theme.border },
+                  ]}
+                />
+                <View style={styles.tallyStatCol}>
+                  <Text style={[styles.tallyDigit, { color: theme.text }]}>
+                    {items.length}
+                  </Text>
+                  <Text style={[styles.tallyMeta, { color: theme.muted }]}>
+                    On Page
+                  </Text>
+                </View>
+              </View>
+
+              {/* Attendance Ratio Bar */}
+              <View
+                style={[
+                  styles.tallyProgressBarTrack,
+                  { backgroundColor: theme.bgElevated, marginTop: 10 },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.tallyProgressBarFill,
+                    { width: `${pageRatio}%`, backgroundColor: theme.emerald },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.tallyRatioSubText, { color: theme.muted }]}>
+                {pageRatio}% Recorded Present on this page
               </Text>
             </View>
 
-            <Pressable
-              style={[
-                styles.togglePillHolo,
-                isPresent
-                  ? [
-                      styles.togglePillHoloPresent,
-                      {
-                        backgroundColor: theme.emeraldGlow,
-                        borderColor: theme.emerald,
-                      },
-                    ]
-                  : [
-                      styles.togglePillHoloAbsent,
-                      {
-                        backgroundColor: theme.roseGlow,
-                        borderColor: theme.rose,
-                      },
-                    ],
-              ]}
-              onPress={() => toggleStatus(student.student_id)}
-            >
-              <MaterialCommunityIcons
-                name={isPresent ? "check" : "close"}
-                size={15}
-                color={isPresent ? theme.emerald : theme.rose}
-              />
-              <Text
+            {/* Quick Filter Segment Pills & Bulk Button */}
+            <View style={styles.verifyToolbarRow}>
+              <View
                 style={[
-                  styles.togglePillHoloText,
-                  { color: isPresent ? theme.emerald : theme.rose },
+                  styles.filterSegmentPillWrap,
+                  { backgroundColor: theme.bgElevated },
                 ]}
               >
-                {currentStatus}
-              </Text>
-            </Pressable>
-          </View>
-        );
-      })}
+                {(["ALL", "PRESENT", "ABSENT"] as const).map((filterKey) => {
+                  const active = activeFilter === filterKey;
+                  return (
+                    <Pressable
+                      key={filterKey}
+                      style={[
+                        styles.filterSegmentBtn,
+                        active && [
+                          styles.filterSegmentBtnActive,
+                          {
+                            backgroundColor: theme.card,
+                            borderColor: theme.borderAccent,
+                          },
+                        ],
+                      ]}
+                      onPress={() => {
+                        setActiveFilter(filterKey);
+                        setPage(1);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.filterSegmentBtnText,
+                          { color: active ? theme.cyan : theme.muted },
+                          active && { fontWeight: "600" },
+                        ]}
+                      >
+                        {filterKey === "ALL"
+                          ? "All"
+                          : filterKey === "PRESENT"
+                            ? "Present"
+                            : "Absent"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
 
-      <Pressable
-        style={[
-          styles.primaryNeonButton,
-          { backgroundColor: theme.cyan, marginTop: 22 },
-          submitting && { opacity: 0.7 },
-        ]}
-        onPress={finalizeAttendance}
-        disabled={submitting}
-      >
-        {submitting ? (
-          <ActivityIndicator
-            color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
-          />
-        ) : (
-          <View style={styles.submitRow}>
-            <MaterialCommunityIcons
-              name="lock-check"
-              size={19}
-              color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
-            />
-            <Text
+              <Pressable
+                style={[
+                  styles.quickBulkBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                  },
+                ]}
+                onPress={markPagePresent}
+              >
+                <MaterialCommunityIcons
+                  name="check-all"
+                  size={16}
+                  color={theme.cyan}
+                />
+                <Text style={[styles.quickBulkBtnText, { color: theme.cyan }]}>
+                  Page Present
+                </Text>
+              </Pressable>
+            </View>
+
+            {/* Page Size Selector Row */}
+            <View style={styles.pageSizeSelectorRow}>
+              <Text style={{ fontSize: 11, color: theme.muted, marginRight: 4 }}>
+                Page Size:
+              </Text>
+              {[20, 50, 100].map((size) => {
+                const isSelected = pageSize === size;
+                return (
+                  <Pressable
+                    key={size}
+                    style={[
+                      styles.pageSizePill,
+                      {
+                        backgroundColor: isSelected
+                          ? theme.cyanGlow
+                          : theme.bgElevated,
+                        borderColor: isSelected ? theme.cyan : theme.border,
+                      },
+                    ]}
+                    onPress={() => {
+                      setPageSize(size);
+                      setPage(1);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.pageSizePillText,
+                        { color: isSelected ? theme.cyan : theme.muted },
+                      ]}
+                    >
+                      {size}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        }
+        renderItem={({ item: student }) => {
+          const currentStatus =
+            statusOverrides[student.student_id] ?? student.status ?? "ABSENT";
+          const isPresent = currentStatus === "PRESENT";
+          return (
+            <View
               style={[
-                styles.primaryNeonButtonText,
-                { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                styles.checklistCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.border },
               ]}
             >
-              CONFIRM & SUBMIT ATTENDANCE
+              {student.profile_photo_base64 ? (
+                <Image
+                  source={{ uri: student.profile_photo_base64 }}
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 22,
+                    backgroundColor: isPresent
+                      ? theme.emeraldGlow
+                      : theme.roseGlow,
+                  }}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.rosterAvatarBox,
+                    {
+                      backgroundColor: isPresent
+                        ? theme.emeraldGlow
+                        : theme.roseGlow,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="account"
+                    size={21}
+                    color={isPresent ? theme.emerald : theme.rose}
+                  />
+                </View>
+              )}
+
+              <View style={{ flex: 1, paddingHorizontal: 12 }}>
+                <Text style={[styles.checkListName, { color: theme.text }]}>
+                  {student.name || student.student_id}
+                </Text>
+                <Text style={[styles.checkListId, { color: theme.muted }]}>
+                  ID: {student.student_id}
+                  {student.roll_number ? ` • Roll: ${student.roll_number}` : ""}
+                </Text>
+                <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
+                  {student.program || "Program not set"} •{" "}
+                  {student.semester ||
+                    student.academic_semester ||
+                    "Semester not set"}
+                </Text>
+              </View>
+
+              <Pressable
+                style={[
+                  styles.togglePillHolo,
+                  isPresent
+                    ? [
+                        styles.togglePillHoloPresent,
+                        {
+                          backgroundColor: theme.emeraldGlow,
+                          borderColor: theme.emerald,
+                        },
+                      ]
+                    : [
+                        styles.togglePillHoloAbsent,
+                        {
+                          backgroundColor: theme.roseGlow,
+                          borderColor: theme.rose,
+                        },
+                      ],
+                ]}
+                onPress={() => toggleStatus(student.student_id, currentStatus)}
+              >
+                <MaterialCommunityIcons
+                  name={isPresent ? "check" : "close"}
+                  size={15}
+                  color={isPresent ? theme.emerald : theme.rose}
+                />
+                <Text
+                  style={[
+                    styles.togglePillHoloText,
+                    { color: isPresent ? theme.emerald : theme.rose },
+                  ]}
+                >
+                  {currentStatus}
+                </Text>
+              </Pressable>
+            </View>
+          );
+        }}
+        ListEmptyComponent={
+          <View style={{ padding: 30, alignItems: "center" }}>
+            <MaterialCommunityIcons
+              name="account-search-outline"
+              size={36}
+              color={theme.muted}
+            />
+            <Text
+              style={{
+                color: theme.muted,
+                marginTop: 8,
+                fontSize: 14,
+                textAlign: "center",
+              }}
+            >
+              {search
+                ? `No students matching "${search}"`
+                : "No student records found"}
             </Text>
           </View>
-        )}
-      </Pressable>
+        }
+        ListFooterComponent={
+          <View>
+            {/* Pagination Controls Bar */}
+            <View
+              style={[
+                styles.paginationRow,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <Pressable
+                style={[
+                  styles.paginationBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                    opacity: pagination.has_previous ? 1 : 0.4,
+                  },
+                ]}
+                disabled={!pagination.has_previous || busy}
+                onPress={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                <MaterialCommunityIcons
+                  name="chevron-left"
+                  size={16}
+                  color={theme.cyan}
+                />
+                <Text
+                  style={[styles.paginationBtnText, { color: theme.cyan }]}
+                >
+                  Previous
+                </Text>
+              </Pressable>
+
+              <Text
+                style={[styles.paginationInfoText, { color: theme.muted }]}
+              >
+                Page {pagination.page} of {pagination.total_pages || 1} (
+                {pagination.total_items} students)
+              </Text>
+
+              <Pressable
+                style={[
+                  styles.paginationBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                    opacity: pagination.has_next ? 1 : 0.4,
+                  },
+                ]}
+                disabled={!pagination.has_next || busy}
+                onPress={() => setPage((p) => p + 1)}
+              >
+                <Text
+                  style={[styles.paginationBtnText, { color: theme.cyan }]}
+                >
+                  Next
+                </Text>
+                <MaterialCommunityIcons
+                  name="chevron-right"
+                  size={16}
+                  color={theme.cyan}
+                />
+              </Pressable>
+            </View>
+
+            {/* Submit Attendance Neon Button */}
+            <Pressable
+              style={[
+                styles.primaryNeonButton,
+                { backgroundColor: theme.cyan, marginTop: 20 },
+                submitting && { opacity: 0.7 },
+              ]}
+              onPress={finalizeAttendance}
+              disabled={submitting}
+            >
+              {submitting ? (
+                <ActivityIndicator
+                  color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                />
+              ) : (
+                <View style={styles.submitRow}>
+                  <MaterialCommunityIcons
+                    name="lock-check"
+                    size={19}
+                    color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                  />
+                  <Text
+                    style={[
+                      styles.primaryNeonButtonText,
+                      { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                    ]}
+                  >
+                    CONFIRM & SUBMIT ATTENDANCE
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+          </View>
+        }
+      />
     </View>
   );
 }
@@ -6516,46 +6765,158 @@ function StudentAttendanceView() {
   const { theme } = useAppTheme();
   const [items, setItems] = useState<any[]>([]);
   const [busy, setBusy] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PRESENT" | "ABSENT">("ALL");
+  const [pagination, setPagination] = useState({
+    page: 1,
+    page_size: 20,
+    total_items: 0,
+    total_pages: 1,
+    has_next: false,
+    has_previous: false,
+  });
+
+  const loadData = useCallback(async (targetPage = page, targetFilter = statusFilter) => {
+    try {
+      const params: Record<string, any> = {
+        page: targetPage,
+        page_size: pageSize,
+      };
+      if (targetFilter !== "ALL") params.status = targetFilter;
+
+      const res = await http.get("/student/attendance", { params });
+      const data = res.data || {};
+      const logs = data.items || [];
+      setItems(logs);
+      if (data.pagination) {
+        setPagination(data.pagination);
+      } else {
+        setPagination({
+          page: targetPage,
+          page_size: pageSize,
+          total_items: logs.length,
+          total_pages: 1,
+          has_next: false,
+          has_previous: false,
+        });
+      }
+    } catch {
+      // Fallback to legacy endpoint if /student/attendance fails
+      try {
+        const r = await http.get("/student/attendance-sessions");
+        const list = r.data?.sessions || [];
+        setItems(list);
+        setPagination({
+          page: 1,
+          page_size: list.length,
+          total_items: list.length,
+          total_pages: 1,
+          has_next: false,
+          has_previous: false,
+        });
+      } catch {
+        setItems([]);
+      }
+    } finally {
+      setBusy(false);
+      setRefreshing(false);
+    }
+  }, [page, pageSize, statusFilter]);
 
   useEffect(() => {
-    http
-      .get("/student/attendance-sessions")
-      .then((r) => setItems(r.data?.sessions || []))
-      .catch(() => setItems([]))
-      .finally(() => setBusy(false));
-  }, []);
+    loadData(page, statusFilter);
+  }, [loadData, page, statusFilter]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadData(page, statusFilter);
+  };
+
+  if (busy && !refreshing && items.length === 0) {
+    return (
+      <View style={styles.screenCenterLoader}>
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+          Loading Attendance Records...
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.screenLayout}>
-      <View style={styles.screenTopHeader}>
-        <View>
-          <Text style={[styles.screenMainTitle, { color: theme.text }]}>
-            My Attendance
-          </Text>
-          <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Verified personal attendance records
-          </Text>
-        </View>
-      </View>
+    <View style={[styles.screenLayout, { flex: 1 }]}>
+      <FlatList
+        data={items}
+        keyExtractor={(item, index) => item.session_id ? `${item.session_id}-${index}` : String(index)}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.cyan}
+          />
+        }
+        contentContainerStyle={{ paddingBottom: 40 }}
+        ListHeaderComponent={
+          <View>
+            <View style={styles.screenTopHeader}>
+              <View>
+                <Text style={[styles.screenMainTitle, { color: theme.text }]}>
+                  My Attendance
+                </Text>
+                <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
+                  Verified personal attendance records ({pagination.total_items} total)
+                </Text>
+              </View>
+            </View>
 
-      {busy ? (
-        <ActivityIndicator
-          size="large"
-          color={theme.cyan}
-          style={{ margin: 30 }}
-        />
-      ) : items.length === 0 ? (
-        <HoloEmptyState
-          icon="calendar-check-outline"
-          title="No sessions recorded yet"
-          desc="Your attendance will appear here as soon as instructors record class sessions."
-        />
-      ) : (
-        items.map((sess, i) => {
+            {/* Quick Filter Segment Pills */}
+            <View
+              style={[
+                styles.filterSegmentPillWrap,
+                { backgroundColor: theme.bgElevated, marginVertical: 12 },
+              ]}
+            >
+              {(["ALL", "PRESENT", "ABSENT"] as const).map((f) => {
+                const active = statusFilter === f;
+                return (
+                  <Pressable
+                    key={f}
+                    style={[
+                      styles.filterSegmentBtn,
+                      active && [
+                        styles.filterSegmentBtnActive,
+                        {
+                          backgroundColor: theme.card,
+                          borderColor: theme.borderAccent,
+                        },
+                      ],
+                    ]}
+                    onPress={() => {
+                      setStatusFilter(f);
+                      setPage(1);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.filterSegmentBtnText,
+                        { color: active ? theme.cyan : theme.muted },
+                        active && { fontWeight: "600" },
+                      ]}
+                    >
+                      {f === "ALL" ? "All Sessions" : f === "PRESENT" ? "Present" : "Absent"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        }
+        renderItem={({ item: sess }) => {
           const isPresent = String(sess.status).toUpperCase() === "PRESENT";
           return (
             <View
-              key={sess.session_id || i}
               style={[
                 styles.studentSessionCard,
                 { backgroundColor: theme.cardGlass, borderColor: theme.border },
@@ -6594,8 +6955,8 @@ function StudentAttendanceView() {
                 <Text
                   style={[styles.studentSessionDate, { color: theme.muted }]}
                 >
-                  {sess.event_date} • {String(sess.starts_at).slice(0, 5)} -{" "}
-                  {String(sess.ends_at).slice(0, 5)}
+                  {sess.event_date} • {String(sess.starts_at || "").slice(0, 5)} -{" "}
+                  {String(sess.ends_at || "").slice(0, 5)}
                   {sess.room ? ` • ${sess.room}` : ""}
                 </Text>
               </View>
@@ -6605,8 +6966,83 @@ function StudentAttendanceView() {
               />
             </View>
           );
-        })
-      )}
+        }}
+        ListEmptyComponent={
+          <HoloEmptyState
+            icon="calendar-check-outline"
+            title="No sessions found"
+            desc="No attendance records match the selected criteria."
+          />
+        }
+        ListFooterComponent={
+          pagination.total_pages > 1 ? (
+            <View
+              style={[
+                styles.paginationRow,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <Pressable
+                style={[
+                  styles.paginationBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                    opacity: pagination.has_previous ? 1 : 0.4,
+                  },
+                ]}
+                disabled={!pagination.has_previous || busy}
+                onPress={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                <MaterialCommunityIcons
+                  name="chevron-left"
+                  size={16}
+                  color={theme.cyan}
+                />
+                <Text
+                  style={[styles.paginationBtnText, { color: theme.cyan }]}
+                >
+                  Previous
+                </Text>
+              </Pressable>
+
+              <Text
+                style={[styles.paginationInfoText, { color: theme.muted }]}
+              >
+                Page {pagination.page} of {pagination.total_pages} (
+                {pagination.total_items} records)
+              </Text>
+
+              <Pressable
+                style={[
+                  styles.paginationBtn,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                    opacity: pagination.has_next ? 1 : 0.4,
+                  },
+                ]}
+                disabled={!pagination.has_next || busy}
+                onPress={() => setPage((p) => p + 1)}
+              >
+                <Text
+                  style={[styles.paginationBtnText, { color: theme.cyan }]}
+                >
+                  Next
+                </Text>
+                <MaterialCommunityIcons
+                  name="chevron-right"
+                  size={16}
+                  color={theme.cyan}
+                />
+              </Pressable>
+            </View>
+          ) : null
+        }
+      />
     </View>
   );
 }
@@ -6724,6 +7160,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [editingStudent, setEditingStudent] = useState<any>(null);
   const [editingSession, setEditingSession] = useState<any>(null);
+  const [exportingSession, setExportingSession] = useState<any>(null);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
 
   const openSession = async (session: any) => {
@@ -6963,22 +7400,29 @@ function AttendanceHistoryView({ role }: { role: Role }) {
               <ScrollView>
                 {(role === "teacher" || role === "admin") && (
                   <>
-                    <Pressable disabled={sessionActionBusy} onPress={exportSessionPdf} style={[styles.modalDismissBtn, { backgroundColor: theme.emerald, marginBottom: 8, opacity: sessionActionBusy ? 0.6 : 1 }]}>
-                      {sessionActionBusy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>EXPORT SESSION PDF</Text>}
+                    <Pressable
+                      disabled={sessionActionBusy}
+                      onPress={() => setExportingSession(selectedSession)}
+                      style={[styles.modalDismissBtn, { backgroundColor: theme.emerald, marginBottom: 8 }]}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                        <MaterialCommunityIcons name="file-export-outline" size={18} color="#FFFFFF" />
+                        <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>Export Session</Text>
+                      </View>
                     </Pressable>
                   </>
                 )}
                 {role === "teacher" && (
                   <>
                     <Pressable onPress={() => setEditingSession(selectedSession)} style={[styles.modalDismissBtn, { backgroundColor: theme.purple, marginBottom: 8 }]}>
-                      <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>EDIT SESSION DETAILS</Text>
+                      <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>Edit Session Details</Text>
                     </Pressable>
                     <View style={{ flexDirection: "row", gap: 8, marginBottom: 14 }}>
                       <Pressable disabled={sessionActionBusy} onPress={() => setSessionStatus(selectedSession?.status === "COMPLETED" ? "ACTIVE" : "COMPLETED")} style={[styles.modalDismissBtn, { flex: 1, backgroundColor: theme.cyan, opacity: sessionActionBusy ? 0.6 : 1 }]}>
-                        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>{selectedSession?.status === "COMPLETED" ? "REOPEN SESSION" : "COMPLETE SESSION"}</Text>
+                        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>{selectedSession?.status === "COMPLETED" ? "Reopen Session" : "Complete Session"}</Text>
                       </Pressable>
                       <Pressable disabled={sessionActionBusy} onPress={deleteSelectedSession} style={[styles.modalDismissBtn, { flex: 1, backgroundColor: theme.rose, opacity: sessionActionBusy ? 0.6 : 1 }]}>
-                        <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>DELETE SESSION</Text>
+                        <Text style={[styles.modalDismissBtnText, { color: "#FFFFFF" }]}>Delete Session</Text>
                       </Pressable>
                     </View>
                   </>
@@ -7012,12 +7456,13 @@ function AttendanceHistoryView({ role }: { role: Role }) {
             <Text style={[styles.screenMainTitle, { color: theme.text, marginTop: 20 }]}>{selectedStudent?.name}</Text>
             <Text style={[styles.screenSubTitle, { color: theme.muted }]}>{selectedStudent?.student_id}</Text>
             {[["Email", selectedStudent?.email], ["Phone", selectedStudent?.phone], ["Date of Birth", selectedStudent?.date_of_birth], ["Program", selectedStudent?.program], ["Department", selectedStudent?.department], ["Semester", selectedStudent?.semester], ["Roll Number", selectedStudent?.roll_number], ["Attendance", selectedStudent?.status]].map(([label, value]) => <HoloDetailRow key={label} label={label} value={String(value || "Not provided")} />)}
-            {role === "admin" && <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 20 }]} onPress={() => setEditingStudent(selectedStudent)}><Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>EDIT STUDENT DETAILS</Text></Pressable>}
+            {role === "admin" && <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 20 }]} onPress={() => setEditingStudent(selectedStudent)}><Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Edit Student Details</Text></Pressable>}
           </ScrollView>
         </SafeAreaView>
       </Modal>
       {role === "admin" && editingStudent && <StudentEditModal visible student={editingStudent} endpoint={`/admin/students/${editingStudent.student_id}`} onClose={() => setEditingStudent(null)} onSaved={(updated) => { setSelectedStudent(updated); setEditingStudent(null); }} />}
       <SessionEditModal visible={!!editingSession} session={editingSession} onClose={() => setEditingSession(null)} onSaved={async (updated) => { setSelectedSession((current: any) => ({ ...current, ...updated })); setEditingSession(null); await refreshSessions(); }} />
+      <ExportSessionModal visible={!!exportingSession} session={exportingSession} onClose={() => setExportingSession(null)} />
     </View>
   );
 }
@@ -7098,7 +7543,7 @@ function ReportsView() {
               style={[
                 styles.segmentBtnHoloText,
                 { color: theme.muted },
-                period === tab && { color: theme.cyan, fontWeight: "800" },
+                period === tab && { color: theme.cyan, fontWeight: "600" },
               ]}
             >
               {tab}
@@ -7296,7 +7741,7 @@ function NotificationsView() {
             style={[
               styles.segmentBtnHoloText,
               { color: theme.muted },
-              filter === "all" && { color: theme.cyan, fontWeight: "800" },
+              filter === "all" && { color: theme.cyan, fontWeight: "600" },
             ]}
           >
             All ({items.length})
@@ -7316,7 +7761,7 @@ function NotificationsView() {
             style={[
               styles.segmentBtnHoloText,
               { color: theme.muted },
-              filter === "unread" && { color: theme.cyan, fontWeight: "800" },
+              filter === "unread" && { color: theme.cyan, fontWeight: "600" },
             ]}
           >
             Unread ({items.filter((x) => !x.is_read).length})
@@ -7819,7 +8264,7 @@ function StudentProfile({
         style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginBottom: 12 }]}
         onPress={() => setEditing(true)}
       >
-        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>EDIT DETAILS</Text>
+        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Edit Details</Text>
       </Pressable>
 
       {/* Face Biometrics Registration / Update Button */}
@@ -7895,6 +8340,643 @@ function StudentProfile({
   );
 }
 
+function ExportSessionModal({
+  visible,
+  session,
+  onClose,
+}: {
+  visible: boolean;
+  session: any;
+  onClose: () => void;
+}) {
+  const { theme } = useAppTheme();
+  const [activeTab, setActiveTab] = useState<"face_pdf" | "detailed_pdf" | "text_pdf">("face_pdf");
+  const [optionsBusy, setOptionsBusy] = useState(true);
+  const [sessionDetails, setSessionDetails] = useState<any>(null);
+  const [courses, setCourses] = useState<{ id: string; label: string }[]>([]);
+  const [overallSummary, setOverallSummary] = useState({ total_students: 0, present_students: 0, absent_students: 0 });
+
+  // Option A state
+  const [optACourse, setOptACourse] = useState("all");
+  const [optAStatus, setOptAStatus] = useState<"present" | "absent" | "both">("both");
+
+  // Option B state
+  const [optBCourse, setOptBCourse] = useState("all");
+  const [optBStatus, setOptBStatus] = useState<"present" | "absent" | "both">("both");
+
+  // Option C state
+  const [optCCourse, setOptCCourse] = useState("all");
+  const [optCStatus, setOptCStatus] = useState<"present" | "absent" | "both">("both");
+
+  // Live preview counts
+  const [includedCount, setIncludedCount] = useState<number | null>(null);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  const loadOptions = useCallback(async () => {
+    if (!session?.session_id) return;
+    setOptionsBusy(true);
+    setLoadError("");
+    try {
+      const res = await http.get(`/attendance/sessions/${session.session_id}/export-options`);
+      const data = res.data || {};
+      setSessionDetails(data.session || session);
+      const cList = data.courses || [{ id: "all", label: "All Courses / Groups" }];
+      setCourses(cList);
+      if (data.summary) setOverallSummary(data.summary);
+    } catch (e: any) {
+      setLoadError(apiErrorMessage(e, "Could not load session export configuration."));
+    } finally {
+      setOptionsBusy(false);
+    }
+  }, [session?.session_id, session]);
+
+  useEffect(() => {
+    if (visible && session?.session_id) {
+      loadOptions();
+    }
+  }, [visible, session?.session_id, loadOptions]);
+
+  // Active filters based on activeTab
+  const currentCourse = activeTab === "face_pdf" ? optACourse : activeTab === "detailed_pdf" ? optBCourse : optCCourse;
+  const currentStatus = activeTab === "face_pdf" ? optAStatus : activeTab === "detailed_pdf" ? optBStatus : optCStatus;
+
+  // Live included record count calculation
+  useEffect(() => {
+    if (!visible || !session?.session_id) return;
+    let isMounted = true;
+    setSummaryBusy(true);
+    http.get(`/attendance/sessions/${session.session_id}/export-summary`, {
+      params: {
+        course_id: currentCourse === "all" ? undefined : currentCourse,
+        attendance_status: currentStatus,
+      },
+    }).then(res => {
+      if (isMounted) {
+        setIncludedCount(res.data?.records_included ?? null);
+      }
+    }).catch(() => {
+      if (isMounted) setIncludedCount(null);
+    }).finally(() => {
+      if (isMounted) setSummaryBusy(false);
+    });
+    return () => { isMounted = false; };
+  }, [visible, session?.session_id, activeTab, currentCourse, currentStatus]);
+
+  const generateReport = async () => {
+    if (!session?.session_id || generating) return;
+    setGenerating(true);
+    try {
+      const reportType = activeTab;
+      const courseId = currentCourse === "all" ? null : currentCourse;
+      const attendanceStatus = currentStatus;
+
+      if (Platform.OS === "web") {
+        const res = await http.post(
+          `/attendance/sessions/${session.session_id}/export`,
+          { report_type: reportType, attendance_status: attendanceStatus, course_id: courseId },
+          { responseType: "blob" }
+        );
+        const url = URL.createObjectURL(res.data);
+        const link = document.createElement("a");
+        link.href = url;
+        const filename = `attendance_${session.session_id}_${reportType}_${attendanceStatus}.pdf`;
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(url);
+        Alert.alert("Report Generated", `Attendance report (${filename}) has been downloaded.`);
+        return;
+      }
+
+      // React Native Mobile
+      const outputDirectory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+      if (!outputDirectory) throw new Error("Device storage is unavailable.");
+
+      const filename = `attendance_${session.session_id}_${reportType}_${attendanceStatus}.pdf`;
+      const path = `${outputDirectory}${filename}`;
+      const authorization = http.defaults.headers.common.Authorization;
+
+      const queryParams = new URLSearchParams({
+        report_type: reportType,
+        attendance_status: attendanceStatus,
+      });
+      if (courseId) queryParams.append("course_id", courseId);
+
+      const downloadEndpoint = `${API}/attendance/sessions/${session.session_id}/export?${queryParams.toString()}`;
+      const download = await FileSystem.downloadAsync(downloadEndpoint, path, {
+        headers: typeof authorization === "string" ? { Authorization: authorization } : {},
+      });
+
+      const contentType = String(download.headers?.["Content-Type"] || download.headers?.["content-type"] || "").toLowerCase();
+      if (download.status >= 400 || !contentType.includes("application/pdf")) {
+        throw new Error("Server returned an error generating the PDF. Please check your filter criteria.");
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, { mimeType: "application/pdf", dialogTitle: "Attendance PDF Report" });
+      } else {
+        Alert.alert("PDF Saved", `Report saved successfully to ${path}`);
+      }
+    } catch (err: any) {
+      Alert.alert("Export Failed", apiErrorMessage(err, "Could not generate attendance report."));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const currentButtonLabel =
+    activeTab === "face_pdf"
+      ? "Generate Face PDF"
+      : activeTab === "detailed_pdf"
+        ? "Generate Detailed PDF"
+        : "Generate Text Report";
+
+  const currentTabTitle =
+    activeTab === "face_pdf"
+      ? "OPTION A: Course-Wise Student Face PDF"
+      : activeTab === "detailed_pdf"
+        ? "OPTION B: Complete Student Details PDF"
+        : "OPTION C: Student Text-Only Report";
+
+  const currentTabDesc =
+    activeTab === "face_pdf"
+      ? "Generates a printable visual PDF containing student facial photographs arranged in a grid, with name and scholar number beneath each photograph."
+      : activeTab === "detailed_pdf"
+        ? "Generates a comprehensive tabular attendance report with student photo, scholar number, name, mobile number, and attendance status."
+        : "Generates a lightweight, clean tabular report containing scholar numbers, names, mobile numbers, and attendance status without biometric photos.";
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+        <View style={[styles.modalSheetCard, { flex: 1, backgroundColor: theme.bg, borderColor: theme.border }]}>
+          {/* Header */}
+          <View style={styles.modalSheetHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+                Export Attendance Session
+              </Text>
+              <Text style={{ color: theme.muted, fontSize: 12 }}>
+                {session?.title || session?.course} • ID: {session?.session_id}
+              </Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={8}>
+              <MaterialCommunityIcons name="close" size={24} color={theme.text} />
+            </Pressable>
+          </View>
+
+          {optionsBusy ? (
+            <View style={styles.screenCenterLoader}>
+              <ActivityIndicator size="large" color={theme.cyan} />
+              <Text style={[styles.loaderSubText, { color: theme.muted }]}>
+                Loading Export Configuration...
+              </Text>
+            </View>
+          ) : (
+            <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+              {/* Session Details HUD */}
+              <View
+                style={[
+                  styles.tallyHUDCard,
+                  { backgroundColor: theme.cardGlass, borderColor: theme.border, marginBottom: 14 },
+                ]}
+              >
+                <Text style={{ fontSize: 14, fontWeight: "700", color: theme.text, marginBottom: 4 }}>
+                  {sessionDetails?.title || session?.title}
+                </Text>
+                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 10 }}>
+                  Date: {sessionDetails?.event_date || session?.event_date} • Time: {sessionDetails?.starts_at || session?.starts_at} - {sessionDetails?.ends_at || session?.ends_at} • Room: {sessionDetails?.room || session?.room || "—"}
+                </Text>
+
+                <View style={styles.tallyStatsRow}>
+                  <View style={styles.tallyStatCol}>
+                    <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
+                      {overallSummary.present_students}
+                    </Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+                  </View>
+                  <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+                  <View style={styles.tallyStatCol}>
+                    <Text style={[styles.tallyDigit, { color: theme.rose }]}>
+                      {overallSummary.absent_students}
+                    </Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+                  </View>
+                  <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
+                  <View style={styles.tallyStatCol}>
+                    <Text style={[styles.tallyDigit, { color: theme.text }]}>
+                      {overallSummary.total_students}
+                    </Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Total Enrolled</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Three Distinguishable Report Types (Segment Selector) */}
+              <View
+                style={[
+                  styles.exportTabSegmentWrap,
+                  { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                ]}
+              >
+                {(
+                  [
+                    { id: "face_pdf", label: "Face PDF", icon: "face-recognition" },
+                    { id: "detailed_pdf", label: "Detailed PDF", icon: "table-large" },
+                    { id: "text_pdf", label: "Text-Only", icon: "format-list-text" },
+                  ] as const
+                ).map((tab) => {
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <Pressable
+                      key={tab.id}
+                      style={[
+                        styles.exportTabBtn,
+                        isActive && [
+                          styles.exportTabBtnActive,
+                          {
+                            backgroundColor: theme.card,
+                            borderColor: theme.borderAccent,
+                          },
+                        ],
+                      ]}
+                      onPress={() => setActiveTab(tab.id)}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                        <MaterialCommunityIcons
+                          name={tab.icon as any}
+                          size={15}
+                          color={isActive ? theme.cyan : theme.muted}
+                        />
+                        <Text
+                          style={[
+                            styles.exportTabBtnText,
+                            { color: isActive ? theme.cyan : theme.muted },
+                            isActive && { fontWeight: "700" },
+                          ]}
+                        >
+                          {tab.label}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Active Option Configuration Box */}
+              <View
+                style={[
+                  styles.exportCardBox,
+                  { backgroundColor: theme.cardGlass, borderColor: theme.border },
+                ]}
+              >
+                <Text style={{ fontSize: 14, fontWeight: "700", color: theme.cyan, marginBottom: 4 }}>
+                  {currentTabTitle}
+                </Text>
+                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 16, lineHeight: 17 }}>
+                  {currentTabDesc}
+                </Text>
+
+                {/* OPTION A FILTERS */}
+                {activeTab === "face_pdf" && (
+                  <View>
+                    {/* Course Selection */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      1. Course Selection:
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {courses.map((c) => {
+                        const isSel = optACourse === c.id;
+                        return (
+                          <Pressable
+                            key={c.id}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel ? theme.cyanGlow : theme.bgElevated,
+                                borderColor: isSel ? theme.cyan : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptACourse(c.id)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                { color: isSel ? theme.cyan : theme.muted },
+                              ]}
+                            >
+                              {c.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    {/* Attendance Status Selection */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      2. Attendance Status:
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {(["both", "present", "absent"] as const).map((st) => {
+                        const isSel = optAStatus === st;
+                        const label = st === "both" ? "Both (All)" : st === "present" ? "Present Only" : "Absent Only";
+                        return (
+                          <Pressable
+                            key={st}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel
+                                  ? st === "present"
+                                    ? theme.emeraldGlow
+                                    : st === "absent"
+                                      ? theme.roseGlow
+                                      : theme.cyanGlow
+                                  : theme.bgElevated,
+                                borderColor: isSel
+                                  ? st === "present"
+                                    ? theme.emerald
+                                    : st === "absent"
+                                      ? theme.rose
+                                      : theme.cyan
+                                  : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptAStatus(st)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                {
+                                  color: isSel
+                                    ? st === "present"
+                                      ? theme.emerald
+                                      : st === "absent"
+                                        ? theme.rose
+                                        : theme.cyan
+                                    : theme.muted,
+                                },
+                              ]}
+                            >
+                              {label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                {/* OPTION B FILTERS */}
+                {activeTab === "detailed_pdf" && (
+                  <View>
+                    {/* Attendance Status Selection (Default: Both) */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      1. Attendance Status:
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {(["both", "present", "absent"] as const).map((st) => {
+                        const isSel = optBStatus === st;
+                        const label = st === "both" ? "Both (Default)" : st === "present" ? "Present Only" : "Absent Only";
+                        return (
+                          <Pressable
+                            key={st}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel
+                                  ? st === "present"
+                                    ? theme.emeraldGlow
+                                    : st === "absent"
+                                      ? theme.roseGlow
+                                      : theme.cyanGlow
+                                  : theme.bgElevated,
+                                borderColor: isSel
+                                  ? st === "present"
+                                    ? theme.emerald
+                                    : st === "absent"
+                                      ? theme.rose
+                                      : theme.cyan
+                                  : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptBStatus(st)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                {
+                                  color: isSel
+                                    ? st === "present"
+                                      ? theme.emerald
+                                      : st === "absent"
+                                        ? theme.rose
+                                        : theme.cyan
+                                    : theme.muted,
+                                },
+                              ]}
+                            >
+                              {label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    {/* Course Selection (Optional) */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      2. Course / Academic Group (Optional):
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {courses.map((c) => {
+                        const isSel = optBCourse === c.id;
+                        return (
+                          <Pressable
+                            key={c.id}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel ? theme.cyanGlow : theme.bgElevated,
+                                borderColor: isSel ? theme.cyan : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptBCourse(c.id)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                { color: isSel ? theme.cyan : theme.muted },
+                              ]}
+                            >
+                              {c.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                {/* OPTION C FILTERS */}
+                {activeTab === "text_pdf" && (
+                  <View>
+                    {/* Attendance Status Selection */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      1. Attendance Status:
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {(["both", "present", "absent"] as const).map((st) => {
+                        const isSel = optCStatus === st;
+                        const label = st === "both" ? "Both (All)" : st === "present" ? "Present Only" : "Absent Only";
+                        return (
+                          <Pressable
+                            key={st}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel
+                                  ? st === "present"
+                                    ? theme.emeraldGlow
+                                    : st === "absent"
+                                      ? theme.roseGlow
+                                      : theme.cyanGlow
+                                  : theme.bgElevated,
+                                borderColor: isSel
+                                  ? st === "present"
+                                    ? theme.emerald
+                                    : st === "absent"
+                                      ? theme.rose
+                                      : theme.cyan
+                                  : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptCStatus(st)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                {
+                                  color: isSel
+                                    ? st === "present"
+                                      ? theme.emerald
+                                      : st === "absent"
+                                        ? theme.rose
+                                        : theme.cyan
+                                    : theme.muted,
+                                },
+                              ]}
+                            >
+                              {label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+
+                    {/* Course Selection (Optional) */}
+                    <Text style={[styles.exportSectionLabel, { color: theme.textSecondary }]}>
+                      2. Course / Academic Group (Optional):
+                    </Text>
+                    <View style={styles.exportPillGroup}>
+                      {courses.map((c) => {
+                        const isSel = optCCourse === c.id;
+                        return (
+                          <Pressable
+                            key={c.id}
+                            style={[
+                              styles.exportChoicePill,
+                              {
+                                backgroundColor: isSel ? theme.cyanGlow : theme.bgElevated,
+                                borderColor: isSel ? theme.cyan : theme.border,
+                              },
+                            ]}
+                            onPress={() => setOptCCourse(c.id)}
+                          >
+                            <Text
+                              style={[
+                                styles.exportChoicePillText,
+                                { color: isSel ? theme.cyan : theme.muted },
+                              ]}
+                            >
+                              {c.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
+
+                {/* Pre-Export Record Count Indicator */}
+                <View
+                  style={[
+                    styles.exportSummaryBanner,
+                    { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                  ]}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <MaterialCommunityIcons name="file-document-outline" size={16} color={theme.cyan} />
+                    <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                      Records included in this report:
+                    </Text>
+                  </View>
+                  {summaryBusy ? (
+                    <ActivityIndicator size="small" color={theme.cyan} />
+                  ) : (
+                    <Text style={{ fontSize: 13, fontWeight: "700", color: theme.cyan }}>
+                      {includedCount !== null ? `${includedCount} student(s)` : "Calculating..."}
+                    </Text>
+                  )}
+                </View>
+
+                {/* Action Export Button */}
+                <Pressable
+                  disabled={generating || includedCount === 0}
+                  onPress={generateReport}
+                  style={[
+                    styles.primaryNeonButton,
+                    {
+                      backgroundColor:
+                        activeTab === "face_pdf"
+                          ? theme.cyan
+                          : activeTab === "detailed_pdf"
+                            ? theme.emerald
+                            : theme.purple,
+                      opacity: generating || includedCount === 0 ? 0.6 : 1,
+                    },
+                  ]}
+                >
+                  {generating ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <ActivityIndicator color="#FFFFFF" />
+                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]}>
+                        Generating PDF...
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <MaterialCommunityIcons name="file-pdf-box" size={19} color="#FFFFFF" />
+                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]}>
+                        {currentButtonLabel}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
+
+                {includedCount === 0 && (
+                  <Text style={{ fontSize: 11, color: theme.rose, textAlign: "center", marginTop: 8 }}>
+                    No students match the current filter criteria.
+                  </Text>
+                )}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
 function SessionEditModal({
   visible,
   session,
@@ -7959,7 +9041,7 @@ function SessionEditModal({
               </View>
             ))}
             <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8, opacity: busy ? 0.6 : 1 }]} onPress={save} disabled={busy}>
-              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>SAVE SESSION</Text>}
+              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Save Session</Text>}
             </Pressable>
           </ScrollView>
         </View>
@@ -8066,7 +9148,7 @@ function StudentEditModal({
               </View>
             ))}
             <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8 }]} onPress={save} disabled={busy}>
-              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>SAVE DETAILS</Text>}
+              {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Save Details</Text>}
             </Pressable>
           </ScrollView>
         </View>
@@ -8603,6 +9685,371 @@ function AcademicCascade({
 }
 
 // ---------------------------------------------------------------------------
+// MULTI-PROGRAM / MULTI-SEMESTER ATTENDANCE SELECTOR
+// Supports selecting sections across schools, faculties, departments,
+// programs, and semesters for cross-enrolled / combined photo recognition.
+// ---------------------------------------------------------------------------
+function MultiProgramAttendanceSelector({
+  selected,
+  onChange,
+  onScopeChange,
+}: {
+  selected: number[];
+  onChange: (ids: number[]) => void;
+  onScopeChange?: (scope: any) => void;
+}) {
+  const { theme } = useAppTheme();
+  const [sections, setSections] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedSchool, setSelectedSchool] = useState<string>("ALL");
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("ALL");
+  const [selectedSemester, setSelectedSemester] = useState<string>("ALL");
+
+  useEffect(() => {
+    loadAcademicSections()
+      .then((loaded) => setSections(loaded || []))
+      .catch(() => setSections([]));
+  }, []);
+
+  const handleToggle = (id: number) => {
+    const next = selected.includes(id)
+      ? selected.filter((x) => x !== id)
+      : [...selected, id];
+    onChange(next);
+
+    const chosen = sections.filter((s) => next.includes(s.id));
+    onScopeChange?.({
+      schools: Array.from(new Set(chosen.map((s) => s.school))),
+      faculties: Array.from(new Set(chosen.map((s) => s.faculty))),
+      departments: Array.from(new Set(chosen.map((s) => s.department))),
+      programs: Array.from(new Set(chosen.map((s) => s.program))),
+      semesters: Array.from(new Set(chosen.map((s) => s.semester))),
+      section_ids: next,
+    });
+  };
+
+  const handleSelectAllFiltered = (matching: any[]) => {
+    const matchingIds = matching.map((s) => s.id);
+    const combined = Array.from(new Set([...selected, ...matchingIds]));
+    onChange(combined);
+
+    const chosen = sections.filter((s) => combined.includes(s.id));
+    onScopeChange?.({
+      schools: Array.from(new Set(chosen.map((s) => s.school))),
+      faculties: Array.from(new Set(chosen.map((s) => s.faculty))),
+      departments: Array.from(new Set(chosen.map((s) => s.department))),
+      programs: Array.from(new Set(chosen.map((s) => s.program))),
+      semesters: Array.from(new Set(chosen.map((s) => s.semester))),
+      section_ids: combined,
+    });
+  };
+
+  const handleClearAll = () => {
+    onChange([]);
+    onScopeChange?.({
+      schools: [],
+      faculties: [],
+      departments: [],
+      programs: [],
+      semesters: [],
+      section_ids: [],
+    });
+  };
+
+  const schools = ["ALL", ...Array.from(new Set(sections.map((s) => s.school))).filter(Boolean)];
+
+  const departments = [
+    "ALL",
+    ...Array.from(
+      new Set(
+        sections
+          .filter((s) => selectedSchool === "ALL" || s.school === selectedSchool)
+          .map((s) => s.department)
+      )
+    ).filter(Boolean),
+  ];
+
+  const semesters = ["ALL", "Semester 1", "Semester 2", "Semester 3", "Semester 4", "Semester 5", "Semester 6", "Semester 7", "Semester 8"];
+
+  const filtered = sections.filter((s) => {
+    if (selectedSchool !== "ALL" && s.school !== selectedSchool) return false;
+    if (selectedDepartment !== "ALL" && s.department !== selectedDepartment) return false;
+    if (selectedSemester !== "ALL" && s.semester !== selectedSemester) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const match =
+        s.program?.toLowerCase().includes(q) ||
+        s.semester?.toLowerCase().includes(q) ||
+        s.department?.toLowerCase().includes(q) ||
+        s.school?.toLowerCase().includes(q);
+      if (!match) return false;
+    }
+    return true;
+  });
+
+  const selectedSectionsList = sections.filter((s) => selected.includes(s.id));
+
+  return (
+    <View style={{ marginTop: 8, marginBottom: 12 }}>
+      {/* Search Input */}
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          backgroundColor: theme.bgElevated,
+          borderColor: theme.border,
+          borderWidth: 1,
+          borderRadius: 10,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          marginBottom: 10,
+        }}
+      >
+        <MaterialCommunityIcons name="magnify" size={20} color={theme.muted} />
+        <TextInput
+          style={{ flex: 1, marginLeft: 8, color: theme.text, fontSize: 13 }}
+          placeholder="Search programs, departments, semesters..."
+          placeholderTextColor={theme.muted}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+        {searchQuery.length > 0 && (
+          <Pressable onPress={() => setSearchQuery("")}>
+            <MaterialCommunityIcons name="close-circle" size={18} color={theme.muted} />
+          </Pressable>
+        )}
+      </View>
+
+      {/* Selected Sections Summary Tray */}
+      {selected.length > 0 && (
+        <View
+          style={{
+            backgroundColor: theme.cyanGlow,
+            borderColor: theme.cyan,
+            borderWidth: 1,
+            borderRadius: 12,
+            padding: 12,
+            marginBottom: 12,
+          }}
+        >
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <MaterialCommunityIcons name="checkbox-multiple-marked-circle" size={18} color={theme.cyan} />
+              <Text style={{ color: theme.cyan, fontWeight: "700", fontSize: 13 }}>
+                {selected.length} {selected.length === 1 ? "Section" : "Sections"} Selected
+              </Text>
+            </View>
+            <Pressable onPress={handleClearAll} style={{ paddingHorizontal: 8, paddingVertical: 2 }}>
+              <Text style={{ color: theme.rose, fontSize: 12, fontWeight: "600" }}>Clear All</Text>
+            </Pressable>
+          </View>
+
+          {/* Chips of selected sections */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+            {selectedSectionsList.map((sec) => (
+              <Pressable
+                key={`sel-${sec.id}`}
+                onPress={() => handleToggle(sec.id)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.cyan,
+                  borderWidth: 1,
+                  borderRadius: 20,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  gap: 6,
+                }}
+              >
+                <Text style={{ color: theme.text, fontSize: 11, fontWeight: "600" }}>
+                  {sec.program} ({sec.semester})
+                </Text>
+                <MaterialCommunityIcons name="close" size={14} color={theme.muted} />
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Filter Chips: School Filter */}
+      <Text style={{ color: theme.muted, fontSize: 11, fontWeight: "700", letterSpacing: 0.5, marginBottom: 6 }}>
+        FILTER BY SCHOOL
+      </Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }} contentContainerStyle={{ gap: 6 }}>
+        {schools.map((schoolName) => {
+          const isSelected = selectedSchool === schoolName;
+          const shortName = schoolName === "ALL" ? "All Schools" : schoolName.replace("School of ", "");
+          return (
+            <Pressable
+              key={`school-${schoolName}`}
+              onPress={() => {
+                setSelectedSchool(schoolName);
+                setSelectedDepartment("ALL");
+              }}
+              style={{
+                backgroundColor: isSelected ? theme.cyan : theme.bgElevated,
+                borderColor: isSelected ? theme.cyan : theme.border,
+                borderWidth: 1,
+                borderRadius: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              }}
+            >
+              <Text style={{ color: isSelected ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted, fontSize: 11, fontWeight: isSelected ? "700" : "500" }}>
+                {shortName}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
+      {/* Filter Chips: Department Filter */}
+      {departments.length > 2 && (
+        <>
+          <Text style={{ color: theme.muted, fontSize: 11, fontWeight: "700", letterSpacing: 0.5, marginBottom: 6 }}>
+            FILTER BY DEPARTMENT
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }} contentContainerStyle={{ gap: 6 }}>
+            {departments.map((deptName) => {
+              const isSelected = selectedDepartment === deptName;
+              const shortName = deptName === "ALL" ? "All Departments" : deptName.replace("Department of ", "");
+              return (
+                <Pressable
+                  key={`dept-${deptName}`}
+                  onPress={() => setSelectedDepartment(deptName)}
+                  style={{
+                    backgroundColor: isSelected ? theme.cyan : theme.bgElevated,
+                    borderColor: isSelected ? theme.cyan : theme.border,
+                    borderWidth: 1,
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <Text style={{ color: isSelected ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted, fontSize: 11, fontWeight: isSelected ? "700" : "500" }}>
+                    {shortName}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </>
+      )}
+
+      {/* Filter Chips: Semester Filter */}
+      <Text style={{ color: theme.muted, fontSize: 11, fontWeight: "700", letterSpacing: 0.5, marginBottom: 6 }}>
+        FILTER BY SEMESTER
+      </Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }} contentContainerStyle={{ gap: 6 }}>
+        {semesters.map((sem) => {
+          const isSelected = selectedSemester === sem;
+          return (
+            <Pressable
+              key={`sem-${sem}`}
+              onPress={() => setSelectedSemester(sem)}
+              style={{
+                backgroundColor: isSelected ? theme.cyan : theme.bgElevated,
+                borderColor: isSelected ? theme.cyan : theme.border,
+                borderWidth: 1,
+                borderRadius: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+              }}
+            >
+              <Text style={{ color: isSelected ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted, fontSize: 11, fontWeight: isSelected ? "700" : "500" }}>
+                {sem === "ALL" ? "All Semesters" : sem}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
+      {/* Actions row: Count + Select All Shown */}
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8, marginTop: 4 }}>
+        <Text style={{ color: theme.muted, fontSize: 12 }}>
+          {filtered.length} matching {filtered.length === 1 ? "section" : "sections"}
+        </Text>
+        {filtered.length > 0 && (
+          <Pressable
+            onPress={() => handleSelectAllFiltered(filtered)}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              backgroundColor: theme.bgElevated,
+              borderColor: theme.border,
+              borderWidth: 1,
+              borderRadius: 6,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+            }}
+          >
+            <MaterialCommunityIcons name="checkbox-multiple-marked" size={14} color={theme.cyan} />
+            <Text style={{ color: theme.cyan, fontSize: 11, fontWeight: "600" }}>
+              Select All Shown ({filtered.length})
+            </Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* Sections List */}
+      <View style={{ maxHeight: 320 }}>
+        <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={true} style={{ maxHeight: 320 }}>
+          {filtered.length === 0 ? (
+            <View style={{ padding: 20, alignItems: "center" }}>
+              <MaterialCommunityIcons name="layers-off" size={32} color={theme.muted} />
+              <Text style={{ color: theme.muted, marginTop: 8, fontSize: 13 }}>No academic sections match filters.</Text>
+            </View>
+          ) : (
+            filtered.map((sec) => {
+              const isSelected = selected.includes(sec.id);
+              return (
+                <Pressable
+                  key={`sec-card-${sec.id}`}
+                  onPress={() => handleToggle(sec.id)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    backgroundColor: isSelected ? theme.cyanGlow : theme.bgElevated,
+                    borderColor: isSelected ? theme.cyan : theme.border,
+                    borderWidth: 1,
+                    borderRadius: 10,
+                    padding: 10,
+                    marginBottom: 8,
+                  }}
+                >
+                  <MaterialCommunityIcons
+                    name={isSelected ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"}
+                    size={22}
+                    color={isSelected ? theme.cyan : theme.muted}
+                  />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Text style={{ color: isSelected ? theme.cyan : theme.text, fontWeight: "700", fontSize: 13, flex: 1 }}>
+                        {sec.program}
+                      </Text>
+                      <View style={{ backgroundColor: isSelected ? theme.cyan : theme.cardSubtle, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
+                        <Text style={{ color: isSelected ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted, fontSize: 10, fontWeight: "600" }}>
+                          {sec.semester} • {sec.section}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={{ color: theme.muted, fontSize: 11, marginTop: 3 }} numberOfLines={1}>
+                      {sec.department} • {sec.school}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })
+          )}
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // TEACHER HIERARCHY CHECKBOXES
 // ---------------------------------------------------------------------------
 function TeacherHierarchyCheckboxes({
@@ -8736,7 +10183,7 @@ function TeacherHierarchyCheckboxes({
                 style={[
                   styles.phasePillText,
                   { color: isSelected ? theme.cyan : theme.muted },
-                  isSelected && { fontWeight: "800" },
+                  isSelected && { fontWeight: "600" },
                 ]}
               >
                 {opt}
@@ -8809,14 +10256,14 @@ const styles = StyleSheet.create({
   },
   splashCard: {
     alignItems: "center",
-    padding: 32,
-    borderRadius: 28,
+    padding: 28,
+    borderRadius: 18,
     borderWidth: 1,
   },
   splashLogo: {
-    width: 88,
-    height: 88,
-    borderRadius: 22,
+    width: 80,
+    height: 80,
+    borderRadius: 18,
   },
   splashPulseDot: {
     width: 8,
@@ -8826,12 +10273,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   splashTitle: {
-    fontSize: 26,
-    fontWeight: "900",
-    letterSpacing: 2,
+    fontSize: 24,
+    fontWeight: "700",
+    letterSpacing: -0.4,
   },
   splashSubtitle: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 4,
     textAlign: "center",
   },
@@ -8844,17 +10291,14 @@ const styles = StyleSheet.create({
   loaderSubText: {
     marginTop: 14,
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "500",
   },
 
   // LOGIN SCREEN
   loginAmbientCircle: {
     position: "absolute",
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    top: -60,
-    alignSelf: "center",
+    width: 0,
+    height: 0,
   },
   loginScroll: {
     paddingHorizontal: 20,
@@ -8873,38 +10317,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
+    borderRadius: 8,
     borderWidth: 1,
     gap: 6,
   },
   themePillText: {
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   loginBrandHeader: {
     alignItems: "center",
-    marginBottom: 28,
+    marginBottom: 24,
   },
   loginLogoRingWrap: {
     position: "relative",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 6,
+    marginBottom: 4,
   },
   loginLogoRingOuter: {
     position: "absolute",
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    borderWidth: 1,
-    opacity: 0.4,
+    width: 0,
+    height: 0,
   },
   loginBrandTagline: {
     fontSize: 13,
     marginTop: 2,
     marginBottom: 4,
     fontWeight: "500",
-    letterSpacing: 0.2,
   },
   brandStatusDot: {
     width: 6,
@@ -8912,73 +10352,73 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   logoBadgeCard: {
-    width: 90,
-    height: 90,
-    borderRadius: 28,
-    borderWidth: 1.5,
+    width: 76,
+    height: 76,
+    borderRadius: 18,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   loginLogo: {
-    width: 74,
-    height: 74,
-    borderRadius: 22,
+    width: 60,
+    height: 60,
+    borderRadius: 14,
   },
   brandTitleText: {
-    fontSize: 32,
-    fontWeight: "900",
-    marginTop: 16,
-    letterSpacing: 1.5,
+    fontSize: 26,
+    fontWeight: "700",
+    marginTop: 12,
+    letterSpacing: -0.4,
   },
   brandStatusTag: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
     marginTop: 8,
     gap: 6,
     borderWidth: 1,
   },
   brandStatusTagText: {
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.8,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   loginSurfaceCard: {
     width: "100%",
-    borderRadius: 30,
-    padding: 26,
+    borderRadius: 18,
+    padding: 22,
     borderWidth: 1,
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.10,
-    shadowRadius: 26,
-    elevation: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 3,
   },
   cardHeaderTitle: {
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: -0.4,
+    fontSize: 20,
+    fontWeight: "700",
+    letterSpacing: -0.3,
   },
   cardHeaderSubtitle: {
     fontSize: 13,
-    marginTop: 4,
-    marginBottom: 18,
+    marginTop: 3,
+    marginBottom: 16,
   },
   roleTabsWrap: {
     flexDirection: "row",
-    borderRadius: 14,
-    padding: 4,
-    marginBottom: 18,
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 16,
   },
   roleTabItem: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 9,
-    borderRadius: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
     gap: 6,
   },
   roleTabItemActive: {
@@ -8986,29 +10426,29 @@ const styles = StyleSheet.create({
   },
   roleTabLabel: {
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   formGroup: {
-    marginBottom: 15,
+    marginBottom: 14,
   },
   fieldLabelText: {
-    fontSize: 11,
-    fontWeight: "800",
+    fontSize: 12,
+    fontWeight: "600",
     marginBottom: 6,
-    letterSpacing: 0.8,
+    letterSpacing: 0.1,
   },
   fieldHintText: {
-    fontSize: 10,
-    lineHeight: 15,
-    marginTop: 5,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 4,
   },
   inputContainerBox: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 15,
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
-    height: 52,
+    height: 46,
   },
   inputPrefixIcon: {
     marginRight: 8,
@@ -9016,15 +10456,15 @@ const styles = StyleSheet.create({
   textInputBox: {
     flex: 1,
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   textInputHoloPlain: {
-    borderRadius: 15,
+    borderRadius: 10,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    height: 50,
+    paddingHorizontal: 12,
+    height: 46,
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   eyeBtn: {
     padding: 6,
@@ -9032,7 +10472,7 @@ const styles = StyleSheet.create({
   errorBannerBox: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     padding: 12,
     marginBottom: 14,
@@ -9041,17 +10481,17 @@ const styles = StyleSheet.create({
   errorBannerText: {
     flex: 1,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   submitButtonGlow: {
-    height: 50,
-    borderRadius: 14,
+    height: 46,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 2,
   },
   submitRow: {
     flexDirection: "row",
@@ -9060,38 +10500,38 @@ const styles = StyleSheet.create({
   },
   submitTextAction: {
     fontSize: 14,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   demoPresetsBox: {
-    marginTop: 20,
-    paddingTop: 16,
+    marginTop: 18,
+    paddingTop: 14,
     borderTopWidth: 1,
     alignItems: "center",
   },
   demoPresetsTitle: {
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 1,
-    marginBottom: 10,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
   demoChipsRow: {
     flexDirection: "row",
     gap: 8,
   },
   demoChipPill: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 8,
     borderWidth: 1,
   },
   demoChipPillText: {
     fontSize: 11,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   loginFootnote: {
-    marginTop: 22,
-    fontSize: 11,
+    marginTop: 20,
+    fontSize: 12,
     textAlign: "center",
   },
 
@@ -9110,17 +10550,17 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   brandBadgeWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 13,
+    width: 38,
+    height: 38,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   brandThumbLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 6,
   },
   brandNameRow: {
     flexDirection: "row",
@@ -9129,23 +10569,23 @@ const styles = StyleSheet.create({
   },
   brandHeaderTitle: {
     fontSize: 16,
-    fontWeight: "900",
+    fontWeight: "700",
     letterSpacing: -0.2,
   },
   roleChipPill: {
-    paddingHorizontal: 6,
+    paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
     borderWidth: 1,
   },
   roleChipText: {
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   greetingHeaderSub: {
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "400",
   },
   topBarRight: {
     flexDirection: "row",
@@ -9153,9 +10593,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   topIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
@@ -9163,19 +10603,19 @@ const styles = StyleSheet.create({
   },
   badgeDotGlow: {
     position: "absolute",
-    top: 7,
-    right: 7,
+    top: 6,
+    right: 6,
     width: 7,
     height: 7,
     borderRadius: 3.5,
   },
   topAvatarPill: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1.5,
+    borderWidth: 1,
     overflow: "hidden",
   },
   avatarImg: {
@@ -9184,52 +10624,52 @@ const styles = StyleSheet.create({
   },
   avatarInitialText: {
     fontSize: 14,
-    fontWeight: "900",
+    fontWeight: "700",
   },
 
   // SCROLL CONTENT & FLOATING ISLAND
   scrollContentBody: {
     paddingHorizontal: SCREEN_SIDE_PADDING,
-    paddingTop: 18,
-    paddingBottom: 110, // Generous clearance for floating island nav
+    paddingTop: 16,
+    paddingBottom: 100,
   },
   bottomFloatingIsland: {
     position: "absolute",
-    bottom: Platform.OS === "ios" ? 20 : 12,
+    bottom: Platform.OS === "ios" ? 18 : 10,
     left: 16,
     right: 16,
-    borderRadius: 28,
+    borderRadius: 18,
     borderWidth: 1,
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
     shadowRadius: 16,
-    elevation: 10,
+    elevation: 8,
   },
   bottomTabButton: {
     flex: 1,
     alignItems: "center",
   },
   tabIconContainer: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   tabIconContainerActive: {},
   tabLabelText: {
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "500",
     marginTop: 2,
   },
 
   // SCREEN COMMONS
   screenLayout: {
-    gap: 18,
+    gap: 16,
   },
   screenTopHeader: {
     flexDirection: "row",
@@ -9238,38 +10678,39 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   screenMainTitle: {
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: -0.7,
+    fontSize: 22,
+    fontWeight: "700",
+    letterSpacing: -0.4,
   },
   screenSubTitle: {
     fontSize: 13,
     marginTop: 2,
-    lineHeight: 19,
+    lineHeight: 18,
   },
   screenAddButtonMini: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 14,
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 2,
+    paddingVertical: 6,
+    borderRadius: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
     gap: 4,
   },
   screenAddBtnMiniText: {
     fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   sectionHeaderTitle: {
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 0.5,
     marginTop: 6,
+    textTransform: "uppercase",
   },
   sectionTitleRow: {
     flexDirection: "row",
@@ -9279,26 +10720,26 @@ const styles = StyleSheet.create({
   },
   viewAllActionText: {
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
   },
 
   // EXECUTIVE HERO CARDS
   executiveHeroCard: {
     position: "relative",
-    borderRadius: 26,
-    padding: 22,
+    borderRadius: 16,
+    padding: 18,
     borderWidth: 1,
-    shadowColor: "#18375C",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   heroAccentBar: {
     position: "absolute",
     left: 0,
-    top: 18,
-    bottom: 18,
+    top: 16,
+    bottom: 16,
     width: 3,
     borderRadius: 2,
     opacity: 0.9,
@@ -9307,14 +10748,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   executiveStatusBadge: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 9,
+    paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 10,
+    borderRadius: 6,
     gap: 6,
     borderWidth: 1,
   },
@@ -9324,76 +10765,76 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   executiveStatusText: {
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.5,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   executiveDateText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "500",
   },
   executiveHeroHeading: {
-    fontSize: 19,
-    fontWeight: "900",
+    fontSize: 18,
+    fontWeight: "700",
   },
   executiveHeroSub: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 3,
-    lineHeight: 16,
+    lineHeight: 17,
   },
 
   teacherHeroBanner: {
-    borderRadius: 26,
-    padding: 22,
+    borderRadius: 16,
+    padding: 18,
     borderWidth: 1,
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   teacherHeroPillRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
     alignSelf: "flex-start",
     marginBottom: 10,
     gap: 6,
     borderWidth: 1,
   },
   teacherHeroPillText: {
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.8,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   teacherHeroMainHeading: {
-    fontSize: 21,
-    fontWeight: "900",
+    fontSize: 18,
+    fontWeight: "700",
   },
   teacherHeroDescription: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 4,
     lineHeight: 17,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   teacherLaunchButton: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    height: 48,
-    borderRadius: 13,
+    height: 44,
+    borderRadius: 10,
     gap: 8,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 2,
   },
   teacherLaunchButtonText: {
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
 
   // KPI GRID
@@ -9404,88 +10845,88 @@ const styles = StyleSheet.create({
   },
   kpiCardHolo: {
     width: CARD_GRID_WIDTH,
-    minHeight: 158,
-    borderRadius: 20,
-    padding: 15,
+    minHeight: 125,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
     justifyContent: "space-between",
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.07,
-    shadowRadius: 14,
-    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   kpiIconBadgeHolo: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: 6,
   },
   kpiValueHolo: {
     fontSize: 22,
-    fontWeight: "900",
+    fontWeight: "700",
     letterSpacing: -0.4,
   },
   kpiLabelHolo: {
     fontSize: 12,
-    fontWeight: "800",
-    marginTop: 4,
+    fontWeight: "500",
+    marginTop: 2,
   },
   kpiDeltaHolo: {
-    fontSize: 10,
-    marginTop: 2,
+    fontSize: 11,
+    marginTop: 1,
   },
 
   // SPARKLINES
   sparklineContainer: {
-    borderRadius: 22,
-    padding: 18,
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   sparklineHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 14,
+    marginBottom: 12,
   },
   sparklineTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   sparklineAvg: {
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   sparklineBarsRow: {
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "flex-end",
-    height: 70,
+    height: 64,
   },
   sparklineCol: {
     alignItems: "center",
     gap: 6,
   },
   sparklineBarTrack: {
-    width: 22,
-    height: 50,
-    borderRadius: 6,
+    width: 20,
+    height: 46,
+    borderRadius: 4,
     justifyContent: "flex-end",
     overflow: "hidden",
   },
   sparklineBarFill: {
-    borderRadius: 6,
+    borderRadius: 4,
   },
   sparklineDayLabel: {
     fontSize: 10,
-    fontWeight: "700",
+    fontWeight: "500",
   },
 
   // RAPID COMMANDS
@@ -9496,15 +10937,15 @@ const styles = StyleSheet.create({
   },
   rapidCmdCardHolo: {
     width: CARD_GRID_WIDTH,
-    minHeight: 148,
-    borderRadius: 20,
-    padding: 15,
+    minHeight: 115,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
     justifyContent: "space-between",
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
     elevation: 1,
   },
   dashboardCardPressed: {
@@ -9512,16 +10953,16 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.98 }],
   },
   rapidCmdIconBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   rapidCmdTitleHolo: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   rapidCmdDescHolo: {
     fontSize: 11,
@@ -9532,53 +10973,53 @@ const styles = StyleSheet.create({
   streamEventCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 18,
-    padding: 14,
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
-    minHeight: 70,
+    minHeight: 64,
   },
   streamIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 10,
   },
   streamItemTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   streamItemSub: {
     fontSize: 11,
-    marginTop: 2,
+    marginTop: 1,
   },
   rosterItemCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 19,
-    padding: 15,
+    borderRadius: 14,
+    padding: 12,
     borderWidth: 1,
   },
   rosterAvatarBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   rosterAvatarInitial: {
-    fontSize: 16,
-    fontWeight: "900",
+    fontSize: 15,
+    fontWeight: "700",
   },
   rosterItemName: {
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 13,
+    fontWeight: "600",
   },
   rosterItemId: {
     fontSize: 11,
-    fontWeight: "700",
-    marginTop: 2,
+    fontWeight: "500",
+    marginTop: 1,
   },
   rosterItemMeta: {
     fontSize: 11,
@@ -9595,58 +11036,58 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 14,
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
-    height: 46,
+    height: 42,
   },
   searchInputHolo: {
     flex: 1,
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "500",
     marginLeft: 8,
   },
   filterToggleBox: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   filterDrawerCard: {
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
   },
 
   // GLASS FORM CARDS
   glassFormCard: {
-    borderRadius: 22,
-    padding: 18,
+    borderRadius: 14,
+    padding: 16,
     borderWidth: 1,
   },
   formGroupHeading: {
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 1,
-    marginBottom: 12,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    marginBottom: 10,
   },
   lockedScopeNotice: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   lockedScopeNoticeText: {
     flex: 1,
     fontSize: 11,
     lineHeight: 16,
-    fontWeight: "700",
+    fontWeight: "500",
   },
   formTopHeaderRow: {
     flexDirection: "row",
@@ -9654,9 +11095,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   backBtnCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -9664,35 +11105,35 @@ const styles = StyleSheet.create({
   formActionButtonsRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 18,
+    marginTop: 16,
   },
   formCancelBtn: {
     flex: 1,
-    height: 48,
-    borderRadius: 13,
+    height: 44,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   formCancelBtnText: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   formSubmitBtn: {
     flex: 2,
-    height: 48,
-    borderRadius: 13,
+    height: 44,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 2,
   },
   formSubmitBtnText: {
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   twoColumnGridRow: {
     flexDirection: "row",
@@ -9704,23 +11145,23 @@ const styles = StyleSheet.create({
   biometricPromptCardHolo: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
     borderStyle: "dashed",
     marginTop: 4,
     marginBottom: 8,
   },
   biometricIconBadge: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   biometricCardTitle: {
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 13,
+    fontWeight: "600",
   },
   biometricCardSub: {
     fontSize: 11,
@@ -9735,23 +11176,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   hudStepBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     borderWidth: 1.5,
     alignItems: "center",
     justifyContent: "center",
   },
   hudStepBadgeText: {
     fontSize: 11,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   hudCameraViewport: {
     backgroundColor: "#000",
-    borderRadius: 24,
+    borderRadius: 18,
     overflow: "hidden",
     height: 380,
-    borderWidth: 1.5,
+    borderWidth: 1,
   },
   hudCameraErrorWrap: {
     flex: 1,
@@ -9805,7 +11246,7 @@ const styles = StyleSheet.create({
     height: 280,
     borderRadius: 100,
     borderWidth: 2,
-    borderColor: "rgba(0, 229, 255, 0.4)",
+    borderColor: "rgba(59, 130, 246, 0.4)",
     borderStyle: "dashed",
     alignItems: "center",
     justifyContent: "center",
@@ -9814,28 +11255,28 @@ const styles = StyleSheet.create({
   hudBiometricEllipseDone: {
     borderStyle: "solid",
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 16,
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
   },
   hudBiometricEllipseScanning: {},
   liveFaceBoundingBox: {
     position: "absolute",
-    borderWidth: 3,
-    borderColor: "#22C55E",
-    borderRadius: 12,
-    shadowColor: "#22C55E",
-    shadowOpacity: 0.9,
-    shadowRadius: 8,
-    elevation: 8,
+    borderWidth: 2,
+    borderColor: "#10B981",
+    borderRadius: 8,
+    shadowColor: "#10B981",
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    elevation: 4,
   },
   animatedLaserLine: {
     position: "absolute",
     width: "100%",
-    height: 2.5,
+    height: 2,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    elevation: 3,
   },
   hudLiveTelemetryBar: {
     position: "absolute",
@@ -9843,10 +11284,10 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(8, 12, 20, 0.9)",
+    backgroundColor: "rgba(11, 15, 25, 0.9)",
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 14,
+    borderRadius: 10,
     gap: 8,
     borderWidth: 1,
   },
@@ -9858,75 +11299,75 @@ const styles = StyleSheet.create({
   hudTelemetryLabel: {
     color: "#fff",
     fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.4,
   },
   hudInstructionCard: {
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
   },
   hudInstructionTitle: {
-    fontSize: 15,
-    fontWeight: "900",
+    fontSize: 14,
+    fontWeight: "600",
   },
   hudInstructionDesc: {
     fontSize: 12,
     marginTop: 4,
     lineHeight: 16,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   hudForceCaptureBtn: {
-    height: 46,
-    borderRadius: 12,
+    height: 44,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   hudForceCaptureBtnText: {
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   permCardHolo: {
-    borderRadius: 22,
-    padding: 24,
+    borderRadius: 16,
+    padding: 22,
     alignItems: "center",
     borderWidth: 1,
   },
   permTitleHolo: {
-    fontSize: 17,
-    fontWeight: "900",
-    marginTop: 14,
+    fontSize: 16,
+    fontWeight: "700",
+    marginTop: 12,
   },
   permDescHolo: {
-    fontSize: 12,
+    fontSize: 13,
     textAlign: "center",
     marginTop: 6,
-    marginBottom: 18,
-    lineHeight: 17,
+    marginBottom: 16,
+    lineHeight: 18,
   },
 
   // SECTION SELECTION & ACTIONS
   sectionSelectedCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 12,
-    marginBottom: 16,
+    marginBottom: 14,
     borderWidth: 1,
   },
   sectionSelectedTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   sectionSelectedSub: {
     fontSize: 11,
     marginTop: 1,
   },
   sessionDeleteBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -9938,9 +11379,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   viewResultsBtn: {
-    height: 46,
+    height: 44,
     marginTop: 12,
-    borderRadius: 14,
+    borderRadius: 10,
     borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
@@ -9949,41 +11390,41 @@ const styles = StyleSheet.create({
   },
   viewResultsBtnText: {
     fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   dualPhotoActionsCol: {
     gap: 12,
   },
   captureHeroBtn: {
-    borderRadius: 16,
-    padding: 18,
+    borderRadius: 14,
+    padding: 16,
     alignItems: "center",
     justifyContent: "center",
   },
   captureHeroBtnTitle: {
-    fontSize: 14,
-    fontWeight: "900",
-    marginTop: 6,
-    letterSpacing: 0.6,
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
+    letterSpacing: 0.2,
   },
   captureHeroBtnSub: {
     fontSize: 11,
     marginTop: 2,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   galleryHeroBtn: {
-    borderRadius: 16,
-    padding: 18,
+    borderRadius: 14,
+    padding: 16,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
   },
   galleryHeroBtnTitle: {
-    fontSize: 14,
-    fontWeight: "900",
-    marginTop: 6,
-    letterSpacing: 0.6,
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 4,
+    letterSpacing: 0.2,
   },
   galleryHeroBtnSub: {
     fontSize: 11,
@@ -9994,7 +11435,7 @@ const styles = StyleSheet.create({
   resultsNoticeBox: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 12,
+    borderRadius: 10,
     padding: 12,
     gap: 8,
     borderWidth: 1,
@@ -10002,7 +11443,7 @@ const styles = StyleSheet.create({
   resultsNoticeText: {
     flex: 1,
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "500",
     lineHeight: 15,
   },
   resultsCardsGrid: {
@@ -10012,34 +11453,34 @@ const styles = StyleSheet.create({
   },
   resultItemCardHolo: {
     width: CARD_GRID_WIDTH,
-    borderRadius: 16,
+    borderRadius: 12,
     padding: 12,
     borderWidth: 1,
     alignItems: "center",
   },
   resultAvatarCircleHolo: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 6,
   },
   resultItemNameText: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
     textAlign: "center",
   },
   resultItemIdText: {
     fontSize: 10,
     marginTop: 1,
-    marginBottom: 8,
+    marginBottom: 6,
   },
 
   // VERIFY & ROSTER TOOLBAR
   tallyHUDCard: {
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
   },
   tallyStatsRow: {
@@ -10052,22 +11493,22 @@ const styles = StyleSheet.create({
   },
   tallyDigit: {
     fontSize: 22,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   tallyMeta: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
     marginTop: 2,
   },
   tallyDividerLine: {
     width: 1,
-    height: 30,
+    height: 28,
   },
   tallyProgressBarTrack: {
-    height: 6,
+    height: 5,
     borderRadius: 3,
     overflow: "hidden",
-    marginTop: 14,
+    marginTop: 12,
     marginBottom: 6,
   },
   tallyProgressBarFill: {
@@ -10077,7 +11518,7 @@ const styles = StyleSheet.create({
   tallyRatioSubText: {
     fontSize: 10,
     textAlign: "center",
-    fontWeight: "700",
+    fontWeight: "600",
   },
   verifyToolbarRow: {
     flexDirection: "row",
@@ -10087,44 +11528,44 @@ const styles = StyleSheet.create({
   },
   filterSegmentPillWrap: {
     flexDirection: "row",
-    borderRadius: 12,
-    padding: 3,
+    borderRadius: 8,
+    padding: 2,
   },
   filterSegmentBtn: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 9,
+    borderRadius: 6,
   },
   filterSegmentBtnActive: {
     borderWidth: 1,
   },
   filterSegmentBtnText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   quickBulkBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
   },
   quickBulkBtnText: {
     fontSize: 11,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   checklistCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 12,
     borderWidth: 1,
   },
   checkListName: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   checkListId: {
     fontSize: 11,
@@ -10133,9 +11574,9 @@ const styles = StyleSheet.create({
   togglePillHolo: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
     gap: 4,
     borderWidth: 1,
   },
@@ -10143,48 +11584,48 @@ const styles = StyleSheet.create({
   togglePillHoloAbsent: {},
   togglePillHoloText: {
     fontSize: 11,
-    fontWeight: "900",
+    fontWeight: "600",
   },
 
   // STUDENT SCORECARD
   studentScorecardGlass: {
-    borderRadius: 26,
-    padding: 22,
+    borderRadius: 16,
+    padding: 18,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    gap: 18,
-    shadowColor: "#173458",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 18,
-    elevation: 3,
+    gap: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   radialDialContainer: {
     alignItems: "center",
     justifyContent: "center",
   },
   radialDialOuterRing: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    borderWidth: 7,
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    borderWidth: 6,
     alignItems: "center",
     justifyContent: "center",
   },
   radialDialPercent: {
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: -0.5,
+    fontSize: 20,
+    fontWeight: "700",
+    letterSpacing: -0.4,
   },
   radialDialTitle: {
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 0.8,
+    fontSize: 9,
+    fontWeight: "600",
+    letterSpacing: 0.4,
   },
   studentCardHeading: {
     fontSize: 15,
-    fontWeight: "900",
+    fontWeight: "700",
     marginBottom: 6,
   },
   studentDegreeText: {
@@ -10197,58 +11638,58 @@ const styles = StyleSheet.create({
   },
   studentBreakdownBox: {
     flex: 1,
-    minHeight: 96,
-    borderRadius: 18,
+    minHeight: 90,
+    borderRadius: 14,
     padding: 14,
     borderWidth: 1,
     alignItems: "center",
   },
   studentBreakdownVal: {
     fontSize: 20,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   studentBreakdownLbl: {
-    fontSize: 10,
-    fontWeight: "700",
-    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 3,
   },
   primaryNeonButton: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    height: 48,
-    borderRadius: 13,
+    height: 46,
+    borderRadius: 10,
     gap: 8,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 2,
   },
   primaryNeonButtonText: {
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
 
   // SCHEDULE & TIMETABLE
   scheduleRowCard: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 78,
-    borderRadius: 18,
+    minHeight: 74,
+    borderRadius: 14,
     padding: 14,
     borderWidth: 1,
   },
   scheduleTimeBadge: {
-    borderRadius: 10,
+    borderRadius: 8,
     paddingHorizontal: 9,
-    paddingVertical: 7,
+    paddingVertical: 6,
     alignItems: "center",
     borderWidth: 1,
   },
   scheduleTimeStart: {
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   scheduleTimeFinish: {
     fontSize: 10,
@@ -10256,7 +11697,7 @@ const styles = StyleSheet.create({
   },
   scheduleLectureTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   scheduleLectureMeta: {
     fontSize: 11,
@@ -10268,12 +11709,12 @@ const styles = StyleSheet.create({
   roomTagHolo: {
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
   },
   roomTagHoloText: {
     fontSize: 10,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   teacherMetricsRow: {
     flexDirection: "row",
@@ -10281,8 +11722,8 @@ const styles = StyleSheet.create({
   },
   teacherMetricBox: {
     flex: 1,
-    minHeight: 108,
-    borderRadius: 18,
+    minHeight: 96,
+    borderRadius: 14,
     padding: 14,
     borderWidth: 1,
     alignItems: "center",
@@ -10290,12 +11731,12 @@ const styles = StyleSheet.create({
   },
   teacherMetricDigit: {
     fontSize: 18,
-    fontWeight: "900",
+    fontWeight: "700",
     marginTop: 4,
   },
   teacherMetricLabel: {
-    fontSize: 10,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "600",
     marginTop: 2,
     textAlign: "center",
   },
@@ -10304,20 +11745,20 @@ const styles = StyleSheet.create({
   studentSessionCard: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 16,
+    borderRadius: 14,
     padding: 14,
     borderWidth: 1,
   },
   studentSessionIconBadge: {
     width: 36,
     height: 36,
-    borderRadius: 12,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   studentSessionTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   studentSessionMeta: {
     fontSize: 11,
@@ -10332,14 +11773,14 @@ const styles = StyleSheet.create({
   datePickerCardHolo: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 14,
-    padding: 13,
+    borderRadius: 10,
+    padding: 12,
     borderWidth: 1,
     justifyContent: "space-between",
   },
   datePickerCardText: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
     flex: 1,
     paddingLeft: 10,
   },
@@ -10347,71 +11788,71 @@ const styles = StyleSheet.create({
   // SEGMENTED CONTROLS
   segmentWrapHolo: {
     flexDirection: "row",
-    borderRadius: 12,
-    padding: 4,
+    borderRadius: 10,
+    padding: 3,
   },
   segmentBtnHolo: {
     flex: 1,
     paddingVertical: 8,
     alignItems: "center",
-    borderRadius: 9,
+    borderRadius: 8,
   },
   segmentBtnHoloActive: {
     borderWidth: 1,
   },
   segmentBtnHoloText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
 
   // NOTIFICATIONS
   markAllBtnHolo: {
-    paddingHorizontal: 9,
+    paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
     borderWidth: 1,
   },
   markAllBtnHoloText: {
-    fontSize: 10,
-    fontWeight: "800",
+    fontSize: 11,
+    fontWeight: "600",
   },
   notifCardHolo: {
     flexDirection: "row",
     alignItems: "flex-start",
-    borderRadius: 15,
-    padding: 13,
+    borderRadius: 14,
+    padding: 14,
     borderWidth: 1,
   },
   notifIconCircleHolo: {
     width: 36,
     height: 36,
-    borderRadius: 11,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   notifTitleHolo: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   notifBodyHolo: {
     fontSize: 11,
     marginTop: 2,
-    lineHeight: 15,
+    lineHeight: 16,
   },
   notifTimeHolo: {
-    fontSize: 9,
+    fontSize: 10,
     marginTop: 4,
   },
   unreadDotHolo: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    marginTop: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 5,
   },
 
   // ACADEMIC HIERARCHY
   hierarchyBranchCard: {
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     overflow: "hidden",
   },
@@ -10424,16 +11865,16 @@ const styles = StyleSheet.create({
   hierarchySchoolTitle: {
     flex: 1,
     fontSize: 14,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   hierarchyCountPill: {
-    paddingHorizontal: 7,
+    paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 8,
+    borderRadius: 6,
   },
   hierarchyCountPillText: {
     fontSize: 10,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   hierarchyFacultySection: {
     borderTopWidth: 1,
@@ -10448,7 +11889,7 @@ const styles = StyleSheet.create({
   hierarchyFacultyTitle: {
     flex: 1,
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   hierarchyProgramsStack: {
     marginTop: 8,
@@ -10465,7 +11906,7 @@ const styles = StyleSheet.create({
   },
   hierarchyDeptName: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   hierarchyProgName: {
     fontSize: 10,
@@ -10473,8 +11914,8 @@ const styles = StyleSheet.create({
 
   // PROFILE SCREENS
   profileHeroCardHolo: {
-    borderRadius: 24,
-    padding: 22,
+    borderRadius: 18,
+    padding: 20,
     alignItems: "center",
     borderWidth: 1,
   },
@@ -10483,184 +11924,184 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   profileAvatarImgHolo: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     borderWidth: 2,
   },
   profileAvatarFallbackHolo: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
   },
   profileAvatarFallbackInitial: {
-    fontSize: 30,
-    fontWeight: "900",
+    fontSize: 28,
+    fontWeight: "700",
   },
   avatarEditPillHolo: {
     position: "absolute",
     bottom: 0,
     right: 0,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
   },
   profileHeroNameHolo: {
-    fontSize: 19,
-    fontWeight: "900",
+    fontSize: 18,
+    fontWeight: "700",
   },
   profileRoleBadgeHolo: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 3,
-    borderRadius: 8,
-    marginTop: 5,
+    borderRadius: 6,
+    marginTop: 6,
     borderWidth: 1,
   },
   profileRoleBadgeText: {
     fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.4,
   },
   profileHeroEmailHolo: {
     fontSize: 12,
-    marginTop: 5,
+    marginTop: 4,
   },
   assignedCourseRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 9,
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
   assignedCourseTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   assignedCourseSub: {
     fontSize: 11,
-    marginTop: 1,
+    marginTop: 2,
   },
   signOutBtnHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 14,
-    height: 48,
+    borderRadius: 10,
+    height: 46,
     gap: 8,
     borderWidth: 1,
   },
   signOutBtnHoloText: {
     fontSize: 13,
-    fontWeight: "900",
+    fontWeight: "600",
   },
 
   // COMMON HELPERS & MODALS
   statusPillHolo: {
     paddingHorizontal: 9,
     paddingVertical: 4,
-    borderRadius: 10,
+    borderRadius: 6,
     alignSelf: "flex-start",
   },
   statusPillHoloText: {
     fontSize: 10,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   holoDetailRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 9,
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
   holoDetailLabel: {
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   holoDetailValue: {
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   emptyCardHolo: {
-    borderRadius: 20,
-    padding: 28,
+    borderRadius: 16,
+    padding: 24,
     alignItems: "center",
     borderWidth: 1,
     marginVertical: 10,
   },
   emptyIconBadgeHolo: {
-    width: 60,
-    height: 60,
-    borderRadius: 20,
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,
   },
   emptyTitleHolo: {
     fontSize: 15,
-    fontWeight: "900",
+    fontWeight: "700",
     textAlign: "center",
   },
   emptyDescHolo: {
     fontSize: 12,
     textAlign: "center",
     marginTop: 5,
-    lineHeight: 16,
+    lineHeight: 17,
   },
   emptyActionBtnHolo: {
     marginTop: 14,
     paddingHorizontal: 16,
     paddingVertical: 9,
-    borderRadius: 11,
+    borderRadius: 10,
   },
   emptyActionBtnHoloText: {
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "600",
   },
   selectTriggerHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
-    height: 46,
+    height: 44,
   },
   selectTriggerHoloDisabled: {
     opacity: 0.5,
   },
   selectTriggerHoloText: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "500",
   },
   applyFilterBtnHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 10,
     height: 42,
     gap: 6,
     marginTop: 12,
   },
   applyFilterBtnHoloText: {
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "600",
   },
 
   // MODAL OVERLAYS
   modalBackdropOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    backgroundColor: "rgba(11, 15, 25, 0.7)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
   },
   modalSheetCard: {
     width: "100%",
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 20,
     borderWidth: 1,
   },
@@ -10672,52 +12113,52 @@ const styles = StyleSheet.create({
   },
   modalSheetTitle: {
     fontSize: 16,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   modalProfileHero: {
     alignItems: "center",
     marginBottom: 14,
   },
   modalAvatarGlow: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 8,
     borderWidth: 1,
   },
   modalAvatarGlowText: {
-    fontSize: 24,
-    fontWeight: "900",
+    fontSize: 22,
+    fontWeight: "700",
   },
   modalHeroName: {
-    fontSize: 17,
-    fontWeight: "900",
+    fontSize: 16,
+    fontWeight: "700",
   },
   modalIdBadge: {
-    paddingHorizontal: 9,
+    paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 8,
+    borderRadius: 6,
     marginTop: 5,
     borderWidth: 1,
   },
   modalIdBadgeText: {
     fontSize: 10,
-    fontWeight: "900",
+    fontWeight: "600",
   },
   modalDetailsGroup: {
     marginBottom: 16,
   },
   modalDismissBtn: {
     height: 44,
-    borderRadius: 12,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   modalDismissBtnText: {
     fontSize: 13,
-    fontWeight: "900",
+    fontWeight: "600",
   },
   modalDualActionsRow: {
     flexDirection: "row",
@@ -10728,18 +12169,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 10,
     height: 44,
     gap: 6,
     borderWidth: 1,
   },
   modalDangerBtnText: {
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "600",
   },
   modalDismissBtnFlex: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: 10,
     height: 44,
     alignItems: "center",
     justifyContent: "center",
@@ -10748,25 +12189,25 @@ const styles = StyleSheet.create({
   // DROPDOWNS & HIERARCHY SCOPES
   dropdownModalHolo: {
     width: "100%",
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 18,
     borderWidth: 1,
   },
   dropdownModalTitle: {
     fontSize: 15,
-    fontWeight: "900",
+    fontWeight: "700",
     marginBottom: 12,
   },
   dropdownOptionHolo: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 11,
+    paddingVertical: 12,
     borderBottomWidth: 1,
   },
   dropdownOptionTextHolo: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "500",
   },
   hierarchyScopeWrap: {
     marginTop: 10,
@@ -10778,7 +12219,7 @@ const styles = StyleSheet.create({
   },
   phaseStepLabel: {
     fontSize: 11,
-    fontWeight: "800",
+    fontWeight: "600",
     marginBottom: 7,
   },
   phaseChipsRow: {
@@ -10789,50 +12230,50 @@ const styles = StyleSheet.create({
   phasePillChip: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
     gap: 5,
     borderWidth: 1,
   },
   phasePillChipActive: {},
   phasePillText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   readOnlyTagPill: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
     gap: 4,
     borderWidth: 1,
   },
   readOnlyTagText: {
     fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.6,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   reportSessionItemRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 9,
+    paddingVertical: 10,
     borderBottomWidth: 1,
   },
   reportSessionIconCircle: {
     width: 34,
     height: 34,
-    borderRadius: 10,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
   },
   reportSessionItemTitle: {
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "600",
   },
   reportSessionItemSub: {
-    fontSize: 10,
+    fontSize: 11,
     marginTop: 1,
   },
   emptySubText: {
@@ -10851,7 +12292,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   biometricHeaderTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "700",
   },
   biometricHeaderSub: {
@@ -10871,46 +12312,46 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   nativeCaptureIcon: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    marginBottom: 24,
+    marginBottom: 20,
   },
   nativeCaptureTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    marginBottom: 10,
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 8,
   },
   nativeCaptureText: {
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 13,
+    lineHeight: 20,
     textAlign: "center",
-    maxWidth: 310,
-    marginBottom: 28,
+    maxWidth: 300,
+    marginBottom: 24,
   },
   nativeCaptureButton: {
-    minWidth: 250,
-    height: 54,
-    borderRadius: 27,
+    minWidth: 220,
+    height: 48,
+    borderRadius: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 9,
+    gap: 8,
   },
   nativeCaptureButtonText: {
     color: "#FFFFFF",
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.4,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   nativeCaptureStatus: {
     textAlign: "center",
-    marginTop: 20,
-    fontSize: 13,
-    lineHeight: 19,
+    marginTop: 16,
+    fontSize: 12,
+    lineHeight: 18,
   },
   biometricCameraFullFrame: {
     flex: 1,
@@ -10930,11 +12371,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   hudCenteredGuideHint: {
-    color: "rgba(255, 255, 255, 0.75)",
+    color: "rgba(255, 255, 255, 0.8)",
     fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 1,
-    marginTop: 14,
+    fontWeight: "600",
+    letterSpacing: 0.8,
+    marginTop: 12,
     textTransform: "uppercase",
   },
   biometricCameraViewport: {
@@ -10951,7 +12392,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 20,
     borderTopWidth: 1,
   },
@@ -10959,30 +12400,30 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 16,
     right: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     zIndex: 10,
   },
   galleryIconBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
   },
   shutterOuterRing: {
-    minWidth: 174,
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 2,
+    minWidth: 160,
+    height: 48,
+    borderRadius: 10,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#1D4ED8",
+    backgroundColor: "#2563EB",
   },
   captureButtonContent: {
     flexDirection: "row",
@@ -10991,29 +12432,29 @@ const styles = StyleSheet.create({
   },
   captureButtonLabel: {
     color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "900",
-    letterSpacing: 0.4,
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   inViewCaptureButton: {
     position: "absolute",
-    left: 42,
-    right: 42,
+    left: 36,
+    right: 36,
     bottom: 24,
-    height: 54,
-    borderRadius: 27,
+    height: 48,
+    borderRadius: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 9,
+    gap: 8,
     zIndex: 30,
-    elevation: 10,
+    elevation: 6,
   },
   inViewCaptureButtonText: {
     color: "#FFFFFF",
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   biometricPreviewContainer: {
     flex: 1,
@@ -11021,7 +12462,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   biometricPreviewCard: {
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     overflow: "hidden",
     position: "relative",
@@ -11041,26 +12482,26 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
     borderWidth: 1,
   },
   biometricVerifiedText: {
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "600",
   },
   biometricStatusBox: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     padding: 12,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     marginTop: 14,
   },
   biometricStatusBoxText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "500",
     flex: 1,
   },
@@ -11075,12 +12516,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
     borderWidth: 1,
   },
   biometricRetakeBtnText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
   },
   biometricConfirmBtn: {
@@ -11089,35 +12530,35 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
   },
   biometricConfirmBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 13,
+    fontWeight: "600",
   },
   photoVerifiedCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     padding: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
   },
   photoVerifiedThumb: {
-    width: 60,
-    height: 60,
-    borderRadius: 10,
+    width: 56,
+    height: 56,
+    borderRadius: 8,
   },
   verifiedRow: {
     flex: 1,
   },
   verifiedTitle: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 13,
+    fontWeight: "600",
   },
   verifiedSub: {
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 2,
   },
   retakeActionsRow: {
@@ -11135,7 +12576,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   smallActionBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
   },
   biometricPromptCardEnhanced: {
@@ -11164,7 +12605,7 @@ const styles = StyleSheet.create({
   },
   openCameraBtnText: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   chooseGalleryBtn: {
     flex: 1,
@@ -11189,7 +12630,7 @@ const styles = StyleSheet.create({
   },
   generateIdBtnText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   annotatedPreviewCard: {
     width: "100%",
@@ -11212,7 +12653,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 8,
   },
   modalFooterTwoBtnsRow: {
     flexDirection: "row",
@@ -11226,8 +12667,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   capturedThumbWrap: {
-    width: 52,
-    height: 52,
+    width: 48,
+    height: 48,
     borderRadius: 8,
     overflow: "hidden",
     borderWidth: 1,
@@ -11237,16 +12678,16 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   secondaryHoloButton: {
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   secondaryHoloButtonText: {
     fontSize: 13,
-    fontWeight: "700",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    letterSpacing: 0.3,
   },
   metricCardHolo: {
     padding: 12,
@@ -11257,13 +12698,13 @@ const styles = StyleSheet.create({
   },
   metricCardLabel: {
     fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.8,
+    fontWeight: "600",
+    letterSpacing: 0.5,
     marginBottom: 4,
   },
   metricCardValue: {
-    fontSize: 20,
-    fontWeight: "900",
+    fontSize: 18,
+    fontWeight: "700",
   },
   serverPillBtn: {
     flexDirection: "row",
@@ -11271,7 +12712,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     marginTop: 14,
     gap: 8,
@@ -11284,6 +12725,124 @@ const styles = StyleSheet.create({
   serverPillText: {
     flex: 1,
     fontSize: 11,
+    fontWeight: "500",
+  },
+  paginationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 16,
+  },
+  paginationBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 6,
+  },
+  paginationBtnText: {
+    fontSize: 12,
     fontWeight: "600",
+  },
+  paginationInfoText: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  pageSizeSelectorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  pageSizePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  pageSizePillText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  searchInputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 10,
+    gap: 8,
+  },
+  searchTextInput: {
+    flex: 1,
+    fontSize: 13,
+    padding: 0,
+  },
+  exportTabSegmentWrap: {
+    flexDirection: "row",
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 3,
+    marginBottom: 16,
+  },
+  exportTabBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 7,
+  },
+  exportTabBtnActive: {
+    borderWidth: 1,
+  },
+  exportTabBtnText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  exportCardBox: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 16,
+  },
+  exportSectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+    marginBottom: 8,
+  },
+  exportPillGroup: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 14,
+  },
+  exportChoicePill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  exportChoicePillText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  exportSummaryBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginBottom: 16,
   },
 });

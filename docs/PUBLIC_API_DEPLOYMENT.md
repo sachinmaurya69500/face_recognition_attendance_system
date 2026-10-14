@@ -31,8 +31,8 @@ The default deployment is GPU. The script builds `backend/Dockerfile.gpu`, start
 Check the services and tunnel logs:
 
 ```sh
-docker compose -f docker-compose.gpu.yml ps
-docker compose -f docker-compose.gpu.yml logs --tail=100 cloudflared nginx api
+docker compose ps
+docker compose logs --tail=100 cloudflared nginx api
 ```
 
 ## Verification
@@ -40,7 +40,7 @@ docker compose -f docker-compose.gpu.yml logs --tail=100 cloudflared nginx api
 Test the internal route:
 
 ```sh
-docker compose -f docker-compose.gpu.yml exec -T nginx wget -qO- http://api:8000/health
+docker compose exec -T nginx wget -qO- http://api:8000/health
 ```
 
 Test the public route from any network:

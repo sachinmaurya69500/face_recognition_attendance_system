@@ -28,6 +28,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
@@ -36,6 +38,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./backend/app:/workspace/app
+      - ./backend/tests:/workspace/tests
     ports:
       - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
     healthcheck:
@@ -62,7 +65,7 @@ services:
     image: redis:7-alpine
     container_name: attendance_redis
     restart: always
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru", "--tcp-backlog", "65535", "--timeout", "0", "--tcp-keepalive", "300"]
     volumes:
       - redisdata:/data
     healthcheck:

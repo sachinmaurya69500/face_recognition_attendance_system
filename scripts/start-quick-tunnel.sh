@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-compose_file=${COMPOSE_FILE:-docker-compose.gpu.yml}
+compose_file=${COMPOSE_FILE:-docker-compose.yml}
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$project_root"
 

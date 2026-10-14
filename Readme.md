@@ -102,8 +102,7 @@ Do not expose PostgreSQL or FastAPI directly. For anything beyond a local test,
 use the HTTPS tunnel/proxy deployment described below.
 
 The standard Compose file uses the GPU image. It requires a working NVIDIA
-driver and NVIDIA Container Toolkit; use `docker-compose.gpu.yml` only when a
-separate GPU-specific Compose file is needed.
+driver and NVIDIA Container Toolkit.
 
 ## Production backend
 
@@ -111,8 +110,8 @@ For the supported GPU deployment:
 
 ```bash
 ./scripts/start-quick-tunnel.sh
-docker compose -f docker-compose.gpu.yml ps
-docker compose -f docker-compose.gpu.yml logs --tail=100 api nginx cloudflared
+docker compose ps
+docker compose logs --tail=100 api nginx cloudflared
 curl https://attendai.sachinmaurya.me/health
 ```
 
@@ -203,7 +202,7 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 nvidia-s
 API failure:
 
 ```bash
-docker compose -f docker-compose.gpu.yml logs --tail=100 api nginx cloudflared
+docker compose logs --tail=100 api nginx cloudflared
 curl https://attendai.sachinmaurya.me/health
 ```
 

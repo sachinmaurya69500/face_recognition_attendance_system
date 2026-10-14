@@ -17,7 +17,7 @@ services:
     image: redis:7-alpine
     container_name: attendance_redis
     restart: always
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru", "--tcp-backlog", "65535", "--timeout", "0", "--tcp-keepalive", "300"]
     volumes:
       - redisdata:/data
     healthcheck:

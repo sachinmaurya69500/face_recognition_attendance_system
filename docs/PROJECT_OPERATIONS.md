@@ -4,8 +4,8 @@
 
 ```bash
 cd /home/keplerearth/Pratyaksha
-docker compose -f docker-compose.gpu.yml up -d --build
-docker compose -f docker-compose.gpu.yml ps
+docker compose up -d --build
+docker compose ps
 curl -i http://127.0.0.1:8080/health
 ```
 
@@ -14,8 +14,8 @@ Expected health: `status=ok`, `model_loaded=true`, `database=ok`.
 Logs and shutdown:
 
 ```bash
-docker compose -f docker-compose.gpu.yml logs --tail=100 api nginx db
-docker compose -f docker-compose.gpu.yml down
+docker compose logs --tail=100 api nginx db
+docker compose down
 ```
 
 Verify GPU:
@@ -119,5 +119,5 @@ pytest -q tests/test_cache.py
 Start the stack with:
 
 ```bash
-docker compose -f docker-compose.gpu.yml up -d --build
+docker compose up -d --build
 ```
