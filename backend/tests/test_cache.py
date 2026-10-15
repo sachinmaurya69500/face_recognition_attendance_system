@@ -129,6 +129,126 @@ class TestCacheEngine(unittest.TestCase):
 
         cache.cache_delete_pattern("unit:decorated:*")
 
+    def test_required_1_initial_cache_population(self):
+        """TEST 1: Initial cache population creates expected entry."""
+        key = "test:req1:population"
+        cache.cache_delete(key)
+        self.assertIsNone(cache.cache_get(key))
+
+        ok = cache.cache_set(key, {"user": "faculty_1", "role": "teacher"}, ttl=60)
+        self.assertTrue(ok)
+        val = cache.cache_get(key)
+        self.assertIsNotNone(val)
+        self.assertEqual(val["user"], "faculty_1")
+        cache.cache_delete(key)
+
+    def test_required_2_cache_hit_and_latency(self):
+        """TEST 2: Cache hit reuses cached result with sub-millisecond RAM latency."""
+        key = "test:req2:hit"
+        payload = {"catalog": [{"id": i, "name": f"Item {i}"} for i in range(50)]}
+        cache.cache_set(key, payload, ttl=60)
+
+        # First read populates L1
+        val1 = cache.cache_get(key, use_l1=True)
+        self.assertEqual(val1, payload)
+
+        # Second read from L1 must be instantaneous (<1ms)
+        t0 = time.perf_counter()
+        val2 = cache.cache_get(key, use_l1=True)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self.assertEqual(val2, payload)
+        self.assertLess(elapsed_ms, 1.0)
+        cache.cache_delete(key)
+
+    def test_required_3_cache_miss_and_expiration(self):
+        """TEST 3: Cache miss returns None, and short-TTL entries expire as expected."""
+        key = "test:req3:miss"
+        cache.cache_delete(key)
+        # Miss on non-existent key
+        self.assertIsNone(cache.cache_get(key))
+
+        # Test L1 expiration
+        cache._l1_cache.set(key, "temporary", ttl=0.1)
+        time.sleep(0.15)
+        self.assertIsNone(cache._l1_cache.get(key))
+
+    def test_required_4_cache_invalidation(self):
+        """TEST 4: Invalidation removes specific keys and wildcard patterns immediately."""
+        key1 = "attendance:session:ATT-TEST-1:roster"
+        key2 = "attendance:session:ATT-TEST-1:records:p=1"
+        key3 = "attendance:session:ATT-TEST-2:roster"
+
+        cache.cache_set(key1, {"students": [1, 2]}, ttl=60)
+        cache.cache_set(key2, {"items": [1]}, ttl=60)
+        cache.cache_set(key3, {"students": [3, 4]}, ttl=60)
+
+        # Invalidate only session 1
+        deleted = cache.cache_delete_pattern("attendance:session:ATT-TEST-1:*")
+        self.assertGreaterEqual(deleted, 2)
+
+        self.assertIsNone(cache.cache_get(key1))
+        self.assertIsNone(cache.cache_get(key2))
+        self.assertIsNotNone(cache.cache_get(key3))
+
+        cache.cache_delete(key3)
+
+    def test_required_5_error_handling_and_circuit_breaker(self):
+        """TEST 5: Cache operations gracefully handle Redis errors without crashing."""
+        original_client = cache._client
+        try:
+            # Force circuit breaker open
+            cache._circuit_open_until = time.monotonic() + 1.0
+            # Cache get should gracefully return None
+            self.assertIsNone(cache.cache_get("some:unreachable:key", use_l1=False))
+            # Cache set should return False without raising
+            self.assertFalse(cache.cache_set("some:unreachable:key", "data", use_l1=False))
+        finally:
+            cache._circuit_open_until = 0.0
+            cache._client = original_client
+
+    def test_required_6_concurrent_access_and_stampede(self):
+        """TEST 6: Concurrent threads requesting same missing key do not cause stampede."""
+        import concurrent.futures
+
+        call_count = 0
+        def compute_slow_data():
+            nonlocal call_count
+            time.sleep(0.05)
+            call_count += 1
+            return {"heavy": "computation"}
+
+        key = "test:req6:stampede"
+        cache.cache_delete(key)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(cache.cache_get_or_compute, key, compute_slow_data, ttl=30)
+                for _ in range(10)
+            ]
+            results = [f.result() for f in futures]
+
+        for r in results:
+            self.assertEqual(r, {"heavy": "computation"})
+        self.assertLessEqual(call_count, 2)
+        cache.cache_delete(key)
+
+    def test_required_7_memory_l1_mutation_isolation(self):
+        """TEST 7: Mutating an object returned from L1 does not corrupt the cached data."""
+        key = "test:req7:isolation"
+        original = {"session_id": "ATT-SAFE", "students": [{"name": "Student A", "status": "ABSENT"}]}
+        cache.cache_set(key, original, ttl=60)
+
+        # Fetch and mutate the returned dictionary in-place
+        retrieved = cache.cache_get(key, use_l1=True)
+        retrieved["students"][0]["status"] = "PRESENT"
+        retrieved["mutated_field"] = "CORRUPTED"
+
+        # Re-fetch from cache: it must remain pristine and uncorrupted
+        fresh_copy = cache.cache_get(key, use_l1=True)
+        self.assertEqual(fresh_copy["students"][0]["status"], "ABSENT")
+        self.assertNotIn("mutated_field", fresh_copy)
+        cache.cache_delete(key)
+
 
 if __name__ == "__main__":
     unittest.main()

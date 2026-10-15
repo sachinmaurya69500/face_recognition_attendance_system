@@ -39,6 +39,7 @@ services:
     volumes:
       - ./backend/app:/workspace/app
       - ./backend/tests:/workspace/tests
+      - ./backend/storage:/workspace/storage
     ports:
       - "${API_BIND_ADDRESS:-0.0.0.0}:${API_PORT:-8000}:8000"
     healthcheck:

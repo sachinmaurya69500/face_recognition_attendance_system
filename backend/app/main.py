@@ -9,7 +9,7 @@ import secrets
 import time
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Any
@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -66,6 +66,18 @@ from app.session_manager import (
 )
 from app.models import face_model
 from app.student_photos import student_photo_data_uri
+from app.photo_storage import get_safe_photo_path, save_student_photo, PHOTO_STORAGE_DIR
+from app.visitor_services import (
+    VALID_ID_TYPES,
+    VALID_PURPOSES,
+    build_visitor_qr_payload,
+    generate_qr_code_bytes,
+    generate_qr_code_data_uri,
+    generate_visitor_id,
+    hash_identification_number,
+    mask_identification_number,
+    validate_email_format,
+)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 warnings.filterwarnings(
@@ -93,8 +105,57 @@ AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-development-secret")
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
 logger = logging.getLogger("pratyaksh.api")
 
+_logged_initial_health_api = False
+_logged_initial_health_access = False
+
+
+class HealthCheckAccessFilter(logging.Filter):
+    """Filter out repeated 200 OK /health access logs after the initial check."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        global _logged_initial_health_access
+        if getattr(record, "_is_initial_health_log", False):
+            return True
+
+        try:
+            if record.args and len(record.args) >= 5:
+                path = str(record.args[2])
+                status_code = int(record.args[4])
+                if path in ("/health", "/health/") and status_code < 400:
+                    if not _logged_initial_health_access:
+                        _logged_initial_health_access = True
+                        record._is_initial_health_log = True
+                        return True
+                    return False
+            else:
+                msg = record.getMessage()
+                if "GET /health" in msg or "GET /health/" in msg:
+                    if any(err in msg for err in (" 40", " 41", " 42", " 43", " 44", " 49", " 50", " 500", " 502", " 503")):
+                        return True
+                    if not _logged_initial_health_access:
+                        _logged_initial_health_access = True
+                        record._is_initial_health_log = True
+                        return True
+                    return False
+        except Exception:
+            return True
+        return True
+
+
+_health_access_filter = HealthCheckAccessFilter()
+for _logger_name in ("uvicorn.access", "gunicorn.access"):
+    logging.getLogger(_logger_name).addFilter(_health_access_filter)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    for _logger_name in ("uvicorn.access", "gunicorn.access"):
+        _log_obj = logging.getLogger(_logger_name)
+        if _health_access_filter not in _log_obj.filters:
+            _log_obj.addFilter(_health_access_filter)
+        for _handler in _log_obj.handlers:
+            if _health_access_filter not in _handler.filters:
+                _handler.addFilter(_health_access_filter)
     logger.info("starting API")
     face_model.load()
     ensure_auth_tables()
@@ -116,6 +177,18 @@ async def request_logging(request: Request, call_next):
         raise
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     response.headers["X-Request-ID"] = request_id
+
+    # Filter out repeated successful health check logs after the initial check
+    if request.url.path in ("/health", "/health/") and response.status_code < 400:
+        global _logged_initial_health_api
+        if not _logged_initial_health_api:
+            _logged_initial_health_api = True
+            logger.info(
+                "request id=%s method=%s path=%s status=%s duration_ms=%s",
+                request_id, request.method, request.url.path, response.status_code, elapsed_ms,
+            )
+        return response
+
     logger.info(
         "request id=%s method=%s path=%s status=%s duration_ms=%s",
         request_id, request.method, request.url.path, response.status_code, elapsed_ms,
@@ -132,6 +205,24 @@ app.add_middleware(
 
 class LoginRequest(BaseModel):
     username: str
+    password: str
+    role: str | None = None
+
+class VisitorRegisterRequest(BaseModel):
+    full_name: str
+    email: str
+    phone: str
+    purpose_of_visit: str
+    purpose_other: str | None = None
+    expected_check_in: str
+    expected_check_out: str
+    identification_type: str
+    identification_number: str
+    password: str
+    confirm_password: str
+
+class VisitorLoginRequest(BaseModel):
+    email: str
     password: str
 
 class UserRequest(BaseModel):
@@ -232,9 +323,54 @@ def current_user(authorization: str | None = Header(default=None)):
     except ValueError as exc:
         raise HTTPException(401, str(exc))
 
+def get_photo_user(
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+):
+    header_val = authorization
+    if not header_val and token:
+        header_val = f"Bearer {token}" if not token.startswith("Bearer ") else token
+    if not header_val:
+        raise HTTPException(401, "Authentication required to access student photos")
+    try:
+        return decode_and_validate_token(header_val)
+    except ValueError as exc:
+        raise HTTPException(401, str(exc))
+
+@app.get("/student-photos/{filename}")
+@app.get("/student_photos/{filename}")
+def serve_student_photo(
+    filename: str,
+    user=Depends(get_photo_user),
+):
+    safe_path = get_safe_photo_path(filename)
+    if not safe_path:
+        raise HTTPException(400, "Invalid photo filename")
+    if not safe_path.exists() or not safe_path.is_file():
+        raise HTTPException(404, "Student photo not found")
+
+    ext = safe_path.suffix.lower()
+    media_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    media_type = media_types.get(ext, "image/jpeg")
+    return FileResponse(
+        str(safe_path),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=86400, immutable"},
+    )
+
 def normalize_role(role: str) -> str:
     r = str(role or "").lower().strip()
-    return "faculty" if r in ("teacher", "faculty") else r
+    if r in ("teacher", "faculty"):
+        return "faculty"
+    if r in ("others", "other"):
+        return "others"
+    return r
 
 def require_roles(*roles):
     normalized_allowed = set()
@@ -244,6 +380,9 @@ def require_roles(*roles):
         if norm == "faculty":
             normalized_allowed.add("teacher")
             normalized_allowed.add("faculty")
+        elif norm == "others":
+            normalized_allowed.add("others")
+            normalized_allowed.add("other")
         else:
             normalized_allowed.add(str(r).lower().strip())
 
@@ -278,7 +417,40 @@ def ensure_auth_tables():
             schema_probe = cur.fetchone()
             if schema_probe["to_regclass"] is None:
                 cur.execute(schema_path.read_text(encoding="utf-8"))
-            cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, password_hash TEXT NOT NULL, role VARCHAR(20) NOT NULL CHECK (role IN ('admin','teacher','student','faculty','others','other')), student_id VARCHAR(50) REFERENCES students(student_id) ON DELETE SET NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("""
+                DO $$
+                BEGIN
+                    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+                    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'teacher', 'faculty', 'student', 'others', 'other'));
+                EXCEPTION WHEN OTHERS THEN NULL;
+                END $$;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS visitors (
+                    id SERIAL PRIMARY KEY,
+                    visitor_id VARCHAR(50) UNIQUE NOT NULL,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    full_name VARCHAR(160) NOT NULL,
+                    email VARCHAR(160) UNIQUE NOT NULL,
+                    phone VARCHAR(40) NOT NULL,
+                    purpose_of_visit VARCHAR(160) NOT NULL,
+                    purpose_other TEXT,
+                    expected_check_in TIMESTAMPTZ NOT NULL,
+                    expected_check_out TIMESTAMPTZ NOT NULL,
+                    identification_type VARCHAR(80) NOT NULL,
+                    identification_number_masked VARCHAR(50) NOT NULL,
+                    identification_number_hash VARCHAR(128),
+                    registration_date TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    status VARCHAR(30) NOT NULL DEFAULT 'REGISTERED',
+                    qr_payload JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS visitors_visitor_id_idx ON visitors(visitor_id);
+                CREATE INDEX IF NOT EXISTS visitors_user_id_idx ON visitors(user_id);
+                CREATE INDEX IF NOT EXISTS visitors_email_idx ON visitors(LOWER(email));
+            """)
             cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
             cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
@@ -380,6 +552,22 @@ def ensure_auth_tables():
             cur.execute("CREATE INDEX IF NOT EXISTS attendance_batch_photos_batch_idx ON attendance_batch_photos(batch_id)")
             cur.execute("ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS recognition_status VARCHAR(20) NOT NULL DEFAULT 'NOT_RECOGNIZED', ADD COLUMN IF NOT EXISTS initial_attendance_status VARCHAR(10) NOT NULL DEFAULT 'ABSENT', ADD COLUMN IF NOT EXISTS final_attendance_status VARCHAR(10), ADD COLUMN IF NOT EXISTS attendance_method VARCHAR(24) NOT NULL DEFAULT 'FACE_RECOGNITION', ADD COLUMN IF NOT EXISTS is_manual_override BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP")
             cur.execute("CREATE TABLE IF NOT EXISTS audit_logs (id SERIAL PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action VARCHAR(80) NOT NULL, entity VARCHAR(80) NOT NULL, entity_id VARCHAR(120), previous_value JSONB, new_value JSONB, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
+            # QR code identity & mutual connections
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS qr_code_id UUID DEFAULT gen_random_uuid()")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_qr_code_id_idx ON users(qr_code_id)")
+            cur.execute("UPDATE users SET qr_code_id = gen_random_uuid() WHERE qr_code_id IS NULL")
+
+            cur.execute("""CREATE TABLE IF NOT EXISTS user_connections (
+                id SERIAL PRIMARY KEY,
+                user_id_1 INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id_2 INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                connected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT check_no_self_connection CHECK (user_id_1 <> user_id_2)
+            )""")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_user_connection_idx ON user_connections (LEAST(user_id_1, user_id_2), GREATEST(user_id_1, user_id_2))")
+            cur.execute("CREATE INDEX IF NOT EXISTS user_connections_user1_idx ON user_connections(user_id_1)")
+            cur.execute("CREATE INDEX IF NOT EXISTS user_connections_user2_idx ON user_connections(user_id_2)")
+            cur.execute("CREATE INDEX IF NOT EXISTS user_connections_connected_at_idx ON user_connections(connected_at DESC)")
             # The database is intentionally empty except for the administrator.
             # Students and teachers are created through the application flows.
             cur.execute("""INSERT INTO users (username, password_hash, role)
@@ -399,8 +587,10 @@ def login(body: LoginRequest, request: Request):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, password_hash, role, student_id, is_active FROM users WHERE LOWER(TRIM(username)) = LOWER(%s)",
-                (body.username.strip(),),
+                """SELECT id, username, password_hash, role, student_id, is_active, display_name, email 
+                   FROM users 
+                   WHERE LOWER(TRIM(username)) = LOWER(%s) OR (email IS NOT NULL AND LOWER(TRIM(email)) = LOWER(%s))""",
+                (body.username.strip(), body.username.strip()),
             )
             user = cur.fetchone()
             if not user:
@@ -409,6 +599,17 @@ def login(body: LoginRequest, request: Request):
                 raise HTTPException(403, "Account is disabled. Please contact administrator.")
             if not password_ok(body.password, user["password_hash"]) and not password_ok(body.password.strip(), user["password_hash"]):
                 raise HTTPException(401, "Invalid username or password")
+
+            # Role isolation validation
+            user_role_norm = normalize_role(user["role"])
+            if body.role:
+                req_role_norm = normalize_role(body.role)
+                if req_role_norm == "others" and user_role_norm != "others":
+                    raise HTTPException(403, "Invalid credentials for visitor login portal.")
+                elif req_role_norm != "others" and user_role_norm == "others":
+                    raise HTTPException(403, "Visitors cannot log in through the campus staff/student portal.")
+                elif req_role_norm in ("admin", "teacher", "faculty", "student") and req_role_norm != user_role_norm:
+                    raise HTTPException(403, f"Account does not have {body.role} privileges.")
 
             cur.execute(
                 "INSERT INTO audit_logs (actor_id, action, entity, entity_id) VALUES (%s, 'USER_LOGIN', 'user', %s)",
@@ -424,8 +625,275 @@ def login(body: LoginRequest, request: Request):
     return {
         "access_token": token,
         "session_id": sid,
-        "user": {k: user[k] for k in ("id", "username", "role", "student_id")},
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "student_id": user["student_id"],
+            "display_name": user.get("display_name"),
+            "email": user.get("email"),
+        },
     }
+
+@app.post("/auth/others/login")
+def others_login(body: VisitorLoginRequest, request: Request):
+    login_req = LoginRequest(username=body.email, password=body.password, role="others")
+    return login(login_req, request)
+
+@app.post("/auth/others/register", status_code=201)
+@app.post("/visitors/register", status_code=201)
+def register_visitor(body: VisitorRegisterRequest, request: Request):
+    full_name = body.full_name.strip()
+    if not full_name or len(full_name) < 2:
+        raise HTTPException(400, "Full Name is required (minimum 2 characters).")
+
+    email = body.email.strip().lower()
+    if not validate_email_format(email):
+        raise HTTPException(400, "Invalid email address format.")
+
+    phone = body.phone.strip()
+    if not phone or len(phone) < 7:
+        raise HTTPException(400, "A valid mobile/phone number is required.")
+
+    if body.purpose_of_visit not in VALID_PURPOSES:
+        raise HTTPException(400, f"Invalid purpose of visit. Allowed options: {', '.join(VALID_PURPOSES)}.")
+
+    purpose_other = body.purpose_other.strip() if body.purpose_other else None
+    if body.purpose_of_visit == "Other" and not purpose_other:
+        raise HTTPException(400, "Please specify the purpose of your visit.")
+
+    try:
+        dt_in = datetime.fromisoformat(body.expected_check_in.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, "Expected Check-In must be a valid ISO date/time string.")
+
+    try:
+        dt_out = datetime.fromisoformat(body.expected_check_out.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, "Expected Check-Out must be a valid ISO date/time string.")
+
+    if dt_out <= dt_in:
+        raise HTTPException(400, "Expected Check-Out time must be after Expected Check-In time.")
+
+    if body.identification_type not in VALID_ID_TYPES:
+        raise HTTPException(400, f"Invalid identification type. Allowed options: {', '.join(VALID_ID_TYPES)}.")
+
+    id_number = body.identification_number.strip()
+    if not id_number or len(id_number) < 3:
+        raise HTTPException(400, "A valid identification number is required.")
+
+    password = body.password
+    if not password or len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters long.")
+    if password != body.confirm_password:
+        raise HTTPException(400, "Password and confirm password do not match.")
+
+    allowed, _, reset_s = cache_rate_limit(f"reg_visitor:{email}", max_requests=10, window_seconds=120)
+    if not allowed:
+        raise HTTPException(429, f"Too many registration attempts. Please wait {reset_s} seconds.")
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Check duplicate email
+            cur.execute("SELECT id FROM users WHERE LOWER(username) = %s OR LOWER(email) = %s", (email, email))
+            if cur.fetchone():
+                raise HTTPException(409, "An account with this email address already exists. Please log in.")
+
+            cur.execute("SELECT id FROM visitors WHERE LOWER(email) = %s", (email,))
+            if cur.fetchone():
+                raise HTTPException(409, "An account with this email address already exists. Please log in.")
+
+            # Server-authoritative fields
+            reg_date = datetime.now(timezone.utc)
+            visitor_id = generate_visitor_id(cur)
+            masked_id = mask_identification_number(id_number)
+            id_hash = hash_identification_number(id_number)
+            pwd_hash = password_hash(password)
+
+            # Insert into users (role explicitly 'others')
+            cur.execute(
+                """INSERT INTO users (username, password_hash, role, display_name, email, phone)
+                   VALUES (%s, %s, 'others', %s, %s, %s)
+                   RETURNING id""",
+                (email, pwd_hash, full_name, email, phone),
+            )
+            user_id = cur.fetchone()["id"]
+
+            # QR payload strictly excludes passwords, tokens, full IDs
+            qr_payload = {
+                "type": "visitor",
+                "visitor_id": visitor_id,
+                "full_name": full_name,
+                "email": email,
+                "phone": phone,
+                "purpose_of_visit": body.purpose_of_visit if body.purpose_of_visit != "Other" else f"Other: {purpose_other}",
+                "expected_check_in": dt_in.isoformat(),
+                "expected_check_out": dt_out.isoformat(),
+                "registration_date": reg_date.isoformat(),
+                "identification_type": body.identification_type,
+                "identification_number_masked": masked_id,
+            }
+
+            # Insert into visitors table
+            cur.execute(
+                """INSERT INTO visitors (
+                       visitor_id, user_id, full_name, email, phone,
+                       purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
+                       identification_type, identification_number_masked, identification_number_hash,
+                       registration_date, status, qr_payload
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'REGISTERED', %s)
+                   RETURNING id""",
+                (
+                    visitor_id, user_id, full_name, email, phone,
+                    body.purpose_of_visit, purpose_other, dt_in, dt_out,
+                    body.identification_type, masked_id, id_hash,
+                    reg_date, json.dumps(qr_payload),
+                ),
+            )
+
+            cur.execute(
+                "INSERT INTO audit_logs (actor_id, action, entity, entity_id) VALUES (%s, 'VISITOR_REGISTER', 'visitor', %s)",
+                (user_id, visitor_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    qr_data_uri = generate_qr_code_data_uri(qr_payload)
+
+    return {
+        "ok": True,
+        "message": "Visitor registered successfully.",
+        "visitor_id": visitor_id,
+        "full_name": full_name,
+        "email": email,
+        "registration_date": reg_date.isoformat(),
+        "qr_payload": qr_payload,
+        "qr_data_uri": qr_data_uri,
+    }
+
+@app.get("/visitors/me")
+def get_my_visitor_profile(user=Depends(require_roles("others"))):
+    user_id = user.get("sub")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, visitor_id, user_id, full_name, email, phone,
+                          purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
+                          identification_type, identification_number_masked, registration_date,
+                          status, qr_payload
+                   FROM visitors WHERE user_id = %s""",
+                (user_id,),
+            )
+            v = cur.fetchone()
+            if not v:
+                raise HTTPException(404, "Visitor profile not found.")
+
+            payload = v.get("qr_payload") or build_visitor_qr_payload(v)
+            if isinstance(payload, str):
+                try: payload = json.loads(payload)
+                except Exception: payload = {}
+            qr_data_uri = generate_qr_code_data_uri(payload)
+
+            return {
+                "visitor_id": v["visitor_id"],
+                "full_name": v["full_name"],
+                "email": v["email"],
+                "phone": v["phone"],
+                "purpose_of_visit": v["purpose_of_visit"],
+                "purpose_other": v.get("purpose_other"),
+                "expected_check_in": v["expected_check_in"].isoformat() if hasattr(v["expected_check_in"], "isoformat") else str(v["expected_check_in"]),
+                "expected_check_out": v["expected_check_out"].isoformat() if hasattr(v["expected_check_out"], "isoformat") else str(v["expected_check_out"]),
+                "identification_type": v["identification_type"],
+                "identification_number_masked": v["identification_number_masked"],
+                "registration_date": v["registration_date"].isoformat() if hasattr(v["registration_date"], "isoformat") else str(v["registration_date"]),
+                "status": v["status"],
+                "qr_payload": payload,
+                "qr_data_uri": qr_data_uri,
+            }
+    finally:
+        conn.close()
+
+@app.get("/visitors/{visitor_id}/qr")
+def download_visitor_qr(visitor_id: str, user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, visitor_id, qr_payload, full_name FROM visitors WHERE visitor_id = %s",
+                (visitor_id,),
+            )
+            v = cur.fetchone()
+            if not v:
+                raise HTTPException(404, "Visitor not found.")
+
+            caller_role = normalize_role(user.get("role"))
+            if caller_role != "admin" and user.get("sub") != v["user_id"]:
+                raise HTTPException(403, "Access denied: cannot access another visitor's QR code.")
+
+            payload = v.get("qr_payload") or build_visitor_qr_payload(v)
+            if isinstance(payload, str):
+                try: payload = json.loads(payload)
+                except Exception: payload = {}
+            png_bytes = generate_qr_code_bytes(payload)
+            return Response(
+                content=png_bytes,
+                media_type="image/png",
+                headers={
+                    "Content-Disposition": f'attachment; filename="visitor_qr_{visitor_id}.png"',
+                    "Cache-Control": "private, max-age=3600",
+                },
+            )
+    finally:
+        conn.close()
+
+@app.get("/visitors/{visitor_id}")
+def get_visitor_details(visitor_id: str, user=Depends(current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT visitor_id, user_id, full_name, email, phone,
+                          purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
+                          identification_type, identification_number_masked, registration_date,
+                          status, qr_payload
+                   FROM visitors WHERE visitor_id = %s""",
+                (visitor_id,),
+            )
+            v = cur.fetchone()
+            if not v:
+                raise HTTPException(404, "Visitor not found.")
+
+            caller_role = normalize_role(user.get("role"))
+            if caller_role != "admin" and user.get("sub") != v["user_id"]:
+                raise HTTPException(403, "Access denied: cannot view another visitor's profile.")
+
+            payload = v.get("qr_payload") or build_visitor_qr_payload(v)
+            if isinstance(payload, str):
+                try: payload = json.loads(payload)
+                except Exception: payload = {}
+            qr_data_uri = generate_qr_code_data_uri(payload)
+
+            return {
+                "visitor_id": v["visitor_id"],
+                "full_name": v["full_name"],
+                "email": v["email"],
+                "phone": v["phone"],
+                "purpose_of_visit": v["purpose_of_visit"],
+                "purpose_other": v.get("purpose_other"),
+                "expected_check_in": v["expected_check_in"].isoformat() if hasattr(v["expected_check_in"], "isoformat") else str(v["expected_check_in"]),
+                "expected_check_out": v["expected_check_out"].isoformat() if hasattr(v["expected_check_out"], "isoformat") else str(v["expected_check_out"]),
+                "identification_type": v["identification_type"],
+                "identification_number_masked": v["identification_number_masked"],
+                "registration_date": v["registration_date"].isoformat() if hasattr(v["registration_date"], "isoformat") else str(v["registration_date"]),
+                "status": v["status"],
+                "qr_payload": payload,
+                "qr_data_uri": qr_data_uri,
+            }
+    finally:
+        conn.close()
 
 @app.post("/auth/logout")
 def logout(user=Depends(current_user)):
@@ -455,6 +923,433 @@ def revoke_session_by_id(session_id: str, user=Depends(current_user)):
         raise HTTPException(403, "Cannot revoke session belonging to another user")
     revoked = revoke_user_session(session_id, user_id=user_id)
     return {"ok": True, "revoked": revoked}
+
+# ===========================================================================
+# QR CODE IDENTITY & MUTUAL CONNECTIONS SYSTEM
+# ===========================================================================
+
+class ConnectRequest(BaseModel):
+    target_qr_id: str | None = None
+    target_user_id: int | None = None
+
+class VerifyQRRequest(BaseModel):
+    qr_data: str
+
+def get_user_full_identity(user_id: int, cur) -> dict | None:
+    cur.execute("""
+        SELECT u.id, u.username, u.role, u.student_id, u.qr_code_id,
+               COALESCE(u.display_name, s.name, v.full_name, u.username) AS display_name,
+               COALESCE(u.email, s.email, v.email) AS email,
+               COALESCE(u.phone, s.phone, v.phone) AS phone,
+               s.roll_number, s.program, s.department AS student_department,
+               sec.department AS section_department, sec.faculty AS section_faculty,
+               sec.semester AS academic_semester,
+               v.visitor_id, v.purpose_of_visit,
+               COALESCE(s.profile_picture, u.profile_picture) AS profile_picture,
+               (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL) AS has_photo_blob
+        FROM users u
+        LEFT JOIN students s ON s.student_id = u.student_id
+        LEFT JOIN academic_sections sec ON sec.id = s.section_id
+        LEFT JOIN visitors v ON v.user_id = u.id
+        WHERE u.id = %s
+    """, (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+
+    role = normalize_role(row["role"])
+    identifier = ""
+    department_info = ""
+    if role == "student":
+        identifier = row["roll_number"] or row["student_id"] or row["username"]
+        department_info = row["student_department"] or row["section_department"] or row["program"] or "Student"
+    elif role in ("teacher", "faculty"):
+        identifier = row["username"]
+        department_info = row["section_faculty"] or "Faculty Member"
+    elif role in ("others", "other"):
+        identifier = row["visitor_id"] or row["email"]
+        department_info = row["purpose_of_visit"] or "Visitor"
+    else:
+        identifier = row["username"]
+        department_info = "System Administration"
+
+    photo_url = None
+    if row["profile_picture"]:
+        photo_url = f"/student-photos/{Path(row['profile_picture']).name}"
+    elif row["has_photo_blob"]:
+        photo_url = f"/users/{row['id']}/photo"
+
+    return {
+        "user_id": row["id"],
+        "qr_id": str(row["qr_code_id"]) if row.get("qr_code_id") else "",
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": role,
+        "identifier": identifier,
+        "department": department_info,
+        "email": row["email"],
+        "profile_photo_url": photo_url,
+    }
+
+@app.get("/connections/my-qr")
+def get_my_qr(user=Depends(current_user)):
+    user_id = user["sub"]
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT qr_code_id FROM users WHERE id=%s", (user_id,))
+            u_row = cur.fetchone()
+            if not u_row or not u_row.get("qr_code_id"):
+                new_qr_id = str(uuid.uuid4())
+                cur.execute("UPDATE users SET qr_code_id=%s WHERE id=%s", (new_qr_id, user_id))
+                conn.commit()
+
+            ident = get_user_full_identity(user_id, cur)
+            if not ident:
+                raise HTTPException(404, "User profile not found")
+
+            payload = {
+                "type": "pratyaksh_connect",
+                "version": "1.0",
+                "qr_id": ident["qr_id"],
+                "uid": ident["user_id"],
+                "role": ident["role"],
+                "name": ident["display_name"],
+                "id": ident["identifier"],
+            }
+            qr_data_uri = generate_qr_code_data_uri(payload)
+
+            return {
+                "user_id": ident["user_id"],
+                "qr_id": ident["qr_id"],
+                "display_name": ident["display_name"],
+                "role": ident["role"],
+                "identifier": ident["identifier"],
+                "department": ident["department"],
+                "profile_photo_url": ident["profile_photo_url"],
+                "qr_payload": payload,
+                "qr_data_uri": qr_data_uri,
+            }
+    finally:
+        conn.close()
+
+@app.post("/connections/verify-qr")
+def verify_qr(body: VerifyQRRequest, user=Depends(current_user)):
+    current_uid = user["sub"]
+    raw = (body.qr_data or "").strip()
+    if not raw:
+        raise HTTPException(400, "Empty QR data")
+
+    qr_id = None
+    target_uid = None
+    lookup_id = None
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            qr_id = parsed.get("qr_id")
+            target_uid = parsed.get("uid") or parsed.get("user_id")
+            if not qr_id and parsed.get("visitor_id"):
+                lookup_id = parsed.get("visitor_id")
+    except Exception:
+        cleaned_uuid = raw.strip().replace('"', "").replace("'", "")
+        try:
+            uuid.UUID(cleaned_uuid)
+            qr_id = cleaned_uuid
+        except Exception:
+            lookup_id = cleaned_uuid
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            target_user_id = None
+            if qr_id:
+                cur.execute("SELECT id FROM users WHERE qr_code_id::text = %s", (str(qr_id),))
+                u = cur.fetchone()
+                if u:
+                    target_user_id = u["id"]
+
+            if not target_user_id and target_uid:
+                try:
+                    cur.execute("SELECT id FROM users WHERE id = %s", (int(target_uid),))
+                    u = cur.fetchone()
+                    if u:
+                        target_user_id = u["id"]
+                except Exception:
+                    pass
+
+            if not target_user_id and lookup_id:
+                cur.execute("SELECT user_id FROM visitors WHERE visitor_id = %s", (lookup_id,))
+                v = cur.fetchone()
+                if v and v.get("user_id"):
+                    target_user_id = v["user_id"]
+                else:
+                    cur.execute("SELECT id FROM users WHERE student_id = %s OR username = %s", (lookup_id, lookup_id))
+                    u = cur.fetchone()
+                    if u:
+                        target_user_id = u["id"]
+
+            if not target_user_id:
+                raise HTTPException(404, "Invalid or unrecognized QR code. No matching user found.")
+
+            target_ident = get_user_full_identity(target_user_id, cur)
+            if not target_ident:
+                raise HTTPException(404, "Target user profile not found.")
+
+            is_self = (current_uid == target_user_id)
+
+            cur.execute("""
+                SELECT 1 FROM user_connections
+                WHERE (user_id_1 = %s AND user_id_2 = %s)
+                   OR (user_id_1 = %s AND user_id_2 = %s)
+            """, (current_uid, target_user_id, target_user_id, current_uid))
+            is_connected = bool(cur.fetchone())
+
+            return {
+                "status": "ok",
+                "target_user": {
+                    **target_ident,
+                    "is_self": is_self,
+                    "is_connected": is_connected,
+                }
+            }
+    finally:
+        conn.close()
+
+@app.post("/connections/connect")
+def create_connection(body: ConnectRequest, user=Depends(current_user)):
+    current_uid = user["sub"]
+    target_uid = body.target_user_id
+    target_qr = body.target_qr_id
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if not target_uid and target_qr:
+                cur.execute("SELECT id FROM users WHERE qr_code_id::text = %s", (str(target_qr),))
+                u = cur.fetchone()
+                if u:
+                    target_uid = u["id"]
+
+            if not target_uid:
+                raise HTTPException(400, "Target user not specified or invalid")
+
+            if current_uid == target_uid:
+                raise HTTPException(400, "You cannot establish a connection with yourself.")
+
+            cur.execute("SELECT id, is_active FROM users WHERE id=%s", (target_uid,))
+            target = cur.fetchone()
+            if not target:
+                raise HTTPException(404, "Target user not found")
+            if target.get("is_active") is False:
+                raise HTTPException(400, "Target user account is inactive")
+
+            u1, u2 = min(current_uid, target_uid), max(current_uid, target_uid)
+            cur.execute("""
+                SELECT id, connected_at FROM user_connections
+                WHERE user_id_1 = %s AND user_id_2 = %s
+            """, (u1, u2))
+            existing = cur.fetchone()
+            if existing:
+                target_ident = get_user_full_identity(target_uid, cur)
+                return {
+                    "status": "already_connected",
+                    "message": "You are already connected to this user.",
+                    "target_user": target_ident,
+                }
+
+            cur.execute("""
+                INSERT INTO user_connections (user_id_1, user_id_2)
+                VALUES (%s, %s)
+                RETURNING id, connected_at
+            """, (u1, u2))
+            row = cur.fetchone()
+            conn.commit()
+
+            cache_delete(f"user:{current_uid}:connections", f"user:{target_uid}:connections")
+            target_ident = get_user_full_identity(target_uid, cur)
+
+            return {
+                "status": "connected",
+                "message": f"Successfully connected with {target_ident['display_name']}!",
+                "connection_id": row["id"],
+                "connected_at": row["connected_at"].isoformat() if hasattr(row["connected_at"], "isoformat") else str(row["connected_at"]),
+                "target_user": target_ident,
+            }
+    finally:
+        conn.close()
+
+@app.get("/connections")
+def list_connections(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None),
+    user=Depends(current_user),
+):
+    current_uid = user["sub"]
+    offset = (page - 1) * limit
+    q_clean = f"%{q.strip().lower()}%" if q and q.strip() else None
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            where_clauses = ["(c.user_id_1 = %(uid)s OR c.user_id_2 = %(uid)s)"]
+            params: dict[str, Any] = {"uid": current_uid, "limit": limit, "offset": offset}
+
+            if q_clean:
+                where_clauses.append("""
+                    (LOWER(COALESCE(u.display_name, s.name, v.full_name, u.username)) LIKE %(q)s
+                     OR LOWER(u.username) LIKE %(q)s
+                     OR LOWER(COALESCE(s.roll_number, s.student_id, v.visitor_id, '')) LIKE %(q)s
+                     OR LOWER(u.role) LIKE %(q)s)
+                """)
+                params["q"] = q_clean
+
+            where_str = " AND ".join(where_clauses)
+
+            count_query = f"""
+                SELECT COUNT(*) AS total
+                FROM user_connections c
+                JOIN users u ON u.id = CASE WHEN c.user_id_1 = %(uid)s THEN c.user_id_2 ELSE c.user_id_1 END
+                LEFT JOIN students s ON s.student_id = u.student_id
+                LEFT JOIN visitors v ON v.user_id = u.id
+                WHERE {where_str}
+            """
+            cur.execute(count_query, params)
+            total_count = cur.fetchone()["total"]
+
+            data_query = f"""
+                SELECT c.id AS connection_id, c.connected_at,
+                       u.id AS target_user_id, u.username, u.role, u.student_id, u.qr_code_id,
+                       COALESCE(u.display_name, s.name, v.full_name, u.username) AS display_name,
+                       COALESCE(u.email, s.email, v.email) AS email,
+                       COALESCE(u.phone, s.phone, v.phone) AS phone,
+                       s.roll_number, s.program, s.department AS student_department,
+                       sec.department AS section_department, sec.faculty AS section_faculty,
+                       v.visitor_id, v.purpose_of_visit,
+                       COALESCE(s.profile_picture, u.profile_picture) AS profile_picture,
+                       (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL) AS has_photo_blob
+                FROM user_connections c
+                JOIN users u ON u.id = CASE WHEN c.user_id_1 = %(uid)s THEN c.user_id_2 ELSE c.user_id_1 END
+                LEFT JOIN students s ON s.student_id = u.student_id
+                LEFT JOIN academic_sections sec ON sec.id = s.section_id
+                LEFT JOIN visitors v ON v.user_id = u.id
+                WHERE {where_str}
+                ORDER BY c.connected_at DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+            """
+            cur.execute(data_query, params)
+            rows = cur.fetchall()
+
+            connections = []
+            for r in rows:
+                role = normalize_role(r["role"])
+                identifier = ""
+                department_info = ""
+                if role == "student":
+                    identifier = r["roll_number"] or r["student_id"] or r["username"]
+                    department_info = r["student_department"] or r["section_department"] or r["program"] or "Student"
+                elif role in ("teacher", "faculty"):
+                    identifier = r["username"]
+                    department_info = r["section_faculty"] or "Faculty Member"
+                elif role in ("others", "other"):
+                    identifier = r["visitor_id"] or r["email"]
+                    department_info = r["purpose_of_visit"] or "Visitor"
+                else:
+                    identifier = r["username"]
+                    department_info = "System Administration"
+
+                photo_url = None
+                if r["profile_picture"]:
+                    photo_url = f"/student-photos/{Path(r['profile_picture']).name}"
+                elif r["has_photo_blob"]:
+                    photo_url = f"/users/{r['target_user_id']}/photo"
+
+                connections.append({
+                    "connection_id": r["connection_id"],
+                    "user_id": r["target_user_id"],
+                    "qr_id": str(r["qr_code_id"]) if r.get("qr_code_id") else "",
+                    "display_name": r["display_name"],
+                    "role": role,
+                    "identifier": identifier,
+                    "department": department_info,
+                    "profile_photo_url": photo_url,
+                    "connected_at": r["connected_at"].isoformat() if hasattr(r["connected_at"], "isoformat") else str(r["connected_at"]),
+                })
+
+            return {
+                "total_connections": total_count,
+                "page": page,
+                "limit": limit,
+                "connections": connections,
+            }
+    finally:
+        conn.close()
+
+@app.delete("/connections/{target_user_id}")
+def remove_connection(target_user_id: int, user=Depends(current_user)):
+    current_uid = user["sub"]
+    u1, u2 = min(current_uid, target_user_id), max(current_uid, target_user_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_connections WHERE user_id_1 = %s AND user_id_2 = %s RETURNING id", (u1, u2))
+            deleted = cur.fetchone()
+            conn.commit()
+            cache_delete(f"user:{current_uid}:connections", f"user:{target_user_id}:connections")
+            return {"ok": bool(deleted), "message": "Connection removed"}
+    finally:
+        conn.close()
+
+@app.get("/users/{target_user_id}/photo")
+def get_user_photo(
+    target_user_id: int,
+    user=Depends(get_photo_user),
+):
+    current_uid = user.get("sub")
+    caller_role = normalize_role(user.get("role"))
+
+    is_authorized = (current_uid == target_user_id) or (caller_role in ("admin", "teacher", "faculty"))
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if not is_authorized:
+                u1, u2 = min(current_uid, target_user_id), max(current_uid, target_user_id)
+                cur.execute("SELECT 1 FROM user_connections WHERE user_id_1 = %s AND user_id_2 = %s", (u1, u2))
+                if cur.fetchone():
+                    is_authorized = True
+
+            if not is_authorized:
+                raise HTTPException(403, "Access denied: you must be connected with this user to view their profile photo")
+
+            cur.execute("""
+                SELECT u.profile_picture AS user_pic, u.profile_photo AS user_blob,
+                       s.profile_picture AS stu_pic, s.profile_photo AS stu_blob
+                FROM users u
+                LEFT JOIN students s ON s.student_id = u.student_id
+                WHERE u.id = %s
+            """, (target_user_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "User not found")
+
+            pic_path = row["stu_pic"] or row["user_pic"]
+            if pic_path:
+                safe_path = get_safe_photo_path(Path(pic_path).name)
+                if safe_path and safe_path.exists() and safe_path.is_file():
+                    ext = safe_path.suffix.lower()
+                    media_type = "image/png" if ext == ".png" else "image/jpeg"
+                    return FileResponse(path=safe_path, media_type=media_type)
+
+            blob = row["stu_blob"] or row["user_blob"]
+            if blob:
+                data = bytes(blob)
+                return Response(content=data, media_type="image/jpeg")
+
+            raise HTTPException(404, "Profile photo not found")
+    finally:
+        conn.close()
 
 @app.get("/auth/me")
 def me(user=Depends(current_user)):
@@ -550,12 +1445,30 @@ async def update_profile_photo(file: UploadFile = File(...), user=Depends(curren
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s RETURNING id", (data, user["sub"]))
-            if not cur.fetchone(): raise HTTPException(404, "User not found")
+            cur.execute("SELECT username, student_id, display_name FROM users WHERE id=%s", (user["sub"],))
+            u_info = cur.fetchone()
+            if not u_info: raise HTTPException(404, "User not found")
+
+            target_id = u_info.get("student_id") or str(user["sub"])
+            target_name = u_info.get("display_name") or u_info.get("username")
+            rel_photo_path = None
+            try:
+                rel_photo_path, _ = save_student_photo(target_id, target_name, data)
+            except Exception as exc:
+                logger.warning("save_student_photo failed in update_profile_photo: %s", exc)
+
+            if rel_photo_path:
+                cur.execute("UPDATE users SET profile_photo=%s, profile_picture=%s WHERE id=%s", (data, rel_photo_path, user["sub"]))
+                if u_info.get("student_id"):
+                    cur.execute("UPDATE students SET profile_photo=%s, profile_picture=%s WHERE student_id=%s", (data, rel_photo_path, u_info["student_id"]))
+            else:
+                cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s", (data, user["sub"]))
         conn.commit()
         cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile", f"teacher:{user['sub']}:profile")
+        if u_info.get("student_id"):
+            cache_delete_pattern(f"student:{u_info['student_id']}:*")
         cache_delete_pattern("students:list:*")
-        return {"status":"saved"}
+        return {"status": "saved", "profile_picture": f"/student-photos/{Path(rel_photo_path).name}" if rel_photo_path else None}
     finally: conn.close()
 
 @app.get("/schedule")
@@ -660,6 +1573,7 @@ def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
                 cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
                 if body.role == "teacher" and body.academic_section_ids:
                     cur.executemany("INSERT INTO teacher_assignments (teacher_user_id,section_id,subject) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", [(result["id"], section_id, "Assigned academic course") for section_id in body.academic_section_ids])
+            except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
         conn.commit()
         if body.role == "student":
             cache_delete_pattern("students:list:*")
@@ -1326,10 +2240,13 @@ def get_student_attendance_history_by_id(
 
 @app.get("/attendance/sessions/{session_id}/records")
 @app.get("/api/attendance/sessions/{session_id}/records")
+@app.get("/api/sessions/{session_id}/attendance")
+@app.get("/sessions/{session_id}/attendance")
 def get_session_attendance_records(
     session_id: str,
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    page_size: int = Query(default=10, ge=1, le=100),
+    limit: int | None = Query(default=None, ge=1, le=100),
     status: str | None = Query(default=None),
     search: str | None = Query(default=None),
     include_photos: bool = Query(default=False),
@@ -1337,6 +2254,7 @@ def get_session_attendance_records(
 ):
     session_id = session_id.strip()
     role = normalize_role(user.get("role", ""))
+    effective_limit = limit if limit is not None else page_size
 
     conn = get_db_connection()
     try:
@@ -1371,13 +2289,19 @@ def get_session_attendance_records(
             search_clean = search.strip().lower() if search else None
 
             viewer_scope = f"student:{user['student_id']}" if role == "student" else "staff"
-            cache_key = f"attendance:session:{session_id}:records:v={viewer_scope}:p={page}:ps={page_size}:st={status_filter}:s={search_clean}:ph={include_photos}"
+            cache_key = f"attendance:session:{session_id}:records:v={viewer_scope}:p={page}:ps={effective_limit}:st={status_filter}:s={search_clean}:ph={include_photos}"
             cached = cache_get(cache_key)
             if cached is not None:
                 return cached
 
-            conditions = ["st.section_id = ANY(%s)"]
-            params = [sec_ids]
+            conditions = []
+            params = []
+
+            if sec_ids:
+                conditions.append("(st.section_id = ANY(%s) OR a.session_id IS NOT NULL)")
+                params.append(sec_ids)
+            else:
+                conditions.append("a.session_id IS NOT NULL")
 
             # If student, restrict strictly to their own record
             if role == "student":
@@ -1393,7 +2317,7 @@ def get_session_attendance_records(
                 like_term = f"%{search_clean}%"
                 params.extend([like_term, like_term, like_term])
 
-            where_clause = " WHERE " + " AND ".join(conditions)
+            where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
             # Total count query
             count_query = f"""
@@ -1405,8 +2329,8 @@ def get_session_attendance_records(
             cur.execute(count_query, (session_id, *params))
             total_items = cur.fetchone()["total"]
 
-            total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 0
-            offset = (page - 1) * page_size
+            total_pages = (total_items + effective_limit - 1) // effective_limit if total_items > 0 else 0
+            offset = (page - 1) * effective_limit
 
             photo_col = ", encode(st.profile_photo, 'base64') AS profile_photo_base64" if include_photos else ""
 
@@ -1415,6 +2339,7 @@ def get_session_attendance_records(
                        COALESCE(st.semester, sec.semester) AS semester,
                        COALESCE(st.department, sec.department) AS department,
                        st.date_of_birth, st.roll_number,
+                       st.profile_picture,
                        a.confidence_score, a.timestamp,
                        COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
                        COALESCE(a.is_manual_override, FALSE) AS is_manual_override
@@ -1426,22 +2351,40 @@ def get_session_attendance_records(
                 ORDER BY st.name ASC, st.student_id ASC
                 LIMIT %s OFFSET %s
             """
-            cur.execute(data_query, (session_id, *params, page_size, offset))
+            cur.execute(data_query, (session_id, *params, effective_limit, offset))
             items = cur.fetchall()
 
-            if include_photos:
-                for item in items:
+            for item in items:
+                item["student_name"] = item.get("name")
+                item["attendance_status"] = item.get("status")
+                pic = item.get("profile_picture")
+                if pic:
+                    item["profile_picture"] = f"/student-photos/{Path(pic).name}"
+                else:
+                    item["profile_picture"] = None
+
+                if include_photos:
                     if item.get("profile_photo_base64"):
                         item["profile_photo_base64"] = f"data:image/jpeg;base64,{item['profile_photo_base64']}"
+                else:
+                    item.pop("profile_photo_base64", None)
 
             res = {
                 "session_id": session_id,
-                "session_title": session["title"],
-                "course": session["course"],
+                "session_title": session.get("title", ""),
+                "course": session.get("course", ""),
+                "page": page,
+                "page_size": effective_limit,
+                "total_records": total_items,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_previous": page > 1,
+                "records": items,
                 "items": items,
                 "pagination": {
                     "page": page,
-                    "page_size": page_size,
+                    "page_size": effective_limit,
                     "total_items": total_items,
                     "total_pages": total_pages,
                     "has_next": page < total_pages,
@@ -1533,7 +2476,9 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
             total_roster=roster_count,
             status="ACTIVE",
         )
-        cache_delete("academic:sections")
+        cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        cache_delete_pattern("teacher:*:attendance-sessions")
+        cache_delete("admin:attendance:all")
         return result
     finally:
         conn.close()
@@ -1606,6 +2551,8 @@ def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Dep
                         (user["sub"], session_id, json.dumps(values)))
         conn.commit()
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        cache_delete_pattern(f"attendance:session:{session_id}:*")
+        cache_delete("admin:attendance:all")
         return updated
     finally:
         conn.close()
@@ -1629,6 +2576,8 @@ def update_teacher_session_status(session_id: str, body: SessionStatusRequest, u
         conn.commit()
         set_attendance_live_status(session_id, desired)
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
+        cache_delete_pattern(f"attendance:session:{session_id}:*")
+        cache_delete("admin:attendance:all")
         return updated
     finally: conn.close()
 
@@ -1757,6 +2706,11 @@ def update_student(student_id: str, body: StudentUpdateRequest, _=Depends(requir
             if not row: raise HTTPException(404, "Student not found")
             cur.execute("UPDATE users SET display_name=%s,email=%s,phone=%s WHERE student_id=%s", (values["name"], values["email"], values["phone"], student_id))
         conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE student_id=%s", (student_id,))
+            u = cur.fetchone()
+            if u:
+                cache_delete(f"user:{u['id']}:me", f"user:{u['id']}:profile")
         cache_delete_pattern(f"student:{student_id}:*")
         cache_delete_pattern("students:list:*")
         return row
@@ -1862,8 +2816,15 @@ async def register_student(
                     cur.execute("SELECT 1 FROM academic_sections WHERE id=%s", (section_id,))
                     if not cur.fetchone():
                         raise HTTPException(403, "You are not allowed to register a student in this academic section")
-            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, department, semester, roll_number, section_id, profile_photo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            rel_photo_path = None
+            if first_image_bytes:
+                try:
+                    rel_photo_path, _ = save_student_photo(student_id, name, first_image_bytes)
+                except Exception as exc:
+                    logger.warning("save_student_photo failed during register_student: %s", exc)
+
+            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, department, semester, roll_number, section_id, profile_photo, profile_picture)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET
                     name=EXCLUDED.name,
                     email=COALESCE(EXCLUDED.email, students.email),
@@ -1874,27 +2835,31 @@ async def register_student(
                     semester=COALESCE(EXCLUDED.semester, students.semester),
                     roll_number=COALESCE(EXCLUDED.roll_number, students.roll_number),
                     section_id=COALESCE(EXCLUDED.section_id, students.section_id),
-                    profile_photo=COALESCE(EXCLUDED.profile_photo, students.profile_photo)""",
-                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, department or None, semester or None, roll_number or None, section_id, first_image_bytes))
+                    profile_photo=COALESCE(EXCLUDED.profile_photo, students.profile_photo),
+                    profile_picture=COALESCE(EXCLUDED.profile_picture, students.profile_picture)""",
+                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, department or None, semester or None, roll_number or None, section_id, first_image_bytes, rel_photo_path))
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             # A student's ID is also their login ID. Registration creates or
             # refreshes the corresponding student account automatically.
-            cur.execute("""INSERT INTO users (username, password_hash, role, student_id, display_name, profile_photo)
-                VALUES (%s, %s, 'student', %s, %s, %s)
+            cur.execute("""INSERT INTO users (username, password_hash, role, student_id, display_name, profile_photo, profile_picture)
+                VALUES (%s, %s, 'student', %s, %s, %s, %s)
                 ON CONFLICT (username) DO UPDATE SET
                     password_hash=EXCLUDED.password_hash,
                     role='student',
                     student_id=EXCLUDED.student_id,
                     display_name=EXCLUDED.display_name,
-                    profile_photo=COALESCE(EXCLUDED.profile_photo, users.profile_photo)""",
-                (student_id, password_hash(password), student_id, name, first_image_bytes))
+                    profile_photo=COALESCE(EXCLUDED.profile_photo, users.profile_photo),
+                    profile_picture=COALESCE(EXCLUDED.profile_picture, users.profile_picture)""",
+                (student_id, password_hash(password), student_id, name, first_image_bytes, rel_photo_path))
             cur.execute(
                 """INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value)
                    VALUES (%s, 'STUDENT_FACE_REGISTERED', 'student', %s, %s)""",
                 (user["sub"], student_id, json.dumps({"photos_used": len(embeddings), "embedding_dimensions": int(embedding.size)})),
             )
         conn.commit()
+        cache_delete_pattern("students:list:*")
+        cache_delete_pattern(f"student:{student_id}:*")
     finally: conn.close()
     logger.info("student_face_registered student_id=%s photos=%s actor_id=%s", student_id, len(embeddings), user["sub"])
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with {len(embeddings)} face photo(s)"}
@@ -1946,14 +2911,29 @@ async def student_register_face(
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             if first_image_bytes:
-                cur.execute("UPDATE students SET profile_photo=%s WHERE student_id=%s", (first_image_bytes, student_id))
-                cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s", (first_image_bytes, user["sub"]))
+                rel_photo_path = None
+                try:
+                    cur.execute("SELECT name FROM students WHERE student_id=%s", (student_id,))
+                    st_row = cur.fetchone()
+                    st_name = st_row["name"] if st_row else None
+                    rel_photo_path, _ = save_student_photo(student_id, st_name, first_image_bytes)
+                except Exception as exc:
+                    logger.warning("save_student_photo failed in student_register_face: %s", exc)
+                if rel_photo_path:
+                    cur.execute("UPDATE students SET profile_photo=%s, profile_picture=%s WHERE student_id=%s", (first_image_bytes, rel_photo_path, student_id))
+                    cur.execute("UPDATE users SET profile_photo=%s, profile_picture=%s WHERE id=%s", (first_image_bytes, rel_photo_path, user["sub"]))
+                else:
+                    cur.execute("UPDATE students SET profile_photo=%s WHERE student_id=%s", (first_image_bytes, student_id))
+                    cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s", (first_image_bytes, user["sub"]))
             cur.execute(
                 """INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value)
                    VALUES (%s, 'STUDENT_SELF_FACE_REGISTERED', 'student', %s, %s)""",
                 (user["sub"], student_id, json.dumps({"photos_used": len(embeddings)})),
             )
         conn.commit()
+        cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete_pattern("students:list:*")
+        cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile")
     finally:
         conn.close()
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": "Biometric face profile successfully registered!"}
@@ -2156,6 +3136,7 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
             cache_delete(f"teacher:{user['sub']}:attendance-sessions")
             cache_delete_pattern(f"attendance:session:{body.session_id}:*")
             cache_delete_pattern("student:*:attendance*")
+            cache_delete_pattern("attendance:report:*")
             cache_delete("admin:attendance:all")
             return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
         finally:
@@ -2164,10 +3145,8 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
 @app.get("/attendance/{session_id}")
 def session_attendance(session_id: str, user=Depends(require_roles("admin", "teacher", "faculty"))):
     role = normalize_role(user["role"])
-    cache_key = f"attendance:session:{session_id}:roster:{user['sub']}"
-    cached = cache_get(cache_key)
-    if cached is not None:
-        return cached
+    session_id = session_id.strip()
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2187,14 +3166,19 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
                     if not cur.fetchone():
                         raise HTTPException(403, "You are not authorized to view this attendance session")
 
+            cache_key = f"attendance:session:{session_id}:roster"
+            cached = cache_get(cache_key)
+            if cached is not None:
+                return cached
+
             cur.execute("""SELECT st.student_id, st.name, st.email, st.phone, st.program,
                 COALESCE(st.semester, sec.semester) AS semester,
                 COALESCE(st.department, sec.department) AS department,
                 st.date_of_birth, st.roll_number,
-                encode(st.profile_photo, 'base64') AS profile_photo_base64,
+                st.profile_picture,
                 a.confidence_score, a.timestamp,
                 COALESCE(a.final_attendance_status, a.initial_attendance_status, 'ABSENT') AS status,
-                a.is_manual_override
+                COALESCE(a.is_manual_override, FALSE) AS is_manual_override
                 FROM attendance_sessions sess
                 JOIN students st ON st.section_id = ANY(%s)
                 LEFT JOIN academic_sections sec ON sec.id=st.section_id
@@ -2202,8 +3186,14 @@ def session_attendance(session_id: str, user=Depends(require_roles("admin", "tea
                 WHERE sess.session_id=%s ORDER BY st.name""", (sec_ids, session_id))
             students = cur.fetchall()
             for student in students:
-                if student.get("profile_photo_base64"):
-                    student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
+                student["student_name"] = student.get("name")
+                student["attendance_status"] = student.get("status")
+                pic = student.get("profile_picture")
+                if pic:
+                    student["profile_picture"] = f"/student-photos/{Path(pic).name}"
+                else:
+                    student["profile_picture"] = None
+                student["profile_photo_base64"] = None
             res = {"session_id": session_id, "students": students}
             cache_set(cache_key, res, ttl=30)
             return res

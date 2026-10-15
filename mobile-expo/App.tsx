@@ -15,6 +15,7 @@ import {
   Easing,
   FlatList,
   Image,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -163,7 +164,19 @@ export const useAppTheme = () => useContext(ThemeContext);
 const DEFAULT_TUNNEL_URL = "http://localhost:8080";
 
 export function resolveApiBaseUrl(): string {
-  const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || DEFAULT_TUNNEL_URL).replace(/\/+$/, "");
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || "").replace(/\/+$/, "");
+
+  // On Web browser
+  if (Platform.OS === "web") {
+    if (typeof window !== "undefined" && window.location?.hostname) {
+      const host = window.location.hostname;
+      if (host === "localhost" || host === "127.0.0.1") {
+        return "http://localhost:8000";
+      }
+      return `http://${host}:8000`;
+    }
+    return "http://localhost:8000";
+  }
 
   // Remote tunnel or custom URL (e.g. Tailscale / Cloudflare / Public HTTPS)
   if (
@@ -173,15 +186,6 @@ export function resolveApiBaseUrl(): string {
     !envUrl.includes("127.0.0.1")
   ) {
     return envUrl;
-  }
-
-  // On Web browser, 10.0.2.2 cannot be resolved; use localhost
-  if (Platform.OS === "web") {
-    if (envUrl && !envUrl.includes("10.0.2.2")) return envUrl;
-    if (typeof window !== "undefined" && window.location?.hostname) {
-      return `http://${window.location.hostname}:8000`;
-    }
-    return "http://localhost:8000";
   }
 
   // Detect Metro packager host for physical devices running on LAN Wi-Fi
@@ -196,14 +200,12 @@ export function resolveApiBaseUrl(): string {
     return `http://${metroHost}:8000`;
   }
 
-  if (envUrl) return envUrl;
-
   // On Android emulator
-  if (Platform.OS === "android") {
+  if (Platform.OS === "android" && !Constants.isDevice) {
     return "http://10.0.2.2:8000";
   }
 
-  return "http://localhost:8000";
+  return envUrl || "http://localhost:8000";
 }
 
 let API = resolveApiBaseUrl();
@@ -389,6 +391,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showRegistration, setShowRegistration] = useState(false);
+  const [registeredVisitor, setRegisteredVisitor] = useState<any>(null);
   const [currentApi, setCurrentApi] = useState(API);
   const [showServerModal, setShowServerModal] = useState(false);
   const [testStatus, setTestStatus] = useState<
@@ -413,11 +417,16 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     setRole(selectedRole);
     setUsername("");
     setPassword("");
+    setError("");
   };
 
   const submit = async () => {
     if (!username.trim() || !password) {
-      setError("Please enter your username and password.");
+      setError(
+        role === "others"
+          ? "Please enter your email address and password."
+          : "Please enter your username and password."
+      );
       return;
     }
     setBusy(true);
@@ -426,6 +435,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
       const res = await http.post("/auth/login", {
         username: username.trim(),
         password,
+        role,
       });
       const userData = {
         ...res.data.user,
@@ -436,7 +446,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
       onLogin(userData);
     } catch (e: any) {
       if (!e?.response) {
-        setError("Unable to connect to the server. Please try again later.");
+        setError(
+          `Unable to connect to server at ${http.defaults.baseURL || API}. Please verify your connection or configure the server URL.`
+        );
       } else {
         const status = e.response.status;
         const detail = e.response.data?.detail;
@@ -455,6 +467,28 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     }
   };
 
+  if (showRegistration) {
+    if (registeredVisitor) {
+      return (
+        <OthersRegistrationSuccessView
+          visitor={registeredVisitor}
+          onContinue={() => {
+            setRegisteredVisitor(null);
+            setShowRegistration(false);
+            setUsername(registeredVisitor.email);
+            setRole("others");
+          }}
+        />
+      );
+    }
+    return (
+      <OthersRegistrationView
+        onBack={() => setShowRegistration(false)}
+        onSuccess={(data) => setRegisteredVisitor(data)}
+      />
+    );
+  }
+
   return (
     <SafeAreaView
       style={[
@@ -469,8 +503,69 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Theme Toggle Row */}
+        {/* Top Controls: Server Status & Theme Toggle */}
         <View style={styles.loginTopControls}>
+          <Pressable
+            onPress={() => setShowServerModal(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Configure server connection"
+            style={[
+              styles.themePillBtn,
+              {
+                backgroundColor:
+                  testStatus === "online"
+                    ? theme.emeraldGlow
+                    : testStatus === "checking"
+                      ? theme.cyanGlow
+                      : theme.roseGlow,
+                borderColor:
+                  testStatus === "online"
+                    ? theme.emerald
+                    : testStatus === "checking"
+                      ? theme.cyan
+                      : theme.rose,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name={
+                testStatus === "online"
+                  ? "server-network"
+                  : testStatus === "checking"
+                    ? "sync"
+                    : "server-network-off"
+              }
+              size={15}
+              color={
+                testStatus === "online"
+                  ? theme.emerald
+                  : testStatus === "checking"
+                    ? theme.cyan
+                    : theme.rose
+              }
+            />
+            <Text
+              style={[
+                styles.themePillText,
+                {
+                  color:
+                    testStatus === "online"
+                      ? theme.emerald
+                      : testStatus === "checking"
+                        ? theme.cyan
+                        : theme.rose,
+                  fontWeight: "600",
+                },
+              ]}
+            >
+              {testStatus === "online"
+                ? "Server: Online"
+                : testStatus === "checking"
+                  ? "Checking..."
+                  : "Server: Offline"}
+            </Text>
+          </Pressable>
+
           <Pressable
             onPress={toggleTheme}
             accessibilityRole="button"
@@ -586,6 +681,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 { id: "admin", label: "Admin", icon: "shield-crown-outline" },
                 { id: "teacher", label: "Faculty", icon: "account-tie-outline" },
                 { id: "student", label: "Student", icon: "school-outline" },
+                { id: "others", label: "Others", icon: "badge-account-outline" },
               ] as const
             ).map((item) => {
               const active = role === item.id;
@@ -623,10 +719,10 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             })}
           </View>
 
-          {/* Username */}
+          {/* Username or Email */}
           <View style={styles.formGroup}>
             <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
-              Username or ID
+              {role === "others" ? "Email Address" : "Username or ID"}
             </Text>
             <View
               style={[
@@ -639,7 +735,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               ]}
             >
               <MaterialCommunityIcons
-                name="account-outline"
+                name={role === "others" ? "email-outline" : "account-outline"}
                 size={19}
                 color={username.length > 0 ? theme.cyan : theme.muted}
                 style={styles.inputPrefixIcon}
@@ -649,7 +745,8 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 value={username}
                 onChangeText={setUsername}
                 placeholderTextColor={theme.muted}
-                placeholder="Enter username"
+                placeholder={role === "others" ? "Enter email address" : "Enter username"}
+                keyboardType={role === "others" ? "email-address" : "default"}
                 autoCapitalize="none"
               />
             </View>
@@ -710,9 +807,28 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 size={17}
                 color={theme.rose}
               />
-              <Text style={[styles.errorBannerText, { color: theme.rose }]}>
-                {error}
-              </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.errorBannerText, { color: theme.rose }]}>
+                  {error}
+                </Text>
+                {error.toLowerCase().includes("unable to connect") && (
+                  <Pressable
+                    onPress={() => setShowServerModal(true)}
+                    style={{
+                      marginTop: 6,
+                      alignSelf: "flex-start",
+                      backgroundColor: theme.rose,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700" }}>
+                      CONFIGURE SERVER URL ⚙
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
             </View>
           )}
 
@@ -749,7 +865,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                     ? "Sign In as Administrator"
                     : role === "teacher"
                       ? "Sign In as Faculty"
-                      : "Sign In as Student"}
+                      : role === "others"
+                        ? "Sign In as Visitor"
+                        : "Sign In as Student"}
                 </Text>
                 <MaterialCommunityIcons
                   name="arrow-right"
@@ -759,6 +877,27 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
               </View>
             )}
           </Pressable>
+
+          {/* Registration link for Others role */}
+          {role === "others" && (
+            <View style={styles.registerRowWrap}>
+              <Text style={[styles.registerPromptText, { color: theme.textSecondary }]}>
+                Don't have an account?{" "}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  setError("");
+                  setShowRegistration(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Register for a new visitor account"
+              >
+                <Text style={[styles.registerLinkText, { color: theme.cyan }]}>
+                  Register
+                </Text>
+              </Pressable>
+            </View>
+          )}
 
         </View>
 
@@ -1014,6 +1153,1474 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// OTHERS / VISITOR REGISTRATION VIEW
+// ---------------------------------------------------------------------------
+function OthersRegistrationView({
+  onBack,
+  onSuccess,
+}: {
+  onBack: () => void;
+  onSuccess: (data: any) => void;
+}) {
+  const { theme, isDark } = useAppTheme();
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [purposeOfVisit, setPurposeOfVisit] = useState("Interview");
+  const [purposeOther, setPurposeOther] = useState("");
+
+  const defaultIn = useMemo(() => {
+    const d = new Date();
+    d.setHours(9, 30, 0, 0);
+    return d.toISOString().slice(0, 16);
+  }, []);
+  const defaultOut = useMemo(() => {
+    const d = new Date();
+    d.setHours(17, 30, 0, 0);
+    return d.toISOString().slice(0, 16);
+  }, []);
+
+  const [expectedCheckIn, setExpectedCheckIn] = useState(defaultIn);
+  const [expectedCheckOut, setExpectedCheckOut] = useState(defaultOut);
+  const [identificationType, setIdentificationType] = useState(
+    "Government-Issued Identity Card",
+  );
+  const [identificationNumber, setIdentificationNumber] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const PURPOSES = [
+    "Interview",
+    "Client Meeting",
+    "Vendor",
+    "Maintenance",
+    "Official Meeting",
+    "Academic Visit",
+    "Other",
+  ];
+
+  const ID_TYPES = [
+    "Passport",
+    "Driver's License",
+    "Government-Issued Identity Card",
+    "Other Accepted Identification",
+  ];
+
+  const handleRegister = async () => {
+    if (!fullName.trim() || fullName.trim().length < 2) {
+      setError("Please enter your full name (at least 2 characters).");
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email.trim() || !emailRegex.test(email.trim())) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    if (!phone.trim() || phone.trim().length < 7) {
+      setError("Please enter a valid contact phone number.");
+      return;
+    }
+    if (
+      purposeOfVisit === "Other" &&
+      (!purposeOther.trim() || purposeOther.trim().length < 2)
+    ) {
+      setError("Please specify the purpose of your visit.");
+      return;
+    }
+    if (!identificationNumber.trim() || identificationNumber.trim().length < 3) {
+      setError("Please enter your identification number.");
+      return;
+    }
+    if (!password || password.length < 6) {
+      setError("Password must be at least 6 characters long.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Password and confirmation password do not match.");
+      return;
+    }
+
+    let inIso = expectedCheckIn;
+    let outIso = expectedCheckOut;
+    try {
+      const dIn = new Date(expectedCheckIn);
+      const dOut = new Date(expectedCheckOut);
+      if (isNaN(dIn.getTime()) || isNaN(dOut.getTime())) {
+        setError("Please enter valid check-in and check-out dates and times.");
+        return;
+      }
+      if (dOut <= dIn) {
+        setError(
+          "Expected Check-Out time must be after Expected Check-In time.",
+        );
+        return;
+      }
+      inIso = dIn.toISOString();
+      outIso = dOut.toISOString();
+    } catch {
+      setError("Invalid date/time format.");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const payload = {
+        full_name: fullName.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone.trim(),
+        purpose_of_visit: purposeOfVisit,
+        purpose_other:
+          purposeOfVisit === "Other" ? purposeOther.trim() : null,
+        expected_check_in: inIso,
+        expected_check_out: outIso,
+        identification_type: identificationType,
+        identification_number: identificationNumber.trim(),
+        password,
+        confirm_password: confirmPassword,
+      };
+
+      const res = await http.post("/auth/others/register", payload);
+      onSuccess(res.data);
+    } catch (e: any) {
+      if (!e?.response) {
+        setError(
+          `Unable to connect to server at ${http.defaults.baseURL || API}. Please check your connection or configure the server URL.`
+        );
+      } else {
+        const detail = e.response.data?.detail;
+        setError(
+          detail ||
+            "Registration failed. Please check the details and try again.",
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SafeAreaView
+      style={[
+        styles.safeArea,
+        { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT },
+      ]}
+    >
+      <StatusBar style={theme.statusBarStyle} />
+      <ScrollView
+        contentContainerStyle={styles.loginScroll}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Top Back Navigation */}
+        <View
+          style={{
+            width: "100%",
+            flexDirection: "row",
+            alignItems: "center",
+            marginBottom: 16,
+          }}
+        >
+          <Pressable
+            onPress={onBack}
+            style={[
+              styles.smallActionBtn,
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="arrow-left"
+              size={18}
+              color={theme.text}
+            />
+            <Text
+              style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}
+            >
+              Back to Login
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Card Header */}
+        <View
+          style={[
+            styles.loginSurfaceCard,
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: isDark ? 0.3 : 0.06,
+              shadowRadius: 16,
+              elevation: 3,
+            },
+          ]}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 6,
+            }}
+          >
+            <View
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                backgroundColor: theme.cyanGlow,
+                alignItems: "center",
+                justifyContent: "center",
+                borderWidth: 1,
+                borderColor: theme.cyan,
+              }}
+            >
+              <MaterialCommunityIcons
+                name="badge-account-outline"
+                size={20}
+                color={theme.cyan}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.cardHeaderTitle, { color: theme.text }]}>
+                Visitor Registration
+              </Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
+                Register for campus visitor access badge
+              </Text>
+            </View>
+          </View>
+
+          {/* System Information Banner */}
+          <View
+            style={{
+              backgroundColor: theme.bgElevated,
+              borderRadius: 10,
+              padding: 12,
+              marginBottom: 16,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 4,
+              }}
+            >
+              <MaterialCommunityIcons
+                name="shield-check-outline"
+                size={15}
+                color={theme.cyan}
+              />
+              <Text
+                style={{
+                  color: theme.cyan,
+                  fontSize: 11,
+                  fontWeight: "700",
+                  letterSpacing: 0.3,
+                }}
+              >
+                SYSTEM-GENERATED CREDENTIALS
+              </Text>
+            </View>
+            <Text
+              style={{
+                color: theme.textSecondary,
+                fontSize: 11,
+                lineHeight: 16,
+              }}
+            >
+              Unique Visitor ID (VIS-YYYY-XXXXXXXX) and authoritative timestamp
+              will be generated by the server upon successful submission.
+            </Text>
+          </View>
+
+          {/* Section: Profile Details */}
+          <Text
+            style={[
+              styles.fieldLabelText,
+              { color: theme.cyan, marginTop: 4, letterSpacing: 0.5 },
+            ]}
+          >
+            1. VISITOR PROFILE
+          </Text>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Full Name *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="account-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={fullName}
+                onChangeText={setFullName}
+                placeholder="Dr. / Mr. / Ms. Full Name"
+                placeholderTextColor={theme.muted}
+              />
+            </View>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Email Address (Login Identifier) *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="email-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={email}
+                onChangeText={setEmail}
+                placeholder="visitor@organization.org"
+                placeholderTextColor={theme.muted}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+            </View>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Mobile / Phone Number *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="phone-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="+91 98765 43210"
+                placeholderTextColor={theme.muted}
+                keyboardType="phone-pad"
+              />
+            </View>
+          </View>
+
+          {/* Section: Visit Logistics */}
+          <Text
+            style={[
+              styles.fieldLabelText,
+              { color: theme.cyan, marginTop: 8, letterSpacing: 0.5 },
+            ]}
+          >
+            2. VISIT LOGISTICS
+          </Text>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Purpose of Visit *
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginVertical: 4 }}
+            >
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                {PURPOSES.map((p) => {
+                  const sel = purposeOfVisit === p;
+                  return (
+                    <Pressable
+                      key={p}
+                      onPress={() => setPurposeOfVisit(p)}
+                      style={[
+                        styles.demoChipPill,
+                        {
+                          backgroundColor: sel
+                            ? theme.cyanGlow
+                            : theme.bgElevated,
+                          borderColor: sel ? theme.cyan : theme.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.demoChipPillText,
+                          {
+                            color: sel ? theme.cyan : theme.textSecondary,
+                            fontWeight: sel ? "700" : "500",
+                          },
+                        ]}
+                      >
+                        {p}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+
+          {purposeOfVisit === "Other" && (
+            <View style={styles.formGroup}>
+              <Text
+                style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+              >
+                Specific Purpose *
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                  },
+                ]}
+              >
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={purposeOther}
+                  onChangeText={setPurposeOther}
+                  placeholder="Describe purpose of campus visit"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+            </View>
+          )}
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <View style={[styles.formGroup, { flex: 1 }]}>
+              <Text
+                style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+              >
+                Expected Check-In *
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                  },
+                ]}
+              >
+                <TextInput
+                  style={[
+                    styles.textInputBox,
+                    { color: theme.text, fontSize: 12 },
+                  ]}
+                  value={expectedCheckIn}
+                  onChangeText={setExpectedCheckIn}
+                  placeholder="YYYY-MM-DDTHH:mm"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+            </View>
+
+            <View style={[styles.formGroup, { flex: 1 }]}>
+              <Text
+                style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+              >
+                Expected Check-Out *
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                  },
+                ]}
+              >
+                <TextInput
+                  style={[
+                    styles.textInputBox,
+                    { color: theme.text, fontSize: 12 },
+                  ]}
+                  value={expectedCheckOut}
+                  onChangeText={setExpectedCheckOut}
+                  placeholder="YYYY-MM-DDTHH:mm"
+                  placeholderTextColor={theme.muted}
+                />
+              </View>
+            </View>
+          </View>
+
+          {/* Section: Identification */}
+          <Text
+            style={[
+              styles.fieldLabelText,
+              { color: theme.cyan, marginTop: 8, letterSpacing: 0.5 },
+            ]}
+          >
+            3. IDENTIFICATION & VERIFICATION
+          </Text>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Identification Type *
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginVertical: 4 }}
+            >
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                {ID_TYPES.map((t) => {
+                  const sel = identificationType === t;
+                  return (
+                    <Pressable
+                      key={t}
+                      onPress={() => setIdentificationType(t)}
+                      style={[
+                        styles.demoChipPill,
+                        {
+                          backgroundColor: sel
+                            ? theme.cyanGlow
+                            : theme.bgElevated,
+                          borderColor: sel ? theme.cyan : theme.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.demoChipPillText,
+                          {
+                            color: sel ? theme.cyan : theme.textSecondary,
+                            fontWeight: sel ? "700" : "500",
+                          },
+                        ]}
+                      >
+                        {t}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              ID Number *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="card-account-details-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={identificationNumber}
+                onChangeText={setIdentificationNumber}
+                placeholder="Government ID / License / Passport No."
+                placeholderTextColor={theme.muted}
+                autoCapitalize="characters"
+              />
+            </View>
+            <Text style={{ color: theme.muted, fontSize: 11, marginTop: 4 }}>
+              Security Note: Only masked characters (e.g. ********1234) appear
+              on your pass. Complete IDs are never exposed.
+            </Text>
+          </View>
+
+          {/* Section: Account Password */}
+          <Text
+            style={[
+              styles.fieldLabelText,
+              { color: theme.cyan, marginTop: 8, letterSpacing: 0.5 },
+            ]}
+          >
+            4. PORTAL ACCESS PASSWORD
+          </Text>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Password (Min. 6 Characters) *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="lock-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                placeholder="Create secure password"
+                placeholderTextColor={theme.muted}
+              />
+              <Pressable
+                onPress={() => setShowPassword((v) => !v)}
+                style={styles.eyeBtn}
+              >
+                <MaterialCommunityIcons
+                  name={showPassword ? "eye-off-outline" : "eye-outline"}
+                  size={18}
+                  color={theme.muted}
+                />
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text
+              style={[styles.fieldLabelText, { color: theme.textSecondary }]}
+            >
+              Confirm Password *
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                { backgroundColor: theme.bgElevated, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="lock-check-outline"
+                size={18}
+                color={theme.muted}
+                style={styles.inputPrefixIcon}
+              />
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry={!showPassword}
+                placeholder="Confirm password"
+                placeholderTextColor={theme.muted}
+              />
+            </View>
+          </View>
+
+          {/* Error Banner */}
+          {!!error && (
+            <View
+              style={[
+                styles.errorBannerBox,
+                {
+                  backgroundColor: theme.roseGlow,
+                  borderColor: theme.rose,
+                  marginTop: 4,
+                },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="alert-circle-outline"
+                size={17}
+                color={theme.rose}
+              />
+              <Text style={[styles.errorBannerText, { color: theme.rose }]}>
+                {error}
+              </Text>
+            </View>
+          )}
+
+          {/* Submit CTA */}
+          <Pressable
+            style={[
+              styles.submitButtonGlow,
+              {
+                backgroundColor: theme.cyan,
+                marginTop: 8,
+                shadowColor: theme.cyan,
+              },
+              busy && { opacity: 0.75 },
+            ]}
+            onPress={handleRegister}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <View style={styles.submitRow}>
+                <Text
+                  style={[styles.submitTextAction, { color: "#FFFFFF" }]}
+                >
+                  Register & Generate Pass
+                </Text>
+                <MaterialCommunityIcons
+                  name="qrcode-scan"
+                  size={18}
+                  color="#FFFFFF"
+                />
+              </View>
+            )}
+          </Pressable>
+        </View>
+
+        <Text
+          style={[styles.loginFootnote, { color: theme.muted, marginTop: 16 }]}
+        >
+          Pratyaksh Academic Portal • Visitor Management System
+        </Text>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OTHERS / VISITOR REGISTRATION SUCCESS VIEW
+// ---------------------------------------------------------------------------
+function OthersRegistrationSuccessView({
+  visitor,
+  onContinue,
+}: {
+  visitor: any;
+  onContinue: () => void;
+}) {
+  const { theme, isDark } = useAppTheme();
+
+  const handleDownload = async () => {
+    const downloadUrl = `${http.defaults.baseURL || API}/visitors/${visitor.visitor_id}/qr`;
+    if (Platform.OS === "web") {
+      try {
+        const link = document.createElement("a");
+        link.href = visitor.qr_data_uri || downloadUrl;
+        link.download = `visitor_pass_${visitor.visitor_id}.png`;
+        link.click();
+      } catch {
+        if (typeof window !== "undefined") {
+          window.open(visitor.qr_data_uri || downloadUrl, "_blank");
+        }
+      }
+    } else {
+      try {
+        const fileUri = `${FileSystem.documentDirectory}visitor_pass_${visitor.visitor_id}.png`;
+        const res = await FileSystem.downloadAsync(downloadUrl, fileUri);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(res.uri);
+        } else {
+          Alert.alert("Pass Downloaded", `Saved pass to:\n${res.uri}`);
+        }
+      } catch {
+        Linking.openURL(downloadUrl).catch(() => {
+          Alert.alert(
+            "Pass QR Code",
+            `Access your pass online at:\n${downloadUrl}`,
+          );
+        });
+      }
+    }
+  };
+
+  return (
+    <SafeAreaView
+      style={[
+        styles.safeArea,
+        { backgroundColor: theme.bg, paddingTop: STATUS_BAR_HEIGHT },
+      ]}
+    >
+      <StatusBar style={theme.statusBarStyle} />
+      <ScrollView
+        contentContainerStyle={styles.loginScroll}
+        showsVerticalScrollIndicator={false}
+      >
+        <View
+          style={[
+            styles.loginSurfaceCard,
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+              alignItems: "center",
+              paddingVertical: 28,
+            },
+          ]}
+        >
+          {/* Success Checkmark Circle */}
+          <View
+            style={{
+              width: 58,
+              height: 58,
+              borderRadius: 29,
+              backgroundColor: theme.emeraldGlow || "rgba(16, 185, 129, 0.15)",
+              borderWidth: 2,
+              borderColor: theme.emerald || "#10B981",
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: 14,
+            }}
+          >
+            <MaterialCommunityIcons
+              name="check-bold"
+              size={30}
+              color={theme.emerald || "#10B981"}
+            />
+          </View>
+
+          <Text
+            style={[
+              styles.cardHeaderTitle,
+              { color: theme.text, textAlign: "center" },
+            ]}
+          >
+            Registration Successful!
+          </Text>
+          <Text
+            style={{
+              color: theme.textSecondary,
+              fontSize: 13,
+              textAlign: "center",
+              marginTop: 4,
+              marginBottom: 18,
+            }}
+          >
+            Your official campus visitor pass and credentials have been created.
+          </Text>
+
+          {/* Visitor ID Badge */}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              backgroundColor: theme.bgElevated,
+              paddingHorizontal: 16,
+              paddingVertical: 8,
+              borderRadius: 20,
+              borderWidth: 1,
+              borderColor: theme.cyan,
+              marginBottom: 20,
+            }}
+          >
+            <MaterialCommunityIcons
+              name="badge-account-outline"
+              size={18}
+              color={theme.cyan}
+            />
+            <Text
+              style={{
+                color: theme.cyan,
+                fontSize: 14,
+                fontWeight: "700",
+                letterSpacing: 0.5,
+              }}
+            >
+              {visitor.visitor_id}
+            </Text>
+          </View>
+
+          {/* Generated QR Code Card */}
+          <View
+            style={{
+              backgroundColor: "#FFFFFF",
+              padding: 16,
+              borderRadius: 16,
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.15,
+              shadowRadius: 12,
+              elevation: 4,
+              marginBottom: 16,
+              alignItems: "center",
+            }}
+          >
+            {visitor.qr_data_uri ? (
+              <Image
+                source={{ uri: visitor.qr_data_uri }}
+                style={{ width: 200, height: 200 }}
+                resizeMode="contain"
+              />
+            ) : (
+              <ActivityIndicator color="#000" size="large" />
+            )}
+            <Text
+              style={{
+                color: "#334155",
+                fontSize: 11,
+                fontWeight: "600",
+                marginTop: 8,
+              }}
+            >
+              OFFICIAL VISITOR PASS
+            </Text>
+          </View>
+
+          {/* Summary Details */}
+          <View
+            style={{
+              width: "100%",
+              backgroundColor: theme.bgElevated,
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 20,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <HoloDetailRow label="Visitor Name" value={visitor.full_name} />
+            <HoloDetailRow label="Email / Login ID" value={visitor.email} />
+            <HoloDetailRow
+              label="Registered At"
+              value={new Date(visitor.registration_date).toLocaleString()}
+            />
+          </View>
+
+          {/* Download & Action Buttons */}
+          <View style={{ width: "100%", gap: 10 }}>
+            <Pressable
+              style={[
+                styles.submitButtonGlow,
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.cyan,
+                  borderWidth: 1,
+                },
+              ]}
+              onPress={handleDownload}
+            >
+              <View style={styles.submitRow}>
+                <MaterialCommunityIcons
+                  name="download-outline"
+                  size={18}
+                  color={theme.cyan}
+                />
+                <Text style={[styles.submitTextAction, { color: theme.cyan }]}>
+                  Download QR Code
+                </Text>
+              </View>
+            </Pressable>
+
+            <Pressable
+              style={[
+                styles.submitButtonGlow,
+                {
+                  backgroundColor: theme.cyan,
+                },
+              ]}
+              onPress={onContinue}
+            >
+              <View style={styles.submitRow}>
+                <Text style={[styles.submitTextAction, { color: "#FFFFFF" }]}>
+                  Continue to Login
+                </Text>
+                <MaterialCommunityIcons
+                  name="arrow-right"
+                  size={18}
+                  color="#FFFFFF"
+                />
+              </View>
+            </Pressable>
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OTHERS / VISITOR DASHBOARD & PASS VIEW
+// ---------------------------------------------------------------------------
+function OthersDashboardView({
+  user,
+  onLogout,
+  isProfileTab,
+}: {
+  user: any;
+  onLogout: () => void;
+  isProfileTab?: boolean;
+}) {
+  const { theme, isDark } = useAppTheme();
+  const [profile, setProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchProfile = useCallback(() => {
+    setLoading(true);
+    setError("");
+    http
+      .get("/visitors/me")
+      .then((res) => {
+        setProfile(res.data);
+      })
+      .catch((err) => {
+        setError(
+          err.response?.data?.detail || "Could not load visitor profile.",
+        );
+      })
+      .finally(() => {
+        setLoading(false);
+        setRefreshing(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchProfile();
+  }, [fetchProfile]);
+
+  const handleDownload = async () => {
+    if (!profile) return;
+    const downloadUrl = `${http.defaults.baseURL || API}/visitors/${profile.visitor_id}/qr`;
+    if (Platform.OS === "web") {
+      try {
+        const link = document.createElement("a");
+        link.href = profile.qr_data_uri || downloadUrl;
+        link.download = `visitor_pass_${profile.visitor_id}.png`;
+        link.click();
+      } catch {
+        if (typeof window !== "undefined") {
+          window.open(profile.qr_data_uri || downloadUrl, "_blank");
+        }
+      }
+    } else {
+      try {
+        const fileUri = `${FileSystem.documentDirectory}visitor_pass_${profile.visitor_id}.png`;
+        const res = await FileSystem.downloadAsync(downloadUrl, fileUri);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(res.uri);
+        } else {
+          Alert.alert("Pass Downloaded", `Saved pass to:\n${res.uri}`);
+        }
+      } catch {
+        Linking.openURL(downloadUrl).catch(() => {
+          Alert.alert(
+            "Pass QR Code",
+            `Access your pass online at:\n${downloadUrl}`,
+          );
+        });
+      }
+    }
+  };
+
+  if (loading && !refreshing) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+        }}
+      >
+        <ActivityIndicator size="large" color={theme.cyan} />
+        <Text
+          style={{
+            color: theme.textSecondary,
+            marginTop: 12,
+            fontSize: 13,
+          }}
+        >
+          Loading Visitor Pass...
+        </Text>
+      </View>
+    );
+  }
+
+  if (error || !profile) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+        }}
+      >
+        <MaterialCommunityIcons
+          name="alert-circle-outline"
+          size={48}
+          color={theme.rose}
+        />
+        <Text
+          style={{
+            color: theme.text,
+            fontSize: 16,
+            fontWeight: "700",
+            marginTop: 12,
+          }}
+        >
+          Visitor Profile Error
+        </Text>
+        <Text
+          style={{
+            color: theme.textSecondary,
+            fontSize: 13,
+            textAlign: "center",
+            marginTop: 6,
+          }}
+        >
+          {error || "Unable to retrieve your visitor details."}
+        </Text>
+        <Pressable
+          style={[
+            styles.smallActionBtn,
+            {
+              backgroundColor: theme.cyan,
+              marginTop: 16,
+              paddingHorizontal: 20,
+            },
+          ]}
+          onPress={fetchProfile}
+        >
+          <Text style={{ color: "#FFFFFF", fontWeight: "700" }}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            fetchProfile();
+          }}
+          tintColor={theme.cyan}
+        />
+      }
+    >
+      {/* Visitor Pass Header Card */}
+      <View
+        style={[
+          styles.loginSurfaceCard,
+          {
+            backgroundColor: theme.cardGlass,
+            borderColor: theme.borderBright,
+            marginBottom: 16,
+            alignItems: "center",
+          },
+        ]}
+      >
+        <View
+          style={{
+            width: "100%",
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 12,
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <MaterialCommunityIcons
+              name="shield-check"
+              size={22}
+              color={theme.cyan}
+            />
+            <Text style={{ color: theme.text, fontSize: 16, fontWeight: "700" }}>
+              Campus Visitor Pass
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.statusPillHolo,
+              {
+                backgroundColor:
+                  theme.emeraldGlow || "rgba(16,185,129,0.15)",
+                borderColor: theme.emerald || "#10B981",
+                borderWidth: 1,
+              },
+            ]}
+          >
+            <Text
+              style={{
+                color: theme.emerald || "#10B981",
+                fontSize: 11,
+                fontWeight: "700",
+              }}
+            >
+              {profile.status}
+            </Text>
+          </View>
+        </View>
+
+        <Text
+          style={{
+            color: theme.muted,
+            fontSize: 11,
+            letterSpacing: 0.5,
+            marginBottom: 4,
+          }}
+        >
+          OFFICIAL BADGE IDENTIFIER
+        </Text>
+        <Text
+          style={{
+            color: theme.cyan,
+            fontSize: 18,
+            fontWeight: "800",
+            letterSpacing: 1,
+            marginBottom: 16,
+          }}
+        >
+          {profile.visitor_id}
+        </Text>
+
+        {/* QR Code Presentation Box */}
+        <View
+          style={{
+            backgroundColor: "#FFFFFF",
+            padding: 16,
+            borderRadius: 16,
+            shadowColor: "#000",
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.12,
+            shadowRadius: 10,
+            elevation: 3,
+            marginBottom: 16,
+            alignItems: "center",
+          }}
+        >
+          {profile.qr_data_uri ? (
+            <Image
+              source={{ uri: profile.qr_data_uri }}
+              style={{ width: 190, height: 190 }}
+              resizeMode="contain"
+            />
+          ) : (
+            <ActivityIndicator color="#000" />
+          )}
+          <Text
+            style={{
+              color: "#475569",
+              fontSize: 10,
+              fontWeight: "600",
+              marginTop: 6,
+              letterSpacing: 0.3,
+            }}
+          >
+            SCAN AT CAMPUS ENTRY GATES
+          </Text>
+        </View>
+
+        {/* Download Pass Action */}
+        <Pressable
+          style={[
+            styles.submitButtonGlow,
+            {
+              width: "100%",
+              backgroundColor: theme.bgElevated,
+              borderColor: theme.cyan,
+              borderWidth: 1,
+              height: 42,
+            },
+          ]}
+          onPress={handleDownload}
+        >
+          <View style={styles.submitRow}>
+            <MaterialCommunityIcons
+              name="download"
+              size={17}
+              color={theme.cyan}
+            />
+            <Text
+              style={[
+                styles.submitTextAction,
+                { color: theme.cyan, fontSize: 13 },
+              ]}
+            >
+              Download Pass Image (PNG)
+            </Text>
+          </View>
+        </Pressable>
+      </View>
+
+      {/* Visitor Details Card */}
+      <View
+        style={[
+          styles.loginSurfaceCard,
+          {
+            backgroundColor: theme.cardGlass,
+            borderColor: theme.borderBright,
+            marginBottom: 16,
+          },
+        ]}
+      >
+        <Text
+          style={{
+            color: theme.cyan,
+            fontSize: 12,
+            fontWeight: "700",
+            letterSpacing: 0.5,
+            marginBottom: 12,
+          }}
+        >
+          VISITOR IDENTIFICATION & LOGISTICS
+        </Text>
+        <HoloDetailRow label="Visitor ID" value={profile.visitor_id} />
+        <HoloDetailRow label="Full Name" value={profile.full_name} />
+        <HoloDetailRow label="Email Address" value={profile.email} />
+        <HoloDetailRow label="Contact Phone" value={profile.phone} />
+        <HoloDetailRow
+          label="Purpose of Visit"
+          value={
+            profile.purpose_other
+              ? `${profile.purpose_of_visit} (${profile.purpose_other})`
+              : profile.purpose_of_visit
+          }
+        />
+        <HoloDetailRow
+          label="Expected Check-In"
+          value={new Date(profile.expected_check_in).toLocaleString()}
+        />
+        <HoloDetailRow
+          label="Expected Check-Out"
+          value={new Date(profile.expected_check_out).toLocaleString()}
+        />
+        <HoloDetailRow
+          label="ID Document Type"
+          value={profile.identification_type}
+        />
+        <HoloDetailRow
+          label="ID Number (Masked)"
+          value={profile.identification_number_masked}
+        />
+        <HoloDetailRow
+          label="Registration Date"
+          value={new Date(profile.registration_date).toLocaleString()}
+        />
+      </View>
+
+      {/* Security Protection Notice */}
+      <View
+        style={{
+          backgroundColor: theme.bgElevated,
+          borderRadius: 12,
+          padding: 14,
+          marginBottom: 20,
+          borderWidth: 1,
+          borderColor: theme.border,
+        }}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            marginBottom: 6,
+          }}
+        >
+          <MaterialCommunityIcons
+            name="shield-lock-outline"
+            size={16}
+            color={theme.cyan}
+          />
+          <Text
+            style={{ color: theme.cyan, fontSize: 12, fontWeight: "700" }}
+          >
+            PRIVACY & CREDENTIAL SECURITY
+          </Text>
+        </View>
+        <Text
+          style={{
+            color: theme.textSecondary,
+            fontSize: 11,
+            lineHeight: 17,
+          }}
+        >
+          This QR pass contains non-sensitive identity metadata for physical
+          campus entry verification. Authoritative access is verified against
+          server records by campus security. Complete identification numbers
+          are cryptographically hashed and never stored or returned in
+          plaintext.
+        </Text>
+      </View>
+
+      {/* Logout Button */}
+      <Pressable
+        style={[
+          styles.submitButtonGlow,
+          {
+            backgroundColor: theme.roseGlow || "rgba(244,63,94,0.15)",
+            borderColor: theme.rose,
+            borderWidth: 1,
+            height: 44,
+          },
+        ]}
+        onPress={() => {
+          Alert.alert(
+            "Sign Out",
+            "Are you sure you want to end your visitor session?",
+            [
+              { text: "Cancel", style: "cancel" },
+              {
+                text: "Sign Out",
+                style: "destructive",
+                onPress: onLogout,
+              },
+            ],
+          );
+        }}
+      >
+        <View style={styles.submitRow}>
+          <MaterialCommunityIcons
+            name="logout"
+            size={18}
+            color={theme.rose}
+          />
+          <Text style={[styles.submitTextAction, { color: theme.rose }]}>
+            Sign Out
+          </Text>
+        </View>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // APP SHELL & FLOATING ISLAND NAVIGATION
 // ---------------------------------------------------------------------------
 function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
@@ -1029,16 +2636,27 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
 
   const tabs = useMemo(() => {
     if (role === "admin") {
-      return ["Dashboard", "Students", "Teachers", "Academic", "Attendance"];
+      return ["Dashboard", "Students", "Teachers", "Attendance", "QR", "Profile"];
     }
     if (role === "teacher") {
-      return ["Dashboard", "Attendance", "Students", "History", "Profile"];
+      return ["Dashboard", "Attendance", "History", "QR", "Profile"];
     }
-    return ["Dashboard", "Attendance", "Classes", "Profile"];
+    if (role === "others") {
+      return ["Dashboard", "QR", "Profile"];
+    }
+    return ["Dashboard", "Attendance", "Classes", "QR", "Profile"];
   }, [role]);
 
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [unreadCount, setUnreadCount] = useState(0);
+  const [showTopMenu, setShowTopMenu] = useState(false);
+  const [showServerModal, setShowServerModal] = useState(false);
+  const [currentApi, setCurrentApi] = useState(API);
+  const [customInput, setCustomInput] = useState(API);
+  const [testingCustom, setTestingCustom] = useState(false);
+  const [testStatus, setTestStatus] = useState<
+    "checking" | "online" | "offline"
+  >("online");
   const screenOpacity = useRef(new Animated.Value(1)).current;
   const screenLift = useRef(new Animated.Value(0)).current;
 
@@ -1080,7 +2698,7 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
     user.display_name ||
     user.name ||
     user.username ||
-    (role === "admin" ? "Admin" : "User");
+    (role === "admin" ? "Admin" : role === "others" ? "Visitor" : "User");
 
   return (
     <SafeAreaView
@@ -1142,7 +2760,9 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
                     ? "ADMIN"
                     : role === "teacher"
                       ? "FACULTY"
-                      : "STUDENT"}
+                      : role === "others"
+                        ? "VISITOR"
+                        : "STUDENT"}
                 </Text>
               </View>
             </View>
@@ -1246,6 +2866,28 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
               </Text>
             )}
           </Pressable>
+
+          {/* Three-Dot Menu (Top-Right) */}
+          <Pressable
+            onPress={() => setShowTopMenu(true)}
+            accessibilityRole="button"
+            accessibilityLabel="More options"
+            style={[
+              styles.topIconBtn,
+              {
+                backgroundColor: isDark
+                  ? "rgba(255,255,255,0.06)"
+                  : "rgba(37,99,235,0.06)",
+                borderColor: theme.border,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="dots-vertical"
+              size={18}
+              color={theme.text}
+            />
+          </Pressable>
         </View>
       </View>
 
@@ -1334,7 +2976,1567 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
           );
         })}
       </View>
+
+      {/* Executive Dropdown Menu Modal */}
+      <Modal
+        visible={showTopMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowTopMenu(false)}
+      >
+        <Pressable
+          style={styles.modalBackdropOverlay}
+          onPress={() => setShowTopMenu(false)}
+        >
+          <View
+            style={[
+              styles.topMenuDropdownCard,
+              {
+                backgroundColor: theme.cardGlass,
+                borderColor: theme.borderBright,
+              },
+            ]}
+          >
+            <View style={styles.topMenuHeader}>
+              <Text style={[styles.topMenuTitle, { color: theme.text }]}>
+                {displayName}
+              </Text>
+              <Text style={{ fontSize: 11, color: theme.muted }}>
+                {role.toUpperCase()}
+              </Text>
+            </View>
+
+            <View style={[styles.menuDivider, { backgroundColor: theme.divider }]} />
+
+            <Pressable
+              style={styles.topMenuItem}
+              onPress={() => {
+                setShowTopMenu(false);
+                setActiveTab("Connections");
+              }}
+            >
+              <MaterialCommunityIcons
+                name="account-multiple-outline"
+                size={18}
+                color={theme.cyan}
+              />
+              <Text style={[styles.topMenuItemText, { color: theme.text }]}>
+                My Connections
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.topMenuItem}
+              onPress={() => {
+                setShowTopMenu(false);
+                setActiveTab("QR");
+              }}
+            >
+              <MaterialCommunityIcons
+                name="qrcode-scan"
+                size={18}
+                color={theme.emerald}
+              />
+              <Text style={[styles.topMenuItemText, { color: theme.text }]}>
+                QR Code & Scanner
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.topMenuItem}
+              onPress={() => {
+                setShowTopMenu(false);
+                setShowServerModal(true);
+              }}
+            >
+              <MaterialCommunityIcons
+                name="server-network"
+                size={18}
+                color={theme.amber}
+              />
+              <Text style={[styles.topMenuItemText, { color: theme.text }]}>
+                Server Connection
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.topMenuItem}
+              onPress={() => {
+                toggleTheme();
+                setShowTopMenu(false);
+              }}
+            >
+              <MaterialCommunityIcons
+                name={isDark ? "white-balance-sunny" : "moon-waning-crescent"}
+                size={18}
+                color={isDark ? theme.amber : theme.blue}
+              />
+              <Text style={[styles.topMenuItemText, { color: theme.text }]}>
+                {isDark ? "Light Mode" : "Dark Mode"}
+              </Text>
+            </Pressable>
+
+            <View style={[styles.menuDivider, { backgroundColor: theme.divider }]} />
+
+            <Pressable
+              style={styles.topMenuItem}
+              onPress={() => {
+                setShowTopMenu(false);
+                onLogout();
+              }}
+            >
+              <MaterialCommunityIcons
+                name="logout-variant"
+                size={18}
+                color={theme.rose}
+              />
+              <Text style={[styles.topMenuItemText, { color: theme.rose }]}>
+                Log Out
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
+      {/* Backend Server Configuration Modal */}
+      <Modal
+        visible={showServerModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowServerModal(false)}
+      >
+        <Pressable
+          style={styles.modalBackdropOverlay}
+          onPress={() => setShowServerModal(false)}
+        >
+          <Pressable
+            style={[
+              styles.modalSheetCard,
+              {
+                backgroundColor: theme.cardGlass,
+                borderColor: theme.borderBright,
+              },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.modalSheetHeader}>
+              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+                Server Connection (Docker)
+              </Text>
+              <Pressable onPress={() => setShowServerModal(false)}>
+                <MaterialCommunityIcons
+                  name="close"
+                  size={22}
+                  color={theme.text}
+                />
+              </Pressable>
+            </View>
+
+            <Text
+              style={[
+                styles.fieldLabelText,
+                { color: theme.muted, marginTop: 10 },
+              ]}
+            >
+              API ADDRESS (HOST OR LAN IP)
+            </Text>
+            <View
+              style={[
+                styles.inputContainerBox,
+                {
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.borderAccent,
+                },
+              ]}
+            >
+              <TextInput
+                style={[styles.textInputBox, { color: theme.text }]}
+                value={customInput}
+                onChangeText={setCustomInput}
+                placeholder="http://localhost:8000"
+                placeholderTextColor={theme.muted}
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    flex: 1,
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.cyan,
+                    paddingVertical: 12,
+                  },
+                ]}
+                onPress={async () => {
+                  setTestingCustom(true);
+                  try {
+                    const cleaned = customInput.trim().replace(/\/+$/, "");
+                    const res = await axios.get(`${cleaned}/health`, {
+                      timeout: 5000,
+                    });
+                    if (res.data?.status === "ok") {
+                      Alert.alert(
+                        "Connection Success ✓",
+                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`,
+                      );
+                    }
+                  } catch (err: any) {
+                    Alert.alert(
+                      "Connection Failed ✗",
+                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`,
+                    );
+                  } finally {
+                    setTestingCustom(false);
+                  }
+                }}
+                disabled={testingCustom}
+              >
+                {testingCustom ? (
+                  <ActivityIndicator size="small" color={theme.cyan} />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons
+                      name="lan-connect"
+                      size={16}
+                      color={theme.cyan}
+                    />
+                    <Text
+                      style={[styles.smallActionBtnText, { color: theme.cyan }]}
+                    >
+                      TEST PING
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    flex: 1,
+                    backgroundColor: theme.cyan,
+                    borderColor: theme.cyan,
+                    paddingVertical: 12,
+                  },
+                ]}
+                onPress={() => {
+                  const cleaned = customInput.trim().replace(/\/+$/, "");
+                  updateApiBaseUrl(cleaned);
+                  setCurrentApi(cleaned);
+                  setShowServerModal(false);
+                  axios
+                    .get(`${cleaned}/health`, { timeout: 4000 })
+                    .then(() => setTestStatus("online"))
+                    .catch(() => setTestStatus("offline"));
+                  Alert.alert(
+                    "Server Configured",
+                    `API URL updated to:\n${cleaned}`,
+                  );
+                }}
+              >
+                <MaterialCommunityIcons
+                  name="content-save-outline"
+                  size={16}
+                  color="#000"
+                />
+                <Text
+                  style={[
+                    styles.smallActionBtnText,
+                    { color: "#000", fontWeight: "700" },
+                  ]}
+                >
+                  SAVE & USE
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text
+              style={[
+                styles.fieldLabelText,
+                { color: theme.muted, marginTop: 18 },
+              ]}
+            >
+              QUICK PRESETS
+            </Text>
+
+            <View style={{ gap: 8, marginTop: 6 }}>
+              {[
+                {
+                  label: "Localhost Direct (Port 8000)",
+                  url: "http://localhost:8000",
+                },
+                {
+                  label: "Localhost Nginx (Port 8080)",
+                  url: "http://localhost:8080",
+                },
+                {
+                  label: "Host Wi-Fi Direct (Port 8000)",
+                  url: "http://192.168.0.108:8000",
+                },
+                {
+                  label: "Host Wi-Fi Nginx (Port 8080)",
+                  url: "http://192.168.0.108:8080",
+                },
+                {
+                  label: "Android Emulator (Port 8000)",
+                  url: "http://10.0.2.2:8000",
+                },
+                {
+                  label: "Tailscale Funnel (Remote)",
+                  url: "https://cair-ms-7e06.tail49e3b1.ts.net",
+                },
+              ].map((preset) => (
+                <Pressable
+                  key={preset.url}
+                  style={[
+                    styles.rosterItemCard,
+                    {
+                      paddingVertical: 10,
+                      backgroundColor: theme.bgElevated,
+                      borderColor:
+                        currentApi === preset.url ? theme.cyan : theme.border,
+                    },
+                  ]}
+                  onPress={() => {
+                    setCustomInput(preset.url);
+                    updateApiBaseUrl(preset.url);
+                    setCurrentApi(preset.url);
+                    setShowServerModal(false);
+                    axios
+                      .get(`${preset.url}/health`, { timeout: 4000 })
+                      .then(() => setTestStatus("online"))
+                      .catch(() => setTestStatus("offline"));
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={{
+                        color: theme.text,
+                        fontSize: 13,
+                        fontWeight: "600",
+                      }}
+                    >
+                      {preset.label}
+                    </Text>
+                    <Text
+                      style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}
+                    >
+                      {preset.url}
+                    </Text>
+                  </View>
+                  {currentApi === preset.url && (
+                    <MaterialCommunityIcons
+                      name="check-circle"
+                      size={18}
+                      color={theme.cyan}
+                    />
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// QR CODE IDENTITY, SCANNER & MUTUAL CONNECTIONS SCREEN
+// ---------------------------------------------------------------------------
+function QRScreen({
+  role,
+  user,
+  go,
+}: {
+  role: Role;
+  user: any;
+  go: (s: string) => void;
+}) {
+  const { theme, isDark } = useAppTheme();
+  const [activeOption, setActiveOption] = useState<"scan" | "view">("scan");
+
+  // Option A (Scan QR) State
+  const [permission, requestPermission] = useCameraPermissions();
+  const [facing, setFacing] = useState<"front" | "back">(DEFAULT_CAMERA_FACING);
+  const [scannedData, setScannedData] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [targetPreview, setTargetPreview] = useState<any | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectSuccess, setConnectSuccess] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualText, setManualText] = useState("");
+  const isCooldownRef = useRef(false);
+
+  // Option B (View My QR) State
+  const [myQr, setMyQr] = useState<any | null>(null);
+  const [loadingMyQr, setLoadingMyQr] = useState(false);
+  const [myQrError, setMyQrError] = useState("");
+
+  const loadMyQr = useCallback(async () => {
+    setLoadingMyQr(true);
+    setMyQrError("");
+    try {
+      const res = await http.get("/connections/my-qr");
+      setMyQr(res.data);
+    } catch (e: any) {
+      setMyQrError(apiErrorMessage(e, "Could not load QR identity"));
+    } finally {
+      setLoadingMyQr(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeOption === "view") {
+      loadMyQr();
+    }
+  }, [activeOption, loadMyQr]);
+
+  const verifyScannedPayload = async (rawString: string) => {
+    if (!rawString || isCooldownRef.current) return;
+    isCooldownRef.current = true;
+    setVerifying(true);
+    setScanError("");
+    setTargetPreview(null);
+    setConnectSuccess(false);
+
+    try {
+      const res = await http.post("/connections/verify-qr", { qr_data: rawString.trim() });
+      if (res.data?.target_user) {
+        setTargetPreview(res.data.target_user);
+      }
+    } catch (e: any) {
+      setScanError(apiErrorMessage(e, "Unrecognized or invalid QR code."));
+    } finally {
+      setVerifying(false);
+      setTimeout(() => {
+        isCooldownRef.current = false;
+      }, 1500);
+    }
+  };
+
+  const handleBarcodeScanned = (scanningResult: any) => {
+    if (verifying || isCooldownRef.current || targetPreview) return;
+    const data = scanningResult?.data || scanningResult;
+    if (typeof data === "string" && data.trim()) {
+      setScannedData(data);
+      verifyScannedPayload(data);
+    }
+  };
+
+  const handleConnect = async () => {
+    if (!targetPreview || connecting) return;
+    setConnecting(true);
+    try {
+      await http.post("/connections/connect", {
+        target_user_id: targetPreview.user_id,
+        target_qr_id: targetPreview.qr_id,
+      });
+      setConnectSuccess(true);
+      setTargetPreview((prev: any) => ({ ...prev, is_connected: true }));
+      Alert.alert(
+        "Connection Established! 🎉",
+        `You are now mutually connected with ${targetPreview.display_name}. Both of you can view each other's profile details and photos.`,
+        [
+          { text: "View Connections", onPress: () => go("Connections") },
+          { text: "Done", style: "cancel" },
+        ]
+      );
+    } catch (e: any) {
+      Alert.alert("Connection Failed", apiErrorMessage(e, "Unable to establish connection."));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const resetScanner = () => {
+    setScannedData(null);
+    setTargetPreview(null);
+    setScanError("");
+    setConnectSuccess(false);
+    isCooldownRef.current = false;
+  };
+
+  const pickQrImage = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 1,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setShowManualModal(true);
+      }
+    } catch (err: any) {
+      Alert.alert("Gallery Error", err.message);
+    }
+  };
+
+  const getRoleBadgeColor = (r: string) => {
+    switch ((r || "").toLowerCase()) {
+      case "admin":
+        return { bg: theme.cyanGlow, text: theme.cyan, border: theme.borderAccent };
+      case "teacher":
+      case "faculty":
+        return { bg: theme.blueGlow, text: theme.blue, border: theme.borderAccent };
+      case "student":
+        return { bg: theme.emeraldGlow, text: theme.emerald, border: theme.emerald };
+      case "others":
+      case "other":
+      case "visitor":
+        return { bg: theme.amberGlow, text: theme.amber, border: theme.amber };
+      default:
+        return { bg: theme.cardSubtle, text: theme.textSecondary, border: theme.border };
+    }
+  };
+
+  return (
+    <View style={{ paddingBottom: 60 }}>
+      {/* ── Top Header ── */}
+      <View style={styles.sectionHeadingRow}>
+        <View>
+          <Text style={[styles.sectionTitleText, { color: theme.text }]}>
+            Campus QR Network
+          </Text>
+          <Text style={[styles.sectionSubtitleText, { color: theme.textSecondary }]}>
+            Scan & establish mutual connections across all roles
+          </Text>
+        </View>
+        <Pressable
+          style={[styles.smallActionBtn, { borderColor: theme.border, backgroundColor: theme.card }]}
+          onPress={() => go("Connections")}
+        >
+          <MaterialCommunityIcons name="account-multiple-outline" size={16} color={theme.cyan} />
+          <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>
+            Connections
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* ── Top Stacked Segment Tabs ── */}
+      <View style={[styles.exportTabSegmentWrap, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}>
+        <Pressable
+          style={[
+            styles.exportTabBtn,
+            activeOption === "scan" && [
+              styles.exportTabBtnActive,
+              { backgroundColor: theme.cyan, borderColor: theme.cyan },
+            ],
+          ]}
+          onPress={() => {
+            setActiveOption("scan");
+            resetScanner();
+          }}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <MaterialCommunityIcons
+              name="qrcode-scan"
+              size={16}
+              color={activeOption === "scan" ? "#000" : theme.textSecondary}
+            />
+            <Text
+              style={[
+                styles.exportTabBtnText,
+                { color: activeOption === "scan" ? "#000" : theme.textSecondary, fontWeight: "700" },
+              ]}
+            >
+              OPTION A: SCAN QR
+            </Text>
+          </View>
+        </Pressable>
+
+        <Pressable
+          style={[
+            styles.exportTabBtn,
+            activeOption === "view" && [
+              styles.exportTabBtnActive,
+              { backgroundColor: theme.cyan, borderColor: theme.cyan },
+            ],
+          ]}
+          onPress={() => setActiveOption("view")}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <MaterialCommunityIcons
+              name="card-account-details-outline"
+              size={16}
+              color={activeOption === "view" ? "#000" : theme.textSecondary}
+            />
+            <Text
+              style={[
+                styles.exportTabBtnText,
+                { color: activeOption === "view" ? "#000" : theme.textSecondary, fontWeight: "700" },
+              ]}
+            >
+              OPTION B: VIEW MY QR
+            </Text>
+          </View>
+        </Pressable>
+      </View>
+
+      {/* ── OPTION A: SCAN QR CODE ── */}
+      {activeOption === "scan" && (
+        <View>
+          {targetPreview ? (
+            <View
+              style={[
+                styles.exportCardBox,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: targetPreview.is_connected ? theme.emerald : theme.borderAccent,
+                  marginTop: 8,
+                },
+              ]}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+                <View
+                  style={{
+                    width: 72,
+                    height: 72,
+                    borderRadius: 36,
+                    borderWidth: 2,
+                    borderColor: theme.cyan,
+                    overflow: "hidden",
+                    backgroundColor: theme.bgElevated,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {targetPreview.profile_photo_url ? (
+                    <Image
+                      source={{
+                        uri: targetPreview.profile_photo_url.startsWith("http")
+                          ? targetPreview.profile_photo_url
+                          : `${http.defaults.baseURL || API}${targetPreview.profile_photo_url}?token=${user.token}`,
+                      }}
+                      style={{ width: 72, height: 72 }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Text style={{ fontSize: 26, fontWeight: "700", color: theme.cyan }}>
+                      {targetPreview.display_name?.charAt(0)?.toUpperCase() || "U"}
+                    </Text>
+                  )}
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <Text style={{ fontSize: 18, fontWeight: "700", color: theme.text }}>
+                      {targetPreview.display_name}
+                    </Text>
+                    {(() => {
+                      const badge = getRoleBadgeColor(targetPreview.role);
+                      return (
+                        <View
+                          style={{
+                            paddingHorizontal: 8,
+                            paddingVertical: 2,
+                            borderRadius: 6,
+                            backgroundColor: badge.bg,
+                            borderWidth: 1,
+                            borderColor: badge.border,
+                          }}
+                        >
+                          <Text style={{ fontSize: 10, fontWeight: "700", color: badge.text }}>
+                            {targetPreview.role?.toUpperCase()}
+                          </Text>
+                        </View>
+                      );
+                    })()}
+                  </View>
+
+                  <Text style={{ fontSize: 13, color: theme.muted, marginTop: 4 }}>
+                    ID: {targetPreview.identifier || targetPreview.username}
+                  </Text>
+                  {!!targetPreview.department && (
+                    <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 2 }}>
+                      {targetPreview.department}
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              <View style={[styles.menuDivider, { backgroundColor: theme.divider, marginVertical: 14 }]} />
+
+              {targetPreview.is_self ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <MaterialCommunityIcons name="information-outline" size={18} color={theme.amber} />
+                  <Text style={{ color: theme.amber, fontSize: 13, flex: 1 }}>
+                    This is your own QR code. You cannot establish a connection with yourself.
+                  </Text>
+                </View>
+              ) : targetPreview.is_connected ? (
+                <View>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      backgroundColor: theme.emeraldGlow,
+                      padding: 10,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: theme.emerald,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <MaterialCommunityIcons name="check-decagram" size={18} color={theme.emerald} />
+                    <Text style={{ color: theme.emerald, fontSize: 13, fontWeight: "600" }}>
+                      Already Mutually Connected
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
+                    onPress={() => go("Connections")}
+                  >
+                    <MaterialCommunityIcons name="account-multiple-check" size={18} color="#000" />
+                    <Text style={{ color: "#000", fontWeight: "700", fontSize: 13 }}>
+                      VIEW IN MY CONNECTIONS
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View>
+                  <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 12, lineHeight: 17 }}>
+                    Connecting will establish a 2-way mutual link. Both you and {targetPreview.display_name} will be able to view each other's full profile cards and profile photos.
+                  </Text>
+                  <Pressable
+                    style={[styles.primaryNeonButton, { backgroundColor: theme.cyan }]}
+                    onPress={handleConnect}
+                    disabled={connecting}
+                  >
+                    {connecting ? (
+                      <ActivityIndicator size="small" color="#000" />
+                    ) : (
+                      <>
+                        <MaterialCommunityIcons name="account-plus-outline" size={18} color="#000" />
+                        <Text style={{ color: "#000", fontWeight: "700", fontSize: 13 }}>
+                          CONNECT WITH {targetPreview.display_name?.toUpperCase()}
+                        </Text>
+                      </>
+                    )}
+                  </Pressable>
+                </View>
+              )}
+
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    marginTop: 12,
+                    alignSelf: "center",
+                    backgroundColor: "transparent",
+                    borderColor: theme.border,
+                  },
+                ]}
+                onPress={resetScanner}
+              >
+                <MaterialCommunityIcons name="refresh" size={15} color={theme.textSecondary} />
+                <Text style={[styles.smallActionBtnText, { color: theme.textSecondary }]}>
+                  SCAN ANOTHER CODE
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View
+              style={[
+                styles.exportCardBox,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.borderBright,
+                  padding: 14,
+                },
+              ]}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 10,
+                }}
+              >
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text }}>
+                  ALIGN QR CODE WITHIN VIEWFINDER
+                </Text>
+                <Pressable
+                  onPress={() => setFacing((f) => (f === "back" ? "front" : "back"))}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                >
+                  <MaterialCommunityIcons name="camera-flip-outline" size={17} color={theme.cyan} />
+                  <Text style={{ color: theme.cyan, fontSize: 12, fontWeight: "600" }}>
+                    Flip
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View
+                style={{
+                  height: 300,
+                  borderRadius: 14,
+                  overflow: "hidden",
+                  backgroundColor: "#000",
+                  position: "relative",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderWidth: 1,
+                  borderColor: theme.borderAccent,
+                }}
+              >
+                {permission?.granted ? (
+                  <CameraView
+                    key={`qr-cam-${facing}`}
+                    style={StyleSheet.absoluteFillObject}
+                    facing={facing}
+                    barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                    onBarcodeScanned={handleBarcodeScanned}
+                  />
+                ) : (
+                  <View style={{ padding: 24, alignItems: "center" }}>
+                    <MaterialCommunityIcons name="camera-off" size={42} color={theme.rose} />
+                    <Text style={{ color: theme.text, marginTop: 12, textAlign: "center", fontWeight: "600" }}>
+                      Camera Access Required
+                    </Text>
+                    <Text style={{ color: theme.muted, fontSize: 12, marginTop: 4, textAlign: "center" }}>
+                      Camera permission is needed to scan QR codes for mutual connections.
+                    </Text>
+                    <Pressable
+                      style={[
+                        styles.smallActionBtn,
+                        { backgroundColor: theme.cyan, borderColor: theme.cyan, marginTop: 14, paddingHorizontal: 16 },
+                      ]}
+                      onPress={requestPermission}
+                    >
+                      <Text style={{ color: "#000", fontWeight: "700" }}>ENABLE CAMERA</Text>
+                    </Pressable>
+                  </View>
+                )}
+
+                {permission?.granted && (
+                  <View
+                    style={{
+                      width: 190,
+                      height: 190,
+                      borderWidth: 2,
+                      borderColor: theme.cyan,
+                      borderRadius: 16,
+                      backgroundColor: "rgba(59, 130, 246, 0.05)",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <MaterialCommunityIcons name="scan-helper" size={170} color={theme.cyan} style={{ opacity: 0.6 }} />
+                  </View>
+                )}
+
+                {verifying && (
+                  <View
+                    style={{
+                      ...StyleSheet.absoluteFillObject,
+                      backgroundColor: "rgba(0,0,0,0.7)",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <ActivityIndicator size="large" color={theme.cyan} />
+                    <Text style={{ color: "#fff", marginTop: 12, fontWeight: "600" }}>
+                      Verifying QR Identity...
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {!!scanError && (
+                <View
+                  style={[
+                    styles.errorBannerBox,
+                    { backgroundColor: theme.roseGlow, borderColor: theme.rose, marginTop: 12 },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.rose} />
+                  <Text style={[styles.errorBannerText, { color: theme.rose }]}>{scanError}</Text>
+                </View>
+              )}
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                <Pressable
+                  style={[
+                    styles.smallActionBtn,
+                    { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.border },
+                  ]}
+                  onPress={() => setShowManualModal(true)}
+                >
+                  <MaterialCommunityIcons name="keyboard-outline" size={16} color={theme.text} />
+                  <Text style={[styles.smallActionBtnText, { color: theme.text }]}>
+                    ENTER CODE
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.smallActionBtn,
+                    { flex: 1, backgroundColor: theme.bgElevated, borderColor: theme.border },
+                  ]}
+                  onPress={pickQrImage}
+                >
+                  <MaterialCommunityIcons name="image-outline" size={16} color={theme.text} />
+                  <Text style={[styles.smallActionBtnText, { color: theme.text }]}>
+                    FROM GALLERY
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── OPTION B: VIEW MY QR IDENTITY PASS ── */}
+      {activeOption === "view" && (
+        <View>
+          {loadingMyQr ? (
+            <View style={{ paddingVertical: 40, alignItems: "center" }}>
+              <ActivityIndicator size="large" color={theme.cyan} />
+              <Text style={{ color: theme.muted, marginTop: 12 }}>Generating Authenticated QR Pass...</Text>
+            </View>
+          ) : myQrError ? (
+            <View style={[styles.errorBannerBox, { backgroundColor: theme.roseGlow, borderColor: theme.rose }]}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.rose} />
+              <Text style={[styles.errorBannerText, { color: theme.rose }]}>{myQrError}</Text>
+            </View>
+          ) : myQr ? (
+            <View
+              style={[
+                styles.exportCardBox,
+                {
+                  backgroundColor: theme.cardGlass,
+                  borderColor: theme.borderBright,
+                  alignItems: "center",
+                  paddingVertical: 24,
+                  paddingHorizontal: 20,
+                },
+              ]}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 20,
+                  backgroundColor: theme.cyanGlow,
+                  borderColor: theme.borderAccent,
+                  borderWidth: 1,
+                  marginBottom: 16,
+                }}
+              >
+                <MaterialCommunityIcons name="shield-check-outline" size={14} color={theme.cyan} />
+                <Text style={{ fontSize: 11, fontWeight: "700", color: theme.cyan, letterSpacing: 0.8 }}>
+                  VERIFIED CAMPUS IDENTITY PASS
+                </Text>
+              </View>
+
+              <View
+                style={{
+                  width: 80,
+                  height: 80,
+                  borderRadius: 40,
+                  borderWidth: 3,
+                  borderColor: theme.cyan,
+                  overflow: "hidden",
+                  backgroundColor: theme.bgElevated,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginBottom: 10,
+                }}
+              >
+                {user.profile_photo_base64 || myQr.profile_photo_url ? (
+                  <Image
+                    source={{
+                      uri: user.profile_photo_base64 || (myQr.profile_photo_url.startsWith("http")
+                        ? myQr.profile_photo_url
+                        : `${http.defaults.baseURL || API}${myQr.profile_photo_url}?token=${user.token}`),
+                    }}
+                    style={{ width: 80, height: 80 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={{ fontSize: 30, fontWeight: "700", color: theme.cyan }}>
+                    {myQr.display_name?.charAt(0)?.toUpperCase() || "U"}
+                  </Text>
+                )}
+              </View>
+
+              <Text style={{ fontSize: 20, fontWeight: "700", color: theme.text, textAlign: "center" }}>
+                {myQr.display_name}
+              </Text>
+
+              {(() => {
+                const badge = getRoleBadgeColor(myQr.role);
+                return (
+                  <View
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 3,
+                      borderRadius: 6,
+                      backgroundColor: badge.bg,
+                      borderWidth: 1,
+                      borderColor: badge.border,
+                      marginTop: 6,
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: "700", color: badge.text }}>
+                      {myQr.role?.toUpperCase()}
+                    </Text>
+                  </View>
+                );
+              })()}
+
+              <Text style={{ fontSize: 13, color: theme.muted, marginTop: 6 }}>
+                ID: {myQr.identifier || user.username}
+              </Text>
+              {!!myQr.department && (
+                <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 2 }}>
+                  {myQr.department}
+                </Text>
+              )}
+
+              <View
+                style={{
+                  backgroundColor: "#FFFFFF",
+                  padding: 14,
+                  borderRadius: 16,
+                  marginVertical: 18,
+                  shadowColor: "#000",
+                  shadowOffset: { width: 0, height: 4 },
+                  shadowOpacity: 0.2,
+                  shadowRadius: 10,
+                  elevation: 5,
+                }}
+              >
+                {myQr.qr_data_uri ? (
+                  <Image
+                    source={{ uri: myQr.qr_data_uri }}
+                    style={{ width: 200, height: 200 }}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <ActivityIndicator size="large" color="#000" />
+                )}
+              </View>
+
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: theme.muted,
+                  textAlign: "center",
+                  maxWidth: 280,
+                  lineHeight: 18,
+                }}
+              >
+                Present this QR pass to any campus member. Scanning establishes an instant 2-way mutual connection.
+              </Text>
+
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  { marginTop: 16, borderColor: theme.border, backgroundColor: theme.bgElevated },
+                ]}
+                onPress={loadMyQr}
+              >
+                <MaterialCommunityIcons name="refresh" size={15} color={theme.cyan} />
+                <Text style={[styles.smallActionBtnText, { color: theme.cyan }]}>
+                  REFRESH PASS
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      )}
+
+      {/* Manual Code Entry Modal */}
+      <Modal
+        visible={showManualModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowManualModal(false)}
+      >
+        <Pressable style={styles.modalBackdropOverlay} onPress={() => setShowManualModal(false)}>
+          <Pressable
+            style={[styles.modalSheetCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.modalSheetHeader}>
+              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>Enter QR Code Data</Text>
+              <Pressable onPress={() => setShowManualModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+              </Pressable>
+            </View>
+
+            <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 10 }}>
+              Paste raw QR JSON, user UUID, Scholar/Roll ID, or Visitor ID below to verify:
+            </Text>
+
+            <TextInput
+              style={[
+                styles.textInputBox,
+                {
+                  color: theme.text,
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  height: 90,
+                  textAlignVertical: "top",
+                  padding: 10,
+                  fontSize: 12,
+                },
+              ]}
+              multiline
+              placeholder='e.g. {"qr_id":"...","uid":1} or UUID'
+              placeholderTextColor={theme.muted}
+              value={manualText}
+              onChangeText={setManualText}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+              <Pressable
+                style={[styles.smallActionBtn, { flex: 1, borderColor: theme.border }]}
+                onPress={() => setShowManualModal(false)}
+              >
+                <Text style={{ color: theme.textSecondary, fontWeight: "600" }}>CANCEL</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.smallActionBtn, { flex: 1, backgroundColor: theme.cyan, borderColor: theme.cyan }]}
+                onPress={() => {
+                  setShowManualModal(false);
+                  verifyScannedPayload(manualText);
+                }}
+              >
+                <Text style={{ color: "#000", fontWeight: "700" }}>VERIFY</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MUTUAL CONNECTIONS DIRECTORY SCREEN
+// ---------------------------------------------------------------------------
+function ConnectionsScreen({
+  role,
+  user,
+  go,
+}: {
+  role: Role;
+  user: any;
+  go: (s: string) => void;
+}) {
+  const { theme, isDark } = useAppTheme();
+  const [connections, setConnections] = useState<any[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedUser, setSelectedUser] = useState<any | null>(null);
+
+  const fetchConnections = useCallback(
+    async (q = "") => {
+      try {
+        const res = await http.get("/connections", {
+          params: { q: q.trim() || undefined, limit: 50 },
+        });
+        setConnections(res.data?.connections || []);
+        setTotalCount(res.data?.total_connections || 0);
+      } catch (err: any) {
+        Alert.alert("Connections Error", apiErrorMessage(err, "Failed to load connections."));
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    fetchConnections(searchQuery);
+  }, [fetchConnections, searchQuery]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchConnections(searchQuery);
+  };
+
+  const handleRemove = (targetUserId: number, targetName: string) => {
+    Alert.alert(
+      "Remove Connection",
+      `Are you sure you want to remove your mutual connection with ${targetName}? Neither of you will have mutual profile access until connected again.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await http.delete(`/connections/${targetUserId}`);
+              fetchConnections(searchQuery);
+            } catch (e: any) {
+              Alert.alert("Error", apiErrorMessage(e, "Could not remove connection."));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const getRoleBadgeColor = (r: string) => {
+    switch ((r || "").toLowerCase()) {
+      case "admin":
+        return { bg: theme.cyanGlow, text: theme.cyan, border: theme.borderAccent };
+      case "teacher":
+      case "faculty":
+        return { bg: theme.blueGlow, text: theme.blue, border: theme.borderAccent };
+      case "student":
+        return { bg: theme.emeraldGlow, text: theme.emerald, border: theme.emerald };
+      case "others":
+      case "other":
+      case "visitor":
+        return { bg: theme.amberGlow, text: theme.amber, border: theme.amber };
+      default:
+        return { bg: theme.cardSubtle, text: theme.textSecondary, border: theme.border };
+    }
+  };
+
+  return (
+    <View style={{ paddingBottom: 60 }}>
+      {/* ── Screen Header ── */}
+      <View style={styles.sectionHeadingRow}>
+        <View>
+          <Text style={[styles.sectionTitleText, { color: theme.text }]}>
+            My Connections — {totalCount}
+          </Text>
+          <Text style={[styles.sectionSubtitleText, { color: theme.textSecondary }]}>
+            Campus network & mutual profile access
+          </Text>
+        </View>
+        <Pressable
+          style={[styles.smallActionBtn, { backgroundColor: theme.cyan, borderColor: theme.cyan }]}
+          onPress={() => go("QR")}
+        >
+          <MaterialCommunityIcons name="qrcode-scan" size={16} color="#000" />
+          <Text style={[styles.smallActionBtnText, { color: "#000", fontWeight: "700" }]}>
+            SCAN QR
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* ── Search Input ── */}
+      <View
+        style={[
+          styles.searchInputWrap,
+          {
+            backgroundColor: theme.bgElevated,
+            borderColor: theme.border,
+            marginBottom: 16,
+          },
+        ]}
+      >
+        <MaterialCommunityIcons name="magnify" size={18} color={theme.muted} />
+        <TextInput
+          style={[styles.searchTextInput, { color: theme.text }]}
+          placeholder="Search connections by name, ID, or role..."
+          placeholderTextColor={theme.muted}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+        />
+        {searchQuery.length > 0 && (
+          <Pressable onPress={() => setSearchQuery("")}>
+            <MaterialCommunityIcons name="close-circle" size={16} color={theme.muted} />
+          </Pressable>
+        )}
+      </View>
+
+      {/* ── Connections List ── */}
+      {loading ? (
+        <View style={{ paddingVertical: 40, alignItems: "center" }}>
+          <ActivityIndicator size="large" color={theme.cyan} />
+          <Text style={{ color: theme.muted, marginTop: 10 }}>Loading mutual connections...</Text>
+        </View>
+      ) : connections.length === 0 ? (
+        <View
+          style={[
+            styles.exportCardBox,
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.borderBright,
+              alignItems: "center",
+              paddingVertical: 36,
+            },
+          ]}
+        >
+          <MaterialCommunityIcons name="account-group-outline" size={48} color={theme.muted} />
+          <Text style={{ fontSize: 16, fontWeight: "700", color: theme.text, marginTop: 12 }}>
+            No Connections Found
+          </Text>
+          <Text
+            style={{
+              fontSize: 12,
+              color: theme.muted,
+              textAlign: "center",
+              marginTop: 6,
+              maxWidth: 260,
+              lineHeight: 18,
+            }}
+          >
+            {searchQuery
+              ? `No connections matching "${searchQuery}".`
+              : "Scan another campus member's QR code to establish a mutual connection."}
+          </Text>
+          <Pressable
+            style={[
+              styles.primaryNeonButton,
+              { backgroundColor: theme.cyan, marginTop: 18, paddingHorizontal: 20 },
+            ]}
+            onPress={() => go("QR")}
+          >
+            <MaterialCommunityIcons name="qrcode-scan" size={16} color="#000" />
+            <Text style={{ color: "#000", fontWeight: "700", fontSize: 13 }}>
+              SCAN QR CODE
+            </Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={{ gap: 10 }}>
+          {connections.map((c) => {
+            const badge = getRoleBadgeColor(c.role);
+            const photoUri = c.profile_photo_url
+              ? (c.profile_photo_url.startsWith("http")
+                ? c.profile_photo_url
+                : `${http.defaults.baseURL || API}${c.profile_photo_url}?token=${user.token}`)
+              : null;
+
+            return (
+              <Pressable
+                key={c.connection_id}
+                style={[
+                  styles.rosterItemCard,
+                  {
+                    backgroundColor: theme.cardGlass,
+                    borderColor: theme.borderBright,
+                    paddingVertical: 12,
+                    paddingHorizontal: 14,
+                  },
+                ]}
+                onPress={() => setSelectedUser(c)}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flex: 1 }}>
+                  <View
+                    style={{
+                      width: 50,
+                      height: 50,
+                      borderRadius: 25,
+                      borderWidth: 1.5,
+                      borderColor: badge.border,
+                      overflow: "hidden",
+                      backgroundColor: theme.bgElevated,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {photoUri ? (
+                      <Image source={{ uri: photoUri }} style={{ width: 50, height: 50 }} resizeMode="cover" />
+                    ) : (
+                      <Text style={{ fontSize: 20, fontWeight: "700", color: badge.text }}>
+                        {c.display_name?.charAt(0)?.toUpperCase() || "U"}
+                      </Text>
+                    )}
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Text style={{ fontSize: 15, fontWeight: "700", color: theme.text }}>
+                        {c.display_name}
+                      </Text>
+                      <View
+                        style={{
+                          paddingHorizontal: 7,
+                          paddingVertical: 2,
+                          borderRadius: 5,
+                          backgroundColor: badge.bg,
+                          borderWidth: 1,
+                          borderColor: badge.border,
+                        }}
+                      >
+                        <Text style={{ fontSize: 10, fontWeight: "700", color: badge.text }}>
+                          {c.role?.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>
+                      ID: {c.identifier}
+                      {c.department ? ` • ${c.department}` : ""}
+                    </Text>
+
+                    {!!c.connected_at && (
+                      <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 2 }}>
+                        Connected {formatDisplayDate(c.connected_at)}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                <Pressable
+                  onPress={() => handleRemove(c.user_id, c.display_name)}
+                  style={{ padding: 8 }}
+                  accessibilityLabel="Remove connection"
+                >
+                  <MaterialCommunityIcons name="account-remove-outline" size={18} color={theme.muted} />
+                </Pressable>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+
+      {/* Detail Modal for Selected Connection */}
+      {selectedUser && (
+        <Modal
+          visible={!!selectedUser}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedUser(null)}
+        >
+          <Pressable style={styles.modalBackdropOverlay} onPress={() => setSelectedUser(null)}>
+            <Pressable
+              style={[
+                styles.modalSheetCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, alignItems: "center" },
+              ]}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={[styles.modalSheetHeader, { width: "100%" }]}>
+                <Text style={[styles.modalSheetTitle, { color: theme.text }]}>Connection Profile</Text>
+                <Pressable onPress={() => setSelectedUser(null)}>
+                  <MaterialCommunityIcons name="close" size={22} color={theme.text} />
+                </Pressable>
+              </View>
+
+              <View
+                style={{
+                  width: 90,
+                  height: 90,
+                  borderRadius: 45,
+                  borderWidth: 3,
+                  borderColor: theme.cyan,
+                  overflow: "hidden",
+                  backgroundColor: theme.bgElevated,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginVertical: 12,
+                }}
+              >
+                {selectedUser.profile_photo_url ? (
+                  <Image
+                    source={{
+                      uri: selectedUser.profile_photo_url.startsWith("http")
+                        ? selectedUser.profile_photo_url
+                        : `${http.defaults.baseURL || API}${selectedUser.profile_photo_url}?token=${user.token}`,
+                    }}
+                    style={{ width: 90, height: 90 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={{ fontSize: 36, fontWeight: "700", color: theme.cyan }}>
+                    {selectedUser.display_name?.charAt(0)?.toUpperCase() || "U"}
+                  </Text>
+                )}
+              </View>
+
+              <Text style={{ fontSize: 20, fontWeight: "700", color: theme.text, textAlign: "center" }}>
+                {selectedUser.display_name}
+              </Text>
+
+              {(() => {
+                const badge = getRoleBadgeColor(selectedUser.role);
+                return (
+                  <View
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 3,
+                      borderRadius: 6,
+                      backgroundColor: badge.bg,
+                      borderWidth: 1,
+                      borderColor: badge.border,
+                      marginTop: 6,
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: "700", color: badge.text }}>
+                      {selectedUser.role?.toUpperCase()}
+                    </Text>
+                  </View>
+                );
+              })()}
+
+              <View
+                style={{
+                  width: "100%",
+                  backgroundColor: theme.bgElevated,
+                  borderRadius: 10,
+                  padding: 14,
+                  marginTop: 16,
+                  gap: 8,
+                }}
+              >
+                <Text style={{ fontSize: 13, color: theme.textSecondary }}>
+                  Identifier: <Text style={{ color: theme.text, fontWeight: "600" }}>{selectedUser.identifier}</Text>
+                </Text>
+                {!!selectedUser.department && (
+                  <Text style={{ fontSize: 13, color: theme.textSecondary }}>
+                    Department / Scope: <Text style={{ color: theme.text, fontWeight: "600" }}>{selectedUser.department}</Text>
+                  </Text>
+                )}
+                {!!selectedUser.connected_at && (
+                  <Text style={{ fontSize: 13, color: theme.textSecondary }}>
+                    Connected Since: <Text style={{ color: theme.text, fontWeight: "600" }}>{formatDisplayDate(selectedUser.connected_at)}</Text>
+                  </Text>
+                )}
+              </View>
+
+              <Pressable
+                style={[
+                  styles.smallActionBtn,
+                  {
+                    marginTop: 18,
+                    borderColor: theme.rose,
+                    backgroundColor: theme.roseGlow,
+                    width: "100%",
+                    paddingVertical: 12,
+                  },
+                ]}
+                onPress={() => {
+                  const uid = selectedUser.user_id;
+                  const name = selectedUser.display_name;
+                  setSelectedUser(null);
+                  handleRemove(uid, name);
+                }}
+              >
+                <MaterialCommunityIcons name="account-remove-outline" size={16} color={theme.rose} />
+                <Text style={{ color: theme.rose, fontWeight: "700" }}>REMOVE CONNECTION</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      )}
+    </View>
   );
 }
 
@@ -1361,6 +4563,8 @@ function ScreenRenderer({
     case "Dashboard":
       if (role === "admin") return <AdminDashboard go={go} />;
       if (role === "teacher") return <TeacherDashboard go={go} />;
+      if (role === "others")
+        return <OthersDashboardView user={user} onLogout={onLogout} />;
       return <StudentDashboard go={go} />;
 
     case "Add Student":
@@ -1401,11 +4605,24 @@ function ScreenRenderer({
     case "Notifications":
       return <NotificationsView />;
 
+    case "QR":
+      return <QRScreen role={role} user={user} go={go} />;
+    case "Connections":
+      return <ConnectionsScreen role={role} user={user} go={go} />;
+
     case "Profile":
       if (role === "admin")
         return <AdminProfile user={user} onLogout={onLogout} />;
       if (role === "teacher")
         return <TeacherProfile user={user} onLogout={onLogout} />;
+      if (role === "others")
+        return (
+          <OthersDashboardView
+            user={user}
+            onLogout={onLogout}
+            isProfileTab
+          />
+        );
       return <StudentProfile user={user} onLogout={onLogout} />;
 
     default:
@@ -7148,6 +10365,65 @@ function StudentClassesView() {
 // ---------------------------------------------------------------------------
 // ATTENDANCE HISTORY
 // ---------------------------------------------------------------------------
+function StudentAvatar({
+  uri,
+  authHeader,
+  theme,
+}: {
+  uri?: string | null;
+  authHeader?: any;
+  theme: any;
+}) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [uri]);
+
+  if (!uri || hasError) {
+    return (
+      <View
+        style={{
+          width: 42,
+          height: 42,
+          borderRadius: 21,
+          marginRight: 10,
+          backgroundColor: theme.card,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <MaterialCommunityIcons name="account" size={20} color={theme.muted} />
+      </View>
+    );
+  }
+
+  const token =
+    typeof authHeader === "string"
+      ? authHeader.replace(/^Bearer\s+/i, "").trim()
+      : "";
+  const fullUri =
+    uri.includes("?") || !token ? uri : `${uri}?token=${encodeURIComponent(token)}`;
+
+  return (
+    <Image
+      source={{
+        uri: fullUri,
+        headers: typeof authHeader === "string" ? { Authorization: authHeader } : undefined,
+      }}
+      onError={() => setHasError(true)}
+      style={{
+        width: 42,
+        height: 42,
+        borderRadius: 21,
+        marginRight: 10,
+        backgroundColor: theme.card,
+      }}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 function AttendanceHistoryView({ role }: { role: Role }) {
   const { theme } = useAppTheme();
   const [records, setRecords] = useState<any[]>([]);
@@ -7163,14 +10439,119 @@ function AttendanceHistoryView({ role }: { role: Role }) {
   const [exportingSession, setExportingSession] = useState<any>(null);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
 
+  // Pagination and caching state
+  const [sessionPage, setSessionPage] = useState(1);
+  const [sessionTotalPages, setSessionTotalPages] = useState(1);
+  const [sessionTotalRecords, setSessionTotalRecords] = useState(0);
+  const [sessionHasNext, setSessionHasNext] = useState(false);
+  const [sessionHasPrev, setSessionHasPrev] = useState(false);
+  const [sessionPageBusy, setSessionPageBusy] = useState(false);
+  const [sessionPageError, setSessionPageError] = useState<string | null>(null);
+
+  const sessionCacheRef = useRef<Record<string, any>>({});
+  const sessionInFlightRef = useRef<Record<string, Promise<any>>>({});
+  const activeSessionIdRef = useRef<string | null>(null);
+  const PAGE_SIZE = 10;
+
+  const fetchSessionPageData = useCallback(async (sessionId: string, pageNum: number) => {
+    const cacheKey = `session:${sessionId}:page:${pageNum}`;
+    if (sessionCacheRef.current[cacheKey]) {
+      return sessionCacheRef.current[cacheKey];
+    }
+    if (sessionInFlightRef.current[cacheKey]) {
+      return sessionInFlightRef.current[cacheKey];
+    }
+
+    const promise = (async () => {
+      const res = await http.get(`/api/sessions/${sessionId}/attendance`, {
+        params: { page: pageNum, limit: PAGE_SIZE },
+      });
+      const data = res.data || {};
+      sessionCacheRef.current[cacheKey] = data;
+      delete sessionInFlightRef.current[cacheKey];
+      return data;
+    })().catch((err) => {
+      delete sessionInFlightRef.current[cacheKey];
+      throw err;
+    });
+
+    sessionInFlightRef.current[cacheKey] = promise;
+    return promise;
+  }, []);
+
+  const prefetchSessionPage = useCallback((sessionId: string, pageNum: number) => {
+    const cacheKey = `session:${sessionId}:page:${pageNum}`;
+    if (sessionCacheRef.current[cacheKey] || sessionInFlightRef.current[cacheKey]) {
+      return;
+    }
+    fetchSessionPageData(sessionId, pageNum).catch(() => {
+      // Ignore background prefetch errors
+    });
+  }, [fetchSessionPageData]);
+
+  const loadSessionPage = useCallback(async (sessionId: string, pageNum: number) => {
+    activeSessionIdRef.current = sessionId;
+    setSessionPageError(null);
+
+    const cacheKey = `session:${sessionId}:page:${pageNum}`;
+    const cached = sessionCacheRef.current[cacheKey];
+
+    if (cached) {
+      if (activeSessionIdRef.current === sessionId) {
+        setSessionStudents(cached.records || cached.items || []);
+        setSessionPage(cached.page || pageNum);
+        setSessionTotalPages(cached.total_pages || 1);
+        setSessionTotalRecords(cached.total_records ?? cached.total_items ?? 0);
+        setSessionHasNext(!!cached.has_next);
+        setSessionHasPrev(!!cached.has_previous);
+        setSessionPageBusy(false);
+
+        if (cached.has_next) {
+          prefetchSessionPage(sessionId, pageNum + 1);
+        }
+      }
+      return;
+    }
+
+    setSessionPageBusy(true);
+    try {
+      const data = await fetchSessionPageData(sessionId, pageNum);
+      if (activeSessionIdRef.current === sessionId) {
+        setSessionStudents(data.records || data.items || []);
+        setSessionPage(data.page || pageNum);
+        setSessionTotalPages(data.total_pages || 1);
+        setSessionTotalRecords(data.total_records ?? data.total_items ?? 0);
+        setSessionHasNext(!!data.has_next);
+        setSessionHasPrev(!!data.has_previous);
+
+        if (data.has_next) {
+          prefetchSessionPage(sessionId, pageNum + 1);
+        }
+      }
+    } catch (err: any) {
+      if (activeSessionIdRef.current === sessionId) {
+        setSessionPageError("Failed to load records. Tap to retry.");
+      }
+    } finally {
+      if (activeSessionIdRef.current === sessionId) {
+        setSessionPageBusy(false);
+      }
+    }
+  }, [fetchSessionPageData, prefetchSessionPage]);
+
   const openSession = async (session: any) => {
     setSelectedSession(session);
+    activeSessionIdRef.current = session.session_id;
+    setSessionStudents([]);
+    setSessionPage(1);
+    setSessionTotalPages(1);
+    setSessionTotalRecords(0);
+    setSessionHasNext(false);
+    setSessionHasPrev(false);
     setSessionBusy(true);
     try {
-      const response = await http.get(`/attendance/${session.session_id}`);
-      setSessionStudents(response.data?.students || []);
+      await loadSessionPage(session.session_id, 1);
     } catch {
-      setSessionStudents([]);
       Alert.alert("Unable to load session", "Please try again.");
     } finally {
       setSessionBusy(false);
@@ -7178,9 +10559,25 @@ function AttendanceHistoryView({ role }: { role: Role }) {
   };
 
   const updateAttendance = async (student: any, status: string) => {
+    if (!selectedSession) return;
     try {
       await http.patch(`/attendance/${selectedSession.session_id}/${student.student_id}`, { status });
-      setSessionStudents((items) => items.map((item) => item.student_id === student.student_id ? { ...item, status, is_manual_override: true } : item));
+      const prefix = `session:${selectedSession.session_id}:`;
+      Object.keys(sessionCacheRef.current).forEach((k) => {
+        if (k.startsWith(prefix)) {
+          delete sessionCacheRef.current[k];
+        }
+      });
+      setSessionStudents((items) =>
+        items.map((item) =>
+          item.student_id === student.student_id
+            ? { ...item, status, attendance_status: status, is_manual_override: true }
+            : item
+        )
+      );
+      if (sessionHasNext) {
+        prefetchSessionPage(selectedSession.session_id, sessionPage + 1);
+      }
     } catch (e: any) {
       Alert.alert("Update failed", apiErrorMessage(e, "Could not update attendance."));
     }
@@ -7386,7 +10783,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
         })
       )}
 
-      <Modal visible={!!selectedSession} animationType="slide" onRequestClose={() => setSelectedSession(null)}>
+      <Modal visible={!!selectedSession} animationType="slide" onRequestClose={() => { activeSessionIdRef.current = null; setSelectedSession(null); }}>
         <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
           <View style={[styles.modalSheetCard, { flex: 1, backgroundColor: theme.cardGlass, borderColor: theme.borderBright }]}> 
             <View style={styles.modalSheetHeader}>
@@ -7394,7 +10791,7 @@ function AttendanceHistoryView({ role }: { role: Role }) {
                 <Text style={[styles.modalSheetTitle, { color: theme.text }]}>{selectedSession?.title || selectedSession?.course}</Text>
                 <Text style={{ color: theme.muted }}>{selectedSession?.course} • {selectedSession?.event_date} • {selectedSession?.room || "Room not set"}</Text>
               </View>
-              <Pressable onPress={() => setSelectedSession(null)}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
+              <Pressable onPress={() => { activeSessionIdRef.current = null; setSelectedSession(null); }}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
             </View>
             {sessionBusy ? <ActivityIndicator color={theme.cyan} style={{ margin: 24 }} /> : (
               <ScrollView>
@@ -7427,23 +10824,135 @@ function AttendanceHistoryView({ role }: { role: Role }) {
                     </View>
                   </>
                 )}
-                {sessionStudents.map((student) => (
-                  <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
-                    {student.profile_photo_base64 ? (
-                      <Image source={{ uri: student.profile_photo_base64 }} style={{ width: 42, height: 42, borderRadius: 21, marginRight: 10, backgroundColor: theme.card }} />
-                    ) : (
-                      <View style={{ width: 42, height: 42, borderRadius: 21, marginRight: 10, backgroundColor: theme.card, alignItems: "center", justifyContent: "center" }}>
-                        <MaterialCommunityIcons name="account" size={20} color={theme.muted} />
+                {sessionPageBusy ? (
+                  <ActivityIndicator color={theme.cyan} style={{ margin: 24 }} />
+                ) : sessionPageError ? (
+                  <View style={{ padding: 24, alignItems: "center" }}>
+                    <MaterialCommunityIcons name="alert-circle-outline" size={36} color={theme.rose} />
+                    <Text style={{ color: theme.rose, marginTop: 8, marginBottom: 12, textAlign: "center" }}>{sessionPageError}</Text>
+                    <Pressable
+                      onPress={() => selectedSession && loadSessionPage(selectedSession.session_id, sessionPage)}
+                      style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, paddingHorizontal: 24 }]}
+                    >
+                      <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Retry</Text>
+                    </Pressable>
+                  </View>
+                ) : sessionStudents.length === 0 ? (
+                  <View style={{ padding: 28, alignItems: "center", justifyContent: "center" }}>
+                    <MaterialCommunityIcons name="account-group-outline" size={44} color={theme.muted} />
+                    <Text style={{ color: theme.text, fontSize: 16, fontWeight: "600", marginTop: 10 }}>No attendance records</Text>
+                    <Text style={{ color: theme.muted, fontSize: 13, textAlign: "center", marginTop: 4 }}>This session does not contain any student attendance records.</Text>
+                  </View>
+                ) : (
+                  <>
+                    {sessionStudents.map((student) => {
+                      const photoUri = student.profile_picture
+                        ? (student.profile_picture.startsWith("http") ? student.profile_picture : `${API}${student.profile_picture}`)
+                        : student.profile_photo_base64;
+                      const authHeader = http.defaults.headers.common.Authorization;
+
+                      return (
+                        <View key={student.student_id} style={[styles.rosterItemCard, { backgroundColor: theme.bgElevated, borderColor: theme.border, marginBottom: 8 }]}>
+                          <StudentAvatar uri={photoUri} authHeader={authHeader} theme={theme} />
+                          <Pressable style={{ flex: 1 }} onPress={() => setSelectedStudent(student)}>
+                            <Text style={[styles.rosterItemName, { color: theme.text }]}>{student.student_name || student.name}</Text>
+                            <Text style={[styles.rosterItemId, { color: theme.muted }]}>{student.student_id}</Text>
+                          </Pressable>
+                          <Pressable onPress={() => updateAttendance(student, "PRESENT")} style={{ padding: 8 }}>
+                            <HoloStatusPill label="Present" tone={(student.attendance_status || student.status) === "PRESENT" ? "success" : "neutral"} />
+                          </Pressable>
+                          <Pressable onPress={() => updateAttendance(student, "ABSENT")} style={{ padding: 8 }}>
+                            <HoloStatusPill label="Absent" tone={(student.attendance_status || student.status) === "ABSENT" ? "danger" : "neutral"} />
+                          </Pressable>
+                        </View>
+                      );
+                    })}
+
+                    {sessionTotalPages > 1 && (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          paddingVertical: 14,
+                          paddingHorizontal: 4,
+                          marginTop: 8,
+                          borderTopWidth: 1,
+                          borderTopColor: theme.border,
+                        }}
+                      >
+                        <Pressable
+                          disabled={!sessionHasPrev || sessionPageBusy}
+                          onPress={() => selectedSession && loadSessionPage(selectedSession.session_id, sessionPage - 1)}
+                          style={[
+                            styles.modalDismissBtn,
+                            {
+                              flex: 1,
+                              marginRight: 8,
+                              backgroundColor: sessionHasPrev ? theme.cyan : theme.card,
+                              opacity: sessionHasPrev && !sessionPageBusy ? 1 : 0.4,
+                            },
+                          ]}
+                        >
+                          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                            <MaterialCommunityIcons
+                              name="chevron-left"
+                              size={18}
+                              color={sessionHasPrev ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted}
+                            />
+                            <Text
+                              style={[
+                                styles.modalDismissBtnText,
+                                { color: sessionHasPrev ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted },
+                              ]}
+                            >
+                              Previous
+                            </Text>
+                          </View>
+                        </Pressable>
+
+                        <View style={{ paddingHorizontal: 12, alignItems: "center" }}>
+                          <Text style={{ color: theme.text, fontWeight: "600", fontSize: 13 }}>
+                            Page {sessionPage} of {sessionTotalPages}
+                          </Text>
+                          <Text style={{ color: theme.muted, fontSize: 11 }}>
+                            {sessionTotalRecords} total records
+                          </Text>
+                        </View>
+
+                        <Pressable
+                          disabled={!sessionHasNext || sessionPageBusy}
+                          onPress={() => selectedSession && loadSessionPage(selectedSession.session_id, sessionPage + 1)}
+                          style={[
+                            styles.modalDismissBtn,
+                            {
+                              flex: 1,
+                              marginLeft: 8,
+                              backgroundColor: sessionHasNext ? theme.cyan : theme.card,
+                              opacity: sessionHasNext && !sessionPageBusy ? 1 : 0.4,
+                            },
+                          ]}
+                        >
+                          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                            <Text
+                              style={[
+                                styles.modalDismissBtnText,
+                                { color: sessionHasNext ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted },
+                              ]}
+                            >
+                              Next
+                            </Text>
+                            <MaterialCommunityIcons
+                              name="chevron-right"
+                              size={18}
+                              color={sessionHasNext ? (theme.mode === "dark" ? "#080C14" : "#FFFFFF") : theme.muted}
+                            />
+                          </View>
+                        </Pressable>
                       </View>
                     )}
-                    <Pressable style={{ flex: 1 }} onPress={() => setSelectedStudent(student)}>
-                      <Text style={[styles.rosterItemName, { color: theme.text }]}>{student.name}</Text>
-                      <Text style={[styles.rosterItemId, { color: theme.muted }]}>{student.student_id}</Text>
-                    </Pressable>
-                    <Pressable onPress={() => updateAttendance(student, "PRESENT")} style={{ padding: 8 }}><HoloStatusPill label="Present" tone={student.status === "PRESENT" ? "success" : "neutral"} /></Pressable>
-                    <Pressable onPress={() => updateAttendance(student, "ABSENT")} style={{ padding: 8 }}><HoloStatusPill label="Absent" tone={student.status === "ABSENT" ? "danger" : "neutral"} /></Pressable>
-                  </View>
-                ))}
+                  </>
+                )}
               </ScrollView>
             )}
           </View>
@@ -10529,6 +14038,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
   },
+  registerRowWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+  },
+  registerPromptText: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  registerLinkText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
   loginFootnote: {
     marginTop: 20,
     fontSize: 12,
@@ -12844,5 +16367,58 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     marginBottom: 16,
+  },
+  topMenuDropdownCard: {
+    position: "absolute",
+    top: 65,
+    right: 18,
+    width: 220,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  topMenuHeader: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  topMenuTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  menuDivider: {
+    height: 1,
+    marginVertical: 6,
+  },
+  topMenuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  topMenuItemText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  sectionHeadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  sectionTitleText: {
+    fontSize: 20,
+    fontWeight: "700",
+    letterSpacing: -0.3,
+  },
+  sectionSubtitleText: {
+    fontSize: 12,
+    marginTop: 2,
   },
 });
