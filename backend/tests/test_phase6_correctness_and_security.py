@@ -117,12 +117,26 @@ class TestPhase6CorrectnessAndSecurity(unittest.TestCase):
         finally:
             conn.close()
 
+        cache_delete_pattern("*SESS-P6-*")
+        cache_delete_pattern("*STU-P6-*")
+
         # Generate tokens
         cls.admin_token, _ = create_user_session({"id": 9901, "username": "test_admin_p6", "role": "admin", "student_id": None})
         cls.faculty_a_token, _ = create_user_session({"id": 9902, "username": "test_faculty_a", "role": "teacher", "student_id": None})
         cls.faculty_b_token, _ = create_user_session({"id": 9903, "username": "test_faculty_b", "role": "teacher", "student_id": None})
         cls.student_a_token, cls.student_a_sid = create_user_session({"id": 9904, "username": "student_a", "role": "student", "student_id": "STU-P6-A"})
         cls.student_b_token, cls.student_b_sid = create_user_session({"id": 9905, "username": "student_b", "role": "student", "student_id": "STU-P6-B"})
+
+    def setUp(self):
+        cache_delete_pattern("*SESS-P6-*")
+        cache_delete_pattern("*STU-P6-*")
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE attendance_logs SET final_attendance_status='ABSENT', is_manual_override=FALSE WHERE student_id='STU-P6-B' AND session_id='SESS-P6-A'")
+            conn.commit()
+        finally:
+            conn.close()
 
     def test_scenario_1_student_cache_and_data_isolation(self):
         """Scenario 1: Student A and Student B request attendance history. Neither receives other's data."""

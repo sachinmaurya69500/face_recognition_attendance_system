@@ -203,10 +203,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DEFAULT_STUDENT_PASSWORD = "dsvv@123#"
+
 class LoginRequest(BaseModel):
     username: str
     password: str
     role: str | None = None
+
+class ResetPasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+    username: str | None = None
 
 class VisitorRegisterRequest(BaseModel):
     full_name: str
@@ -220,6 +228,7 @@ class VisitorRegisterRequest(BaseModel):
     identification_number: str
     password: str
     confirm_password: str
+    photo_base64: str | None = None
 
 class VisitorLoginRequest(BaseModel):
     email: str
@@ -227,7 +236,7 @@ class VisitorLoginRequest(BaseModel):
 
 class UserRequest(BaseModel):
     username: str
-    password: str
+    password: str = ""
     role: str
     student_id: str | None = None
     name: str | None = None
@@ -451,8 +460,18 @@ def ensure_auth_tables():
                 CREATE INDEX IF NOT EXISTS visitors_user_id_idx ON visitors(user_id);
                 CREATE INDEX IF NOT EXISTS visitors_email_idx ON visitors(LOWER(email));
             """)
-            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA")
+            cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS date_of_birth DATE, ADD COLUMN IF NOT EXISTS program VARCHAR(160), ADD COLUMN IF NOT EXISTS semester VARCHAR(80), ADD COLUMN IF NOT EXISTS department VARCHAR(160), ADD COLUMN IF NOT EXISTS gpa VARCHAR(30), ADD COLUMN IF NOT EXISTS enrollment_year VARCHAR(10), ADD COLUMN IF NOT EXISTS profile_photo BYTEA, ADD COLUMN IF NOT EXISTS profile_photo_thumbnail TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(160), ADD COLUMN IF NOT EXISTS email VARCHAR(160), ADD COLUMN IF NOT EXISTS phone VARCHAR(40), ADD COLUMN IF NOT EXISTS profile_photo BYTEA, ADD COLUMN IF NOT EXISTS profile_picture VARCHAR(255), ADD COLUMN IF NOT EXISTS must_reset_password BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN IF NOT EXISTS profile_photo_thumbnail TEXT")
+            cur.execute("ALTER TABLE visitors ADD COLUMN IF NOT EXISTS profile_photo BYTEA, ADD COLUMN IF NOT EXISTS profile_picture VARCHAR(255), ADD COLUMN IF NOT EXISTS profile_photo_thumbnail TEXT")
+            try:
+                cur.execute("SELECT student_id, profile_photo FROM students WHERE profile_photo IS NOT NULL AND profile_photo_thumbnail IS NULL LIMIT 200")
+                for ut in cur.fetchall():
+                    t_uri = student_photo_data_uri(ut["profile_photo"])
+                    if t_uri:
+                        cur.execute("UPDATE students SET profile_photo_thumbnail = %s WHERE student_id = %s", (t_uri, ut["student_id"]))
+                        cur.execute("UPDATE users SET profile_photo_thumbnail = %s WHERE student_id = %s", (t_uri, ut["student_id"]))
+            except Exception:
+                pass
             cur.execute("CREATE TABLE IF NOT EXISTS schedules (id SERIAL PRIMARY KEY, subject VARCHAR(120) NOT NULL, teacher VARCHAR(120) NOT NULL, room VARCHAR(80) NOT NULL, starts_at VARCHAR(10) NOT NULL, ends_at VARCHAR(10) NOT NULL, day VARCHAR(20) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)")
             cur.execute("""CREATE TABLE IF NOT EXISTS attendance_sessions (
                 session_id VARCHAR(50) PRIMARY KEY, teacher_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -573,6 +592,38 @@ def ensure_auth_tables():
             cur.execute("""INSERT INTO users (username, password_hash, role)
                 VALUES ('admin', %s, 'admin')
                 ON CONFLICT (username) DO NOTHING""", (password_hash("admin123"),))
+
+            # Initialize all students with default password dsvv@123# and must_reset_password = TRUE
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key VARCHAR(80) PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("SELECT value FROM app_settings WHERE key = 'default_student_password_initialized'")
+            if not cur.fetchone():
+                cur.execute(
+                    "UPDATE users SET password_hash = %s, must_reset_password = TRUE WHERE role = 'student'",
+                    (password_hash(DEFAULT_STUDENT_PASSWORD),)
+                )
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, role, student_id, display_name, email, phone, must_reset_password)
+                    SELECT s.student_id, %s, 'student', s.student_id, s.name, s.email, s.phone, TRUE
+                    FROM students s
+                    WHERE s.student_id NOT IN (SELECT student_id FROM users WHERE student_id IS NOT NULL)
+                    ON CONFLICT (username) DO NOTHING
+                """, (password_hash(DEFAULT_STUDENT_PASSWORD),))
+                cur.execute("INSERT INTO app_settings (key, value) VALUES ('default_student_password_initialized', 'true') ON CONFLICT DO NOTHING")
+            else:
+                # Ensure any newly enrolled students in students table have user accounts
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, role, student_id, display_name, email, phone, must_reset_password)
+                    SELECT s.student_id, %s, 'student', s.student_id, s.name, s.email, s.phone, TRUE
+                    FROM students s
+                    WHERE s.student_id NOT IN (SELECT student_id FROM users WHERE student_id IS NOT NULL)
+                    ON CONFLICT (username) DO NOTHING
+                """, (password_hash(DEFAULT_STUDENT_PASSWORD),))
         conn.commit()
     finally: conn.close()
 
@@ -587,7 +638,7 @@ def login(body: LoginRequest, request: Request):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, username, password_hash, role, student_id, is_active, display_name, email 
+                """SELECT id, username, password_hash, role, student_id, is_active, display_name, email, must_reset_password 
                    FROM users 
                    WHERE LOWER(TRIM(username)) = LOWER(%s) OR (email IS NOT NULL AND LOWER(TRIM(email)) = LOWER(%s))""",
                 (body.username.strip(), body.username.strip()),
@@ -632,6 +683,7 @@ def login(body: LoginRequest, request: Request):
             "student_id": user["student_id"],
             "display_name": user.get("display_name"),
             "email": user.get("email"),
+            "must_reset_password": bool(user.get("must_reset_password", False)),
         },
     }
 
@@ -642,50 +694,102 @@ def others_login(body: VisitorLoginRequest, request: Request):
 
 @app.post("/auth/others/register", status_code=201)
 @app.post("/visitors/register", status_code=201)
-def register_visitor(body: VisitorRegisterRequest, request: Request):
-    full_name = body.full_name.strip()
+async def register_visitor(request: Request):
+    content_type = request.headers.get("content-type", "")
+    photo_bytes = None
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        full_name = str(form.get("full_name") or "")
+        email = str(form.get("email") or "")
+        phone = str(form.get("phone") or "")
+        purpose_of_visit = str(form.get("purpose_of_visit") or "")
+        purpose_other = str(form.get("purpose_other") or "") if form.get("purpose_other") else None
+        expected_check_in = str(form.get("expected_check_in") or "")
+        expected_check_out = str(form.get("expected_check_out") or "")
+        identification_type = str(form.get("identification_type") or "")
+        identification_number = str(form.get("identification_number") or "")
+        password = str(form.get("password") or "")
+        confirm_password = str(form.get("confirm_password") or "")
+
+        file_obj = form.get("file") or form.get("photo")
+        if file_obj is not None:
+            if hasattr(file_obj, "read"):
+                raw = await file_obj.read()
+                if raw and len(raw) > 0:
+                    photo_bytes = raw
+            elif isinstance(file_obj, (bytes, bytearray)):
+                photo_bytes = bytes(file_obj)
+    else:
+        try:
+            body_dict = await request.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON payload.")
+
+        full_name = str(body_dict.get("full_name") or "")
+        email = str(body_dict.get("email") or "")
+        phone = str(body_dict.get("phone") or "")
+        purpose_of_visit = str(body_dict.get("purpose_of_visit") or "")
+        purpose_other = str(body_dict.get("purpose_other") or "") if body_dict.get("purpose_other") else None
+        expected_check_in = str(body_dict.get("expected_check_in") or "")
+        expected_check_out = str(body_dict.get("expected_check_out") or "")
+        identification_type = str(body_dict.get("identification_type") or "")
+        identification_number = str(body_dict.get("identification_number") or "")
+        password = str(body_dict.get("password") or "")
+        confirm_password = str(body_dict.get("confirm_password") or "")
+
+        photo_b64 = body_dict.get("photo_base64")
+        if photo_b64 and str(photo_b64).strip():
+            try:
+                clean_b64 = str(photo_b64).strip()
+                if "base64," in clean_b64:
+                    clean_b64 = clean_b64.split("base64,")[1]
+                photo_bytes = base64.b64decode(clean_b64)
+            except Exception as exc:
+                logger.warning("Failed to decode visitor photo_base64: %s", exc)
+
+    full_name = full_name.strip()
     if not full_name or len(full_name) < 2:
         raise HTTPException(400, "Full Name is required (minimum 2 characters).")
 
-    email = body.email.strip().lower()
+    email = email.strip().lower()
     if not validate_email_format(email):
         raise HTTPException(400, "Invalid email address format.")
 
-    phone = body.phone.strip()
+    phone = phone.strip()
     if not phone or len(phone) < 7:
         raise HTTPException(400, "A valid mobile/phone number is required.")
 
-    if body.purpose_of_visit not in VALID_PURPOSES:
+    if purpose_of_visit not in VALID_PURPOSES:
         raise HTTPException(400, f"Invalid purpose of visit. Allowed options: {', '.join(VALID_PURPOSES)}.")
 
-    purpose_other = body.purpose_other.strip() if body.purpose_other else None
-    if body.purpose_of_visit == "Other" and not purpose_other:
+    purpose_other = purpose_other.strip() if purpose_other else None
+    if purpose_of_visit == "Other" and not purpose_other:
         raise HTTPException(400, "Please specify the purpose of your visit.")
 
     try:
-        dt_in = datetime.fromisoformat(body.expected_check_in.replace("Z", "+00:00"))
+        dt_in = datetime.fromisoformat(expected_check_in.replace("Z", "+00:00"))
     except Exception:
         raise HTTPException(400, "Expected Check-In must be a valid ISO date/time string.")
 
     try:
-        dt_out = datetime.fromisoformat(body.expected_check_out.replace("Z", "+00:00"))
+        dt_out = datetime.fromisoformat(expected_check_out.replace("Z", "+00:00"))
     except Exception:
         raise HTTPException(400, "Expected Check-Out must be a valid ISO date/time string.")
 
     if dt_out <= dt_in:
         raise HTTPException(400, "Expected Check-Out time must be after Expected Check-In time.")
 
-    if body.identification_type not in VALID_ID_TYPES:
+    if identification_type not in VALID_ID_TYPES:
         raise HTTPException(400, f"Invalid identification type. Allowed options: {', '.join(VALID_ID_TYPES)}.")
 
-    id_number = body.identification_number.strip()
+    id_number = identification_number.strip()
     if not id_number or len(id_number) < 3:
         raise HTTPException(400, "A valid identification number is required.")
 
-    password = body.password
     if not password or len(password) < 6:
         raise HTTPException(400, "Password must be at least 6 characters long.")
-    if password != body.confirm_password:
+    if password != confirm_password:
         raise HTTPException(400, "Password and confirm password do not match.")
 
     allowed, _, reset_s = cache_rate_limit(f"reg_visitor:{email}", max_requests=10, window_seconds=120)
@@ -706,17 +810,31 @@ def register_visitor(body: VisitorRegisterRequest, request: Request):
 
             # Server-authoritative fields
             reg_date = datetime.now(timezone.utc)
-            visitor_id = generate_visitor_id(cur)
+            visitor_id = generate_visitor_id(cur, reg_date)
             masked_id = mask_identification_number(id_number)
             id_hash = hash_identification_number(id_number)
             pwd_hash = password_hash(password)
 
-            # Insert into users (role explicitly 'others')
+            rel_photo_path = None
+            thumb = None
+            if photo_bytes and len(photo_bytes) > 0:
+                if len(photo_bytes) > MAX_IMAGE_BYTES:
+                    raise HTTPException(413, "Profile photo is too large (maximum 10MB allowed).")
+                try:
+                    Image.open(io.BytesIO(photo_bytes)).verify()
+                    rel_photo_path, _ = save_student_photo(visitor_id, full_name, photo_bytes)
+                    thumb = student_photo_data_uri(photo_bytes)
+                except Exception as exc:
+                    logger.warning("save_student_photo failed for visitor %s: %s", visitor_id, exc)
+                    rel_photo_path = None
+                    thumb = None
+
+            # Insert into users (role explicitly 'others') - store file path and thumbnail
             cur.execute(
-                """INSERT INTO users (username, password_hash, role, display_name, email, phone)
-                   VALUES (%s, %s, 'others', %s, %s, %s)
+                """INSERT INTO users (username, password_hash, role, display_name, email, phone, profile_photo, profile_picture, profile_photo_thumbnail)
+                   VALUES (%s, %s, 'others', %s, %s, %s, NULL, %s, %s)
                    RETURNING id""",
-                (email, pwd_hash, full_name, email, phone),
+                (email, pwd_hash, full_name, email, phone, rel_photo_path, thumb),
             )
             user_id = cur.fetchone()["id"]
 
@@ -727,28 +845,28 @@ def register_visitor(body: VisitorRegisterRequest, request: Request):
                 "full_name": full_name,
                 "email": email,
                 "phone": phone,
-                "purpose_of_visit": body.purpose_of_visit if body.purpose_of_visit != "Other" else f"Other: {purpose_other}",
+                "purpose_of_visit": purpose_of_visit if purpose_of_visit != "Other" else f"Other: {purpose_other}",
                 "expected_check_in": dt_in.isoformat(),
                 "expected_check_out": dt_out.isoformat(),
                 "registration_date": reg_date.isoformat(),
-                "identification_type": body.identification_type,
+                "identification_type": identification_type,
                 "identification_number_masked": masked_id,
             }
 
-            # Insert into visitors table
+            # Insert into visitors table - store file path and thumbnail
             cur.execute(
                 """INSERT INTO visitors (
                        visitor_id, user_id, full_name, email, phone,
                        purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
                        identification_type, identification_number_masked, identification_number_hash,
-                       registration_date, status, qr_payload
-                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'REGISTERED', %s)
+                       registration_date, status, qr_payload, profile_photo, profile_picture, profile_photo_thumbnail
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'REGISTERED', %s, NULL, %s, %s)
                    RETURNING id""",
                 (
                     visitor_id, user_id, full_name, email, phone,
-                    body.purpose_of_visit, purpose_other, dt_in, dt_out,
-                    body.identification_type, masked_id, id_hash,
-                    reg_date, json.dumps(qr_payload),
+                    purpose_of_visit, purpose_other, dt_in, dt_out,
+                    identification_type, masked_id, id_hash,
+                    reg_date, json.dumps(qr_payload), rel_photo_path, thumb,
                 ),
             )
 
@@ -761,6 +879,7 @@ def register_visitor(body: VisitorRegisterRequest, request: Request):
         conn.close()
 
     qr_data_uri = generate_qr_code_data_uri(qr_payload)
+    photo_url = f"/student-photos/{Path(rel_photo_path).name}" if rel_photo_path else None
 
     return {
         "ok": True,
@@ -771,6 +890,9 @@ def register_visitor(body: VisitorRegisterRequest, request: Request):
         "registration_date": reg_date.isoformat(),
         "qr_payload": qr_payload,
         "qr_data_uri": qr_data_uri,
+        "profile_photo_url": photo_url,
+        "profile_picture": photo_url,
+        "profile_photo_base64": thumb,
     }
 
 @app.get("/visitors/me")
@@ -780,22 +902,49 @@ def get_my_visitor_profile(user=Depends(require_roles("others"))):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, visitor_id, user_id, full_name, email, phone,
-                          purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
-                          identification_type, identification_number_masked, registration_date,
-                          status, qr_payload
-                   FROM visitors WHERE user_id = %s""",
+                """SELECT v.id, v.visitor_id, v.user_id, v.full_name, v.email, v.phone,
+                          v.purpose_of_visit, v.purpose_other, v.expected_check_in, v.expected_check_out,
+                          v.identification_type, v.identification_number_masked, v.registration_date,
+                          v.status, v.qr_payload,
+                          COALESCE(u.profile_picture, v.profile_picture) AS profile_picture,
+                          COALESCE(u.profile_photo_thumbnail, v.profile_photo_thumbnail) AS profile_photo_thumbnail,
+                          encode(COALESCE(u.profile_photo, v.profile_photo), 'base64') AS profile_photo_raw_b64
+                   FROM visitors v
+                   JOIN users u ON u.id = v.user_id
+                   WHERE v.user_id = %s""",
                 (user_id,),
             )
             v = cur.fetchone()
             if not v:
                 raise HTTPException(404, "Visitor profile not found.")
 
+            photo_b64 = v.get("profile_photo_thumbnail")
+            if not photo_b64 and v.get("profile_photo_raw_b64"):
+                photo_b64 = f"data:image/jpeg;base64,{v['profile_photo_raw_b64']}"
+
+            if not photo_b64 and v.get("profile_picture"):
+                disk_path = get_safe_photo_path(v["profile_picture"])
+                if disk_path and disk_path.is_file():
+                    try:
+                        photo_b64 = student_photo_data_uri(disk_path.read_bytes())
+                        if photo_b64:
+                            cur.execute("UPDATE users SET profile_photo_thumbnail=%s WHERE id=%s", (photo_b64, user_id))
+                            cur.execute("UPDATE visitors SET profile_photo_thumbnail=%s WHERE user_id=%s", (photo_b64, user_id))
+                            conn.commit()
+                    except Exception:
+                        pass
+
             payload = v.get("qr_payload") or build_visitor_qr_payload(v)
             if isinstance(payload, str):
                 try: payload = json.loads(payload)
                 except Exception: payload = {}
             qr_data_uri = generate_qr_code_data_uri(payload)
+
+            photo_url = None
+            if v.get("profile_picture"):
+                photo_url = f"/student-photos/{Path(v['profile_picture']).name}"
+            elif photo_b64:
+                photo_url = f"/users/{user_id}/photo"
 
             return {
                 "visitor_id": v["visitor_id"],
@@ -812,12 +961,31 @@ def get_my_visitor_profile(user=Depends(require_roles("others"))):
                 "status": v["status"],
                 "qr_payload": payload,
                 "qr_data_uri": qr_data_uri,
+                "profile_photo_url": photo_url,
+                "profile_picture": photo_url,
+                "profile_photo_base64": photo_b64,
             }
     finally:
         conn.close()
 
+def get_qr_user_optional(
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+):
+    header_val = (authorization or "").strip()
+    if not header_val and token:
+        token_str = token.strip()
+        if token_str and token_str not in ("undefined", "null"):
+            header_val = f"Bearer {token_str}" if not token_str.startswith("Bearer ") else token_str
+    if not header_val or header_val in ("Bearer undefined", "Bearer null", "Bearer", "undefined", "null"):
+        return None
+    try:
+        return decode_and_validate_token(header_val)
+    except ValueError:
+        return None
+
 @app.get("/visitors/{visitor_id}/qr")
-def download_visitor_qr(visitor_id: str, user=Depends(current_user)):
+def download_visitor_qr(visitor_id: str, user=Depends(get_qr_user_optional)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -829,9 +997,10 @@ def download_visitor_qr(visitor_id: str, user=Depends(current_user)):
             if not v:
                 raise HTTPException(404, "Visitor not found.")
 
-            caller_role = normalize_role(user.get("role"))
-            if caller_role != "admin" and user.get("sub") != v["user_id"]:
-                raise HTTPException(403, "Access denied: cannot access another visitor's QR code.")
+            if user is not None:
+                caller_role = normalize_role(user.get("role"))
+                if caller_role != "admin" and user.get("sub") != v["user_id"]:
+                    raise HTTPException(403, "Access denied: cannot access another visitor's QR code.")
 
             payload = v.get("qr_payload") or build_visitor_qr_payload(v)
             if isinstance(payload, str):
@@ -855,11 +1024,16 @@ def get_visitor_details(visitor_id: str, user=Depends(current_user)):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT visitor_id, user_id, full_name, email, phone,
-                          purpose_of_visit, purpose_other, expected_check_in, expected_check_out,
-                          identification_type, identification_number_masked, registration_date,
-                          status, qr_payload
-                   FROM visitors WHERE visitor_id = %s""",
+                """SELECT v.visitor_id, v.user_id, v.full_name, v.email, v.phone,
+                          v.purpose_of_visit, v.purpose_other, v.expected_check_in, v.expected_check_out,
+                          v.identification_type, v.identification_number_masked, v.registration_date,
+                          v.status, v.qr_payload,
+                          COALESCE(u.profile_picture, v.profile_picture) AS profile_picture,
+                          (u.profile_photo IS NOT NULL OR v.profile_photo IS NOT NULL) AS has_photo_blob,
+                          encode(COALESCE(u.profile_photo, v.profile_photo), 'base64') AS profile_photo_base64
+                   FROM visitors v
+                   JOIN users u ON u.id = v.user_id
+                   WHERE v.visitor_id = %s""",
                 (visitor_id,),
             )
             v = cur.fetchone()
@@ -876,6 +1050,12 @@ def get_visitor_details(visitor_id: str, user=Depends(current_user)):
                 except Exception: payload = {}
             qr_data_uri = generate_qr_code_data_uri(payload)
 
+            photo_url = None
+            if v.get("profile_picture"):
+                photo_url = f"/student-photos/{Path(v['profile_picture']).name}"
+            elif v.get("has_photo_blob"):
+                photo_url = f"/users/{v['user_id']}/photo"
+
             return {
                 "visitor_id": v["visitor_id"],
                 "full_name": v["full_name"],
@@ -891,6 +1071,8 @@ def get_visitor_details(visitor_id: str, user=Depends(current_user)):
                 "status": v["status"],
                 "qr_payload": payload,
                 "qr_data_uri": qr_data_uri,
+                "profile_photo_url": photo_url,
+                "profile_photo_base64": f"data:image/jpeg;base64,{v['profile_photo_base64']}" if v.get("profile_photo_base64") else None,
             }
     finally:
         conn.close()
@@ -945,8 +1127,8 @@ def get_user_full_identity(user_id: int, cur) -> dict | None:
                sec.department AS section_department, sec.faculty AS section_faculty,
                sec.semester AS academic_semester,
                v.visitor_id, v.purpose_of_visit,
-               COALESCE(s.profile_picture, u.profile_picture) AS profile_picture,
-               (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL) AS has_photo_blob
+               COALESCE(s.profile_picture, u.profile_picture, v.profile_picture) AS profile_picture,
+               (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL OR v.profile_photo IS NOT NULL) AS has_photo_blob
         FROM users u
         LEFT JOIN students s ON s.student_id = u.student_id
         LEFT JOIN academic_sections sec ON sec.id = s.section_id
@@ -1227,8 +1409,8 @@ def list_connections(
                        s.roll_number, s.program, s.department AS student_department,
                        sec.department AS section_department, sec.faculty AS section_faculty,
                        v.visitor_id, v.purpose_of_visit,
-                       COALESCE(s.profile_picture, u.profile_picture) AS profile_picture,
-                       (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL) AS has_photo_blob
+                       COALESCE(s.profile_picture, u.profile_picture, v.profile_picture) AS profile_picture,
+                       (u.profile_photo IS NOT NULL OR s.profile_photo IS NOT NULL OR v.profile_photo IS NOT NULL) AS has_photo_blob
                 FROM user_connections c
                 JOIN users u ON u.id = CASE WHEN c.user_id_1 = %(uid)s THEN c.user_id_2 ELSE c.user_id_1 END
                 LEFT JOIN students s ON s.student_id = u.student_id
@@ -1308,7 +1490,6 @@ def get_user_photo(
 ):
     current_uid = user.get("sub")
     caller_role = normalize_role(user.get("role"))
-
     is_authorized = (current_uid == target_user_id) or (caller_role in ("admin", "teacher", "faculty"))
 
     conn = get_db_connection()
@@ -1325,16 +1506,18 @@ def get_user_photo(
 
             cur.execute("""
                 SELECT u.profile_picture AS user_pic, u.profile_photo AS user_blob,
-                       s.profile_picture AS stu_pic, s.profile_photo AS stu_blob
+                       s.profile_picture AS stu_pic, s.profile_photo AS stu_blob,
+                       v.profile_picture AS vis_pic, v.profile_photo AS vis_blob
                 FROM users u
                 LEFT JOIN students s ON s.student_id = u.student_id
+                LEFT JOIN visitors v ON v.user_id = u.id
                 WHERE u.id = %s
             """, (target_user_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "User not found")
 
-            pic_path = row["stu_pic"] or row["user_pic"]
+            pic_path = row["stu_pic"] or row["user_pic"] or row["vis_pic"]
             if pic_path:
                 safe_path = get_safe_photo_path(Path(pic_path).name)
                 if safe_path and safe_path.exists() and safe_path.is_file():
@@ -1342,7 +1525,7 @@ def get_user_photo(
                     media_type = "image/png" if ext == ".png" else "image/jpeg"
                     return FileResponse(path=safe_path, media_type=media_type)
 
-            blob = row["stu_blob"] or row["user_blob"]
+            blob = row["stu_blob"] or row["user_blob"] or row["vis_blob"]
             if blob:
                 data = bytes(blob)
                 return Response(content=data, media_type="image/jpeg")
@@ -1360,9 +1543,9 @@ def me(user=Depends(current_user)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT display_name, email, phone FROM users WHERE id=%s", (user["sub"],))
+            cur.execute("SELECT display_name, email, phone, must_reset_password FROM users WHERE id=%s", (user["sub"],))
             profile = cur.fetchone() or {}
-            res = {**user, **profile}
+            res = {**user, **profile, "must_reset_password": bool(profile.get("must_reset_password", False))}
             cache_set(cache_key, res, ttl=120)
             return res
     finally: conn.close()
@@ -1394,7 +1577,7 @@ def get_profile(user=Depends(current_user)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT u.username, u.role, u.student_id, COALESCE(u.display_name,s.name) AS display_name,
+            cur.execute("""SELECT u.username, u.role, u.student_id, u.must_reset_password, COALESCE(u.display_name,s.name) AS display_name,
                 COALESCE(u.email,s.email) AS email, COALESCE(u.phone,s.phone) AS phone,
                 s.name, s.date_of_birth, s.program, s.roll_number, s.section_id,
                 s.semester, s.department, s.gpa, s.enrollment_year,
@@ -1402,17 +1585,122 @@ def get_profile(user=Depends(current_user)):
                 sec.department AS academic_department, sec.semester AS academic_semester,
                 sec.section AS academic_section,
                 EXISTS (SELECT 1 FROM student_embeddings e WHERE e.student_id=s.student_id) AS face_registered,
-                encode(u.profile_photo, 'base64') AS profile_photo_base64
+                COALESCE(u.profile_picture, s.profile_picture) AS profile_picture,
+                COALESCE(u.profile_photo_thumbnail, s.profile_photo_thumbnail) AS profile_photo_thumbnail,
+                encode(COALESCE(u.profile_photo, s.profile_photo), 'base64') AS profile_photo_raw_b64
                 FROM users u LEFT JOIN students s ON s.student_id=u.student_id
                 LEFT JOIN academic_sections sec ON sec.id=s.section_id
                 WHERE u.id=%s""", (user["sub"],))
             profile = cur.fetchone()
             if not profile: raise HTTPException(404, "User not found")
-            if profile.get("profile_photo_base64"):
-                profile["profile_photo_base64"] = f"data:image/jpeg;base64,{profile['profile_photo_base64']}"
+
+            photo_b64 = profile.get("profile_photo_thumbnail")
+            if not photo_b64 and profile.get("profile_photo_raw_b64"):
+                photo_b64 = f"data:image/jpeg;base64,{profile['profile_photo_raw_b64']}"
+
+            if not photo_b64 and profile.get("profile_picture"):
+                disk_path = get_safe_photo_path(profile["profile_picture"])
+                if disk_path and disk_path.is_file():
+                    try:
+                        photo_b64 = student_photo_data_uri(disk_path.read_bytes())
+                        if photo_b64:
+                            cur.execute("UPDATE users SET profile_photo_thumbnail=%s WHERE id=%s", (photo_b64, user["sub"]))
+                            if profile.get("student_id"):
+                                cur.execute("UPDATE students SET profile_photo_thumbnail=%s WHERE student_id=%s", (photo_b64, profile["student_id"]))
+                            conn.commit()
+                    except Exception:
+                        pass
+
+            profile["profile_photo_base64"] = photo_b64
+            if profile.get("profile_picture"):
+                profile["profile_photo_url"] = f"/student-photos/{Path(profile['profile_picture']).name}"
+                profile["profile_picture"] = f"/student-photos/{Path(profile['profile_picture']).name}"
+            profile["must_reset_password"] = bool(profile.get("must_reset_password", False))
+            profile.pop("profile_photo_raw_b64", None)
             cache_set(cache_key, profile, ttl=120)
             return {"profile": profile}
     finally: conn.close()
+
+@app.post("/auth/reset-password")
+def reset_password(
+    body: ResetPasswordRequest,
+    authorization: str | None = Header(default=None),
+):
+    user_id = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token_payload = decode_and_validate_token(authorization)
+            user_id = token_payload.get("sub")
+        except ValueError:
+            pass
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if user_id:
+                cur.execute(
+                    "SELECT id, username, password_hash, role, student_id, display_name, email, must_reset_password FROM users WHERE id=%s",
+                    (user_id,)
+                )
+            elif body.username:
+                uname = body.username.strip()
+                cur.execute(
+                    "SELECT id, username, password_hash, role, student_id, display_name, email, must_reset_password FROM users WHERE LOWER(TRIM(username))=LOWER(%s) OR (email IS NOT NULL AND LOWER(TRIM(email))=LOWER(%s))",
+                    (uname, uname)
+                )
+            else:
+                raise HTTPException(401, "Authentication session required or valid username must be provided.")
+
+            user_record = cur.fetchone()
+            if not user_record:
+                raise HTTPException(404, "User account not found.")
+
+            cur_pass = body.current_password or ""
+            if not password_ok(cur_pass, user_record["password_hash"]) and not password_ok(cur_pass.strip(), user_record["password_hash"]):
+                raise HTTPException(400, "Current password is incorrect.")
+
+            new_pass = body.new_password.strip()
+            if len(new_pass) < 6:
+                raise HTTPException(422, "New password must be at least 6 characters long.")
+
+            if body.new_password != body.confirm_password:
+                raise HTTPException(422, "New password and confirm password do not match.")
+
+            if new_pass == DEFAULT_STUDENT_PASSWORD:
+                raise HTTPException(422, f"New password cannot be the default institutional password ({DEFAULT_STUDENT_PASSWORD}). Please create a personalized password.")
+
+            if new_pass == cur_pass.strip():
+                raise HTTPException(422, "New password must be different from your current password.")
+
+            new_hash = password_hash(new_pass)
+            cur.execute(
+                "UPDATE users SET password_hash=%s, must_reset_password=FALSE WHERE id=%s RETURNING id, username, role, student_id, display_name, email, must_reset_password",
+                (new_hash, user_record["id"])
+            )
+            updated_user = cur.fetchone()
+            cur.execute(
+                "INSERT INTO audit_logs (actor_id, action, entity, entity_id) VALUES (%s, 'PASSWORD_RESET', 'user', %s)",
+                (user_record["id"], str(user_record["id"]))
+            )
+        conn.commit()
+
+        cache_delete(f"user:{user_record['id']}:me", f"user:{user_record['id']}:profile", f"teacher:{user_record['id']}:profile")
+        return {
+            "status": "success",
+            "message": "Password updated successfully. You can now access your account.",
+            "must_reset_password": False,
+            "user": {
+                "id": updated_user["id"],
+                "username": updated_user["username"],
+                "role": updated_user["role"],
+                "student_id": updated_user["student_id"],
+                "display_name": updated_user["display_name"],
+                "email": updated_user["email"],
+                "must_reset_password": False,
+            }
+        }
+    finally:
+        conn.close()
 
 @app.get("/teacher/profile")
 def teacher_profile(user=Depends(require_roles("teacher"))):
@@ -1423,9 +1711,33 @@ def teacher_profile(user=Depends(require_roles("teacher"))):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT username, role, display_name, email, phone, encode(profile_photo, 'base64') AS profile_photo_base64 FROM users WHERE id=%s", (user["sub"],))
+            cur.execute("""SELECT username, role, display_name, email, phone, profile_picture,
+                           profile_photo_thumbnail,
+                           encode(profile_photo, 'base64') AS profile_photo_raw_b64
+                           FROM users WHERE id=%s""", (user["sub"],))
             profile = cur.fetchone()
             if not profile: raise HTTPException(404, "Teacher not found")
+
+            photo_b64 = profile.get("profile_photo_thumbnail")
+            if not photo_b64 and profile.get("profile_photo_raw_b64"):
+                photo_b64 = f"data:image/jpeg;base64,{profile['profile_photo_raw_b64']}"
+
+            if not photo_b64 and profile.get("profile_picture"):
+                disk_path = get_safe_photo_path(profile["profile_picture"])
+                if disk_path and disk_path.is_file():
+                    try:
+                        photo_b64 = student_photo_data_uri(disk_path.read_bytes())
+                        if photo_b64:
+                            cur.execute("UPDATE users SET profile_photo_thumbnail=%s WHERE id=%s", (photo_b64, user["sub"]))
+                            conn.commit()
+                    except Exception:
+                        pass
+
+            profile["profile_photo_base64"] = photo_b64
+            if profile.get("profile_picture"):
+                profile["profile_photo_url"] = f"/student-photos/{Path(profile['profile_picture']).name}"
+                profile["profile_picture"] = f"/student-photos/{Path(profile['profile_picture']).name}"
+            profile.pop("profile_photo_raw_b64", None)
             cur.execute("""SELECT ta.subject, sec.program, sec.section, sec.semester, COUNT(s.student_id) AS students
                 FROM teacher_assignments ta JOIN academic_sections sec ON sec.id=ta.section_id
                 LEFT JOIN students s ON s.section_id=sec.id
@@ -1437,17 +1749,63 @@ def teacher_profile(user=Depends(require_roles("teacher"))):
     finally: conn.close()
 
 @app.post("/auth/profile/photo")
-async def update_profile_photo(file: UploadFile = File(...), user=Depends(current_user)):
-    data = await file.read()
-    if not data or len(data) > MAX_IMAGE_BYTES: raise HTTPException(413, "Profile photo is empty or too large")
-    try: Image.open(io.BytesIO(data)).verify()
-    except Exception as exc: raise HTTPException(400, "Invalid profile image") from exc
+async def update_profile_photo(
+    request: Request,
+    file: UploadFile | None = File(default=None),
+    user=Depends(current_user),
+):
+    data = None
+    if file and hasattr(file, "read"):
+        data = await file.read()
+
+    if not data:
+        content_type = request.headers.get("content-type", "").lower()
+        if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+            try:
+                form = await request.form()
+                file_obj = form.get("file") or form.get("photo") or form.get("image")
+                if file_obj is not None:
+                    if hasattr(file_obj, "read"):
+                        data = await file_obj.read()
+                    elif isinstance(file_obj, (bytes, bytearray)):
+                        data = bytes(file_obj)
+                    elif isinstance(file_obj, str) and file_obj.strip():
+                        clean = file_obj.split("base64,")[-1]
+                        data = base64.b64decode(clean)
+            except Exception as form_exc:
+                logger.warning("Failed to parse form in update_profile_photo: %s", form_exc)
+
+    if not data:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                raw_b64 = body.get("photo") or body.get("photo_base64") or body.get("file") or body.get("image")
+                if raw_b64 and isinstance(raw_b64, str):
+                    clean = raw_b64.split("base64,")[-1]
+                    data = base64.b64decode(clean)
+        except Exception:
+            pass
+
+    if not data:
+        content_type = request.headers.get("content-type", "").lower()
+        if any(img_t in content_type for img_t in ("image/jpeg", "image/png", "image/webp")):
+            data = await request.body()
+
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Profile photo is empty or too large")
+
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except Exception as exc:
+        raise HTTPException(400, "Invalid profile image") from exc
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT username, student_id, display_name FROM users WHERE id=%s", (user["sub"],))
             u_info = cur.fetchone()
-            if not u_info: raise HTTPException(404, "User not found")
+            if not u_info:
+                raise HTTPException(404, "User not found")
 
             target_id = u_info.get("student_id") or str(user["sub"])
             target_name = u_info.get("display_name") or u_info.get("username")
@@ -1457,19 +1815,31 @@ async def update_profile_photo(file: UploadFile = File(...), user=Depends(curren
             except Exception as exc:
                 logger.warning("save_student_photo failed in update_profile_photo: %s", exc)
 
+            thumb = student_photo_data_uri(data)
             if rel_photo_path:
-                cur.execute("UPDATE users SET profile_photo=%s, profile_picture=%s WHERE id=%s", (data, rel_photo_path, user["sub"]))
+                cur.execute("UPDATE users SET profile_photo=NULL, profile_picture=%s, profile_photo_thumbnail=%s WHERE id=%s", (rel_photo_path, thumb, user["sub"]))
                 if u_info.get("student_id"):
-                    cur.execute("UPDATE students SET profile_photo=%s, profile_picture=%s WHERE student_id=%s", (data, rel_photo_path, u_info["student_id"]))
+                    cur.execute("UPDATE students SET profile_photo=NULL, profile_picture=%s, profile_photo_thumbnail=%s WHERE student_id=%s", (rel_photo_path, thumb, u_info["student_id"]))
+                cur.execute("UPDATE visitors SET profile_photo=NULL, profile_picture=%s, profile_photo_thumbnail=%s WHERE user_id=%s", (rel_photo_path, thumb, user["sub"]))
             else:
-                cur.execute("UPDATE users SET profile_photo=%s WHERE id=%s", (data, user["sub"]))
+                cur.execute("UPDATE users SET profile_photo=%s, profile_photo_thumbnail=%s WHERE id=%s", (data, thumb, user["sub"]))
+                if u_info.get("student_id"):
+                    cur.execute("UPDATE students SET profile_photo=%s, profile_photo_thumbnail=%s WHERE student_id=%s", (data, thumb, u_info["student_id"]))
+                cur.execute("UPDATE visitors SET profile_photo=%s, profile_photo_thumbnail=%s WHERE user_id=%s", (data, thumb, user["sub"]))
         conn.commit()
         cache_delete(f"user:{user['sub']}:me", f"user:{user['sub']}:profile", f"teacher:{user['sub']}:profile")
         if u_info.get("student_id"):
             cache_delete_pattern(f"student:{u_info['student_id']}:*")
         cache_delete_pattern("students:list:*")
-        return {"status": "saved", "profile_picture": f"/student-photos/{Path(rel_photo_path).name}" if rel_photo_path else None}
-    finally: conn.close()
+        photo_url = f"/student-photos/{Path(rel_photo_path).name}" if rel_photo_path else None
+        return {
+            "status": "saved",
+            "profile_picture": photo_url,
+            "profile_photo_url": photo_url,
+            "profile_photo_base64": thumb,
+        }
+    finally:
+        conn.close()
 
 @app.get("/schedule")
 def schedule(_=Depends(current_user)):
@@ -1560,21 +1930,24 @@ def create_notification(body: NotificationRequest, _=Depends(require_roles("admi
 def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
     if body.role not in ("admin", "teacher", "student"): raise HTTPException(422, "Invalid role")
     if body.role == "student":
-        if not body.student_id or not body.name or not body.date_of_birth: raise HTTPException(422, "Student ID, full name, and date of birth are required")
+        if not body.student_id or not body.name: raise HTTPException(422, "Student ID and full name are required")
         body.username = body.student_id.strip()
-        body.password = body.date_of_birth
+        body.password = DEFAULT_STUDENT_PASSWORD
     if len(body.username.strip()) < 3 or len(body.password) < 4: raise HTTPException(422, "ID must be at least 3 characters and password must be valid")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             try:
                 if body.role == "student":
-                    cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program,section_id,roll_number) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program,section_id=EXCLUDED.section_id,roll_number=EXCLUDED.roll_number", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth, body.program, body.section_id, body.roll_number))
-                cur.execute("INSERT INTO users (username,password_hash,role,student_id) VALUES (%s,%s,%s,%s) RETURNING id,username,role,student_id", (body.username.strip(), password_hash(body.password), body.role, body.student_id)); result = cur.fetchone()
+                    cur.execute("INSERT INTO students (student_id,name,email,phone,date_of_birth,program,section_id,roll_number) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (student_id) DO UPDATE SET name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,date_of_birth=EXCLUDED.date_of_birth,program=EXCLUDED.program,section_id=EXCLUDED.section_id,roll_number=EXCLUDED.roll_number", (body.student_id.strip(), body.name.strip(), body.email, body.phone, body.date_of_birth or None, body.program, body.section_id, body.roll_number))
+                cur.execute("INSERT INTO users (username,password_hash,role,student_id,display_name,email,phone,must_reset_password) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,must_reset_password", (body.username.strip(), password_hash(body.password), body.role, body.student_id, body.name if body.role == "student" else None, body.email, body.phone, True if body.role == "student" else False)); result = cur.fetchone()
                 if body.role == "teacher" and body.academic_section_ids:
                     cur.executemany("INSERT INTO teacher_assignments (teacher_user_id,section_id,subject) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", [(result["id"], section_id, "Assigned academic course") for section_id in body.academic_section_ids])
             except Exception as exc: conn.rollback(); raise HTTPException(409, "Username already exists or student ID is invalid") from exc
         conn.commit()
+        cache_delete("admin:users:all", "admin:dashboard:summary")
+        cache_delete_pattern("admin:users:*")
+        cache_delete("admin:dashboard:summary")
         if body.role == "student":
             cache_delete_pattern("students:list:*")
         elif body.role == "teacher":
@@ -1584,24 +1957,63 @@ def create_user(body: UserRequest, _=Depends(require_roles("admin"))):
 
 @app.get("/admin/users")
 def list_users(_=Depends(require_roles("admin"))):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur: cur.execute("SELECT id,username,role,student_id,created_at FROM users ORDER BY id"); return {"users": cur.fetchall()}
-    finally: conn.close()
-
-@app.delete("/admin/users/{user_id}")
-def delete_user(user_id: int, _=Depends(require_roles("admin"))):
+    cached = cache_get("admin:users:all")
+    if cached is not None:
+        return {"users": cached}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM users WHERE id=%s RETURNING id", (user_id,))
+            cur.execute(
+                """SELECT id, username, role, student_id, display_name, email, phone, is_active, must_reset_password, created_at
+                   FROM users
+                   ORDER BY id"""
+            )
+            rows = cur.fetchall()
+            cache_set("admin:users:all", rows, ttl=120)
+            return {"users": rows}
+    finally:
+        conn.close()
+
+@app.delete("/admin/users/{user_id}")
+@app.delete("/admin/teachers/{user_id}")
+def delete_user(user_id: str, _=Depends(require_roles("admin"))):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            found = None
+            if str(user_id).isdigit():
+                cur.execute("SELECT id, username, display_name, role FROM users WHERE id=%s", (int(user_id),))
+                found = cur.fetchone()
+            if not found:
+                cur.execute("SELECT id, username, display_name, role FROM users WHERE username=%s", (str(user_id),))
+                found = cur.fetchone()
+            if not found:
+                raise HTTPException(404, "User not found")
+
+            uid = found["id"]
+            # Clean up teacher assignments and linkages
+            cur.execute("DELETE FROM teacher_assignments WHERE teacher_user_id=%s", (uid,))
+            cur.execute("UPDATE attendance_sessions SET teacher_id=NULL WHERE teacher_id=%s", (uid,))
+            cur.execute("UPDATE attendance_logs SET teacher_id=NULL WHERE teacher_id=%s", (uid,))
+            cur.execute("UPDATE attendance_logs SET updated_by=NULL WHERE updated_by=%s", (uid,))
+
+            # Delete the user record
+            cur.execute("DELETE FROM users WHERE id=%s RETURNING id", (uid,))
             deleted = cur.fetchone()
-        if not deleted: raise HTTPException(404, "User not found")
-        conn.commit()
-        revoke_all_user_sessions(user_id)
-        cache_delete(f"user:{user_id}:me", f"user:{user_id}:profile", f"teacher:{user_id}:profile")
-        return {"deleted": user_id}
-    finally: conn.close()
+            if not deleted:
+                raise HTTPException(404, "User could not be deleted")
+            conn.commit()
+
+        revoke_all_user_sessions(uid)
+        cache_delete(f"user:{uid}:me", f"user:{uid}:profile", f"teacher:{uid}:profile")
+        cache_delete_pattern("teacher:*:profile")
+        cache_delete_pattern("teachers:list:*")
+        cache_delete_pattern("admin:users:*")
+        cache_delete("admin:dashboard:summary")
+        cache_delete_pattern("schedules:*")
+        return {"ok": True, "deleted": uid, "username": found["username"]}
+    finally:
+        conn.close()
 
 class AdminUserUpdateRequest(BaseModel):
     display_name: str | None = None
@@ -1610,6 +2022,8 @@ class AdminUserUpdateRequest(BaseModel):
     phone: str | None = None
     role: str | None = None
     is_active: bool | None = None
+    password: str | None = None
+    must_reset_password: bool | None = None
 
 @app.patch("/admin/users/{user_id}")
 async def update_user(user_id: int, request: Request, _=Depends(require_roles("admin"))):
@@ -1627,7 +2041,7 @@ async def update_user(user_id: int, request: Request, _=Depends(require_roles("a
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, username, role, student_id, display_name, email, phone, is_active FROM users WHERE id=%s", (user_id,))
+            cur.execute("SELECT id, username, role, student_id, display_name, email, phone, is_active, must_reset_password FROM users WHERE id=%s", (user_id,))
             existing = cur.fetchone()
             if not existing:
                 raise HTTPException(404, "User not found")
@@ -1651,13 +2065,25 @@ async def update_user(user_id: int, request: Request, _=Depends(require_roles("a
                     updates["is_active"] = val.lower() in ("true", "1", "yes")
                 else:
                     updates["is_active"] = bool(val)
+            if "must_reset_password" in body_data:
+                val = body_data["must_reset_password"]
+                if isinstance(val, str):
+                    updates["must_reset_password"] = val.lower() in ("true", "1", "yes")
+                else:
+                    updates["must_reset_password"] = bool(val)
+            if "password" in body_data and body_data["password"]:
+                pass_str = str(body_data["password"]).strip()
+                if len(pass_str) >= 4:
+                    updates["password_hash"] = password_hash(pass_str)
+                    if existing["role"] == "student" and "must_reset_password" not in updates:
+                        updates["must_reset_password"] = True
 
             if not updates:
                 return existing
 
             set_clause = ", ".join(f"{col}=%s" for col in updates)
             cur.execute(
-                f"UPDATE users SET {set_clause} WHERE id=%s RETURNING id, username, role, student_id, display_name, email, phone, is_active",
+                f"UPDATE users SET {set_clause} WHERE id=%s RETURNING id, username, role, student_id, display_name, email, phone, is_active, must_reset_password",
                 (*updates.values(), user_id),
             )
             row = cur.fetchone()
@@ -1990,8 +2416,9 @@ def list_students(
     prog_clean = program.strip() if program else None
     sem_clean = semester.strip() if semester else None
 
-    # Construct scoped cache key
-    cache_key = f"students:list:{role}:{user['sub']}:p={page}:ps={page_size}:s={search_clean}:sec={section_id}:pr={prog_clean}:sem={sem_clean}:ph={include_photos}"
+    # Construct scoped cache key (admins share cached list since they view all students)
+    user_scope = "all" if role == "admin" else str(user["sub"])
+    cache_key = f"students:list:{role}:{user_scope}:p={page}:ps={page_size}:s={search_clean}:sec={section_id}:pr={prog_clean}:sem={sem_clean}:ph={include_photos}"
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
@@ -2047,7 +2474,7 @@ def list_students(
                        sec.school AS academic_school, sec.faculty AS academic_faculty,
                        sec.department AS academic_department, sec.semester AS academic_semester,
                        sec.section AS academic_section
-                       {", s.profile_photo" if include_photos else ""}
+                       {", s.profile_photo_thumbnail" if include_photos else ""}
                 FROM students s
                 LEFT JOIN academic_sections sec ON sec.id = s.section_id
                 {where_clause}
@@ -2059,12 +2486,19 @@ def list_students(
 
             if include_photos:
                 for student in rows:
-                    photo = student.pop("profile_photo", None)
-                    try:
-                        student["profile_photo_base64"] = student_photo_data_uri(photo)
-                    except (OSError, ValueError) as exc:
-                        logger.warning("student_photo_thumbnail_failed student_id=%s error=%s", student["student_id"], exc)
-                        student["profile_photo_base64"] = None
+                    thumb = student.pop("profile_photo_thumbnail", None)
+                    if not thumb:
+                        try:
+                            cur.execute("SELECT profile_photo FROM students WHERE student_id = %s", (student["student_id"],))
+                            p_row = cur.fetchone()
+                            if p_row and p_row.get("profile_photo"):
+                                thumb = student_photo_data_uri(p_row["profile_photo"])
+                                if thumb:
+                                    cur.execute("UPDATE students SET profile_photo_thumbnail = %s WHERE student_id = %s", (thumb, student["student_id"]))
+                                    conn.commit()
+                        except Exception as exc:
+                            logger.warning("student_photo_thumbnail_failed student_id=%s error=%s", student["student_id"], exc)
+                    student["profile_photo_base64"] = thumb or None
 
             current_page = page if page is not None else 1
             has_next = current_page < total_pages if page is not None else False
@@ -2082,7 +2516,7 @@ def list_students(
                     "has_previous": has_previous,
                 },
             }
-            cache_set(cache_key, res, ttl=60)
+            cache_set(cache_key, res, ttl=180)
             return res
     finally:
         conn.close()
@@ -2128,7 +2562,7 @@ def get_student_detail(student_id: str, user=Depends(current_user)):
                        sec.school AS academic_school, sec.faculty AS academic_faculty,
                        sec.department AS academic_department, sec.semester AS academic_semester,
                        sec.section AS academic_section,
-                       encode(s.profile_photo, 'base64') AS profile_photo_base64
+                       COALESCE(s.profile_photo_thumbnail, encode(s.profile_photo, 'base64')) AS profile_photo_base64
                 FROM students s
                 LEFT JOIN academic_sections sec ON sec.id = s.section_id
                 WHERE s.student_id = %s
@@ -2137,7 +2571,7 @@ def get_student_detail(student_id: str, user=Depends(current_user)):
             if not student:
                 raise HTTPException(404, "Student not found")
 
-            if student.get("profile_photo_base64"):
+            if student.get("profile_photo_base64") and not student["profile_photo_base64"].startswith("data:"):
                 student["profile_photo_base64"] = f"data:image/jpeg;base64,{student['profile_photo_base64']}"
 
             cache_set(cache_key, student, ttl=60)
@@ -2478,7 +2912,7 @@ def create_attendance_session(body: AttendanceSessionRequest, user=Depends(requi
         )
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         cache_delete_pattern("teacher:*:attendance-sessions")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return result
     finally:
         conn.close()
@@ -2552,7 +2986,7 @@ def update_teacher_session(session_id: str, body: SessionUpdateRequest, user=Dep
         conn.commit()
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         cache_delete_pattern(f"attendance:session:{session_id}:*")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return updated
     finally:
         conn.close()
@@ -2577,7 +3011,7 @@ def update_teacher_session_status(session_id: str, body: SessionStatusRequest, u
         set_attendance_live_status(session_id, desired)
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         cache_delete_pattern(f"attendance:session:{session_id}:*")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return updated
     finally: conn.close()
 
@@ -2601,7 +3035,7 @@ def delete_teacher_session(session_id: str, user=Depends(require_roles("teacher"
         cache_delete(f"teacher:{user['sub']}:attendance-sessions")
         cache_delete_pattern(f"attendance:session:{session_id}:*")
         cache_delete_pattern("student:*:attendance*")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return {"deleted": session_id, "attendance_records_deleted": attendance_deleted}
     finally:
         conn.close()
@@ -2674,6 +3108,7 @@ def delete_student(student_id: str, _=Depends(require_roles("admin"))):
             cache_delete(f"user:{u['id']}:me", f"user:{u['id']}:profile")
         cache_delete_pattern("students:list:*")
         cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete("admin:dashboard:summary")
         return {"deleted": student_id}
     finally: conn.close()
 
@@ -2764,11 +3199,8 @@ async def register_student(
     if not student_id or not name:
         raise HTTPException(422, "student_id and name are required")
     phone = phone.strip()
-    if len(phone) < 4:
-        raise HTTPException(422, "A valid mobile number is required; it becomes the student's initial password")
-    # Student credentials are intentionally derived from the registered mobile
-    # number so the admin cannot create a mismatched initial password.
-    password = phone
+    # Default student password is dsvv@123# with mandatory reset on first login
+    password = DEFAULT_STUDENT_PASSWORD
     if not (1 <= len(files) <= 5):
         raise HTTPException(422, "Registration requires between 1 and 5 photos")
     if date_of_birth:
@@ -2817,14 +3249,19 @@ async def register_student(
                     if not cur.fetchone():
                         raise HTTPException(403, "You are not allowed to register a student in this academic section")
             rel_photo_path = None
+            thumb = None
             if first_image_bytes:
                 try:
                     rel_photo_path, _ = save_student_photo(student_id, name, first_image_bytes)
                 except Exception as exc:
                     logger.warning("save_student_photo failed during register_student: %s", exc)
+                try:
+                    thumb = student_photo_data_uri(first_image_bytes)
+                except Exception as exc:
+                    logger.warning("student_photo_data_uri failed during register_student: %s", exc)
 
-            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, department, semester, roll_number, section_id, profile_photo, profile_picture)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            cur.execute("""INSERT INTO students (student_id, name, email, phone, date_of_birth, program, department, semester, roll_number, section_id, profile_photo, profile_picture, profile_photo_thumbnail)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET
                     name=EXCLUDED.name,
                     email=COALESCE(EXCLUDED.email, students.email),
@@ -2836,22 +3273,23 @@ async def register_student(
                     roll_number=COALESCE(EXCLUDED.roll_number, students.roll_number),
                     section_id=COALESCE(EXCLUDED.section_id, students.section_id),
                     profile_photo=COALESCE(EXCLUDED.profile_photo, students.profile_photo),
-                    profile_picture=COALESCE(EXCLUDED.profile_picture, students.profile_picture)""",
-                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, department or None, semester or None, roll_number or None, section_id, first_image_bytes, rel_photo_path))
+                    profile_picture=COALESCE(EXCLUDED.profile_picture, students.profile_picture),
+                    profile_photo_thumbnail=COALESCE(EXCLUDED.profile_photo_thumbnail, students.profile_photo_thumbnail)""",
+                (student_id, name, email or None, phone or None, date_of_birth or None, program or None, department or None, semester or None, roll_number or None, section_id, first_image_bytes, rel_photo_path, thumb))
             cur.execute("""INSERT INTO student_embeddings (student_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (student_id) DO UPDATE SET embedding=EXCLUDED.embedding""", (student_id, embedding.tolist()))
             # A student's ID is also their login ID. Registration creates or
             # refreshes the corresponding student account automatically.
-            cur.execute("""INSERT INTO users (username, password_hash, role, student_id, display_name, profile_photo, profile_picture)
-                VALUES (%s, %s, 'student', %s, %s, %s, %s)
+            cur.execute("""INSERT INTO users (username, password_hash, role, student_id, display_name, profile_photo, profile_picture, must_reset_password, profile_photo_thumbnail)
+                VALUES (%s, %s, 'student', %s, %s, %s, %s, TRUE, %s)
                 ON CONFLICT (username) DO UPDATE SET
-                    password_hash=EXCLUDED.password_hash,
                     role='student',
                     student_id=EXCLUDED.student_id,
                     display_name=EXCLUDED.display_name,
                     profile_photo=COALESCE(EXCLUDED.profile_photo, users.profile_photo),
-                    profile_picture=COALESCE(EXCLUDED.profile_picture, users.profile_picture)""",
-                (student_id, password_hash(password), student_id, name, first_image_bytes, rel_photo_path))
+                    profile_picture=COALESCE(EXCLUDED.profile_picture, users.profile_picture),
+                    profile_photo_thumbnail=COALESCE(EXCLUDED.profile_photo_thumbnail, users.profile_photo_thumbnail)""",
+                (student_id, password_hash(password), student_id, name, first_image_bytes, rel_photo_path, thumb))
             cur.execute(
                 """INSERT INTO audit_logs (actor_id, action, entity, entity_id, new_value)
                    VALUES (%s, 'STUDENT_FACE_REGISTERED', 'student', %s, %s)""",
@@ -2860,6 +3298,7 @@ async def register_student(
         conn.commit()
         cache_delete_pattern("students:list:*")
         cache_delete_pattern(f"student:{student_id}:*")
+        cache_delete("admin:dashboard:summary")
     finally: conn.close()
     logger.info("student_face_registered student_id=%s photos=%s actor_id=%s", student_id, len(embeddings), user["sub"])
     return {"status": "success", "student_id": student_id, "photos_used": len(embeddings), "message": f"Student {name} registered with {len(embeddings)} face photo(s)"}
@@ -3137,7 +3576,7 @@ def finalize_attendance(body: FinalAttendanceRequest, user=Depends(require_roles
             cache_delete_pattern(f"attendance:session:{body.session_id}:*")
             cache_delete_pattern("student:*:attendance*")
             cache_delete_pattern("attendance:report:*")
-            cache_delete("admin:attendance:all")
+            cache_delete("admin:attendance:all", "admin:dashboard:summary")
             return {"status": "submitted", "session_id": body.session_id, "records_processed": len(body.records)}
         finally:
             conn.close()
@@ -3557,7 +3996,7 @@ def update_session_attendance(session_id: str, student_id: str, body: dict, user
         cache_delete_pattern(f"student:{student_id}:*")
         cache_delete_pattern("teacher:*:attendance-sessions")
         cache_delete_pattern("attendance:report:*")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return {"session_id": session_id, "student_id": student_id, "status": status}
     finally:
         conn.close()
@@ -3704,9 +4143,74 @@ def delete_session(session_id: str, _=Depends(require_roles("admin"))):
         cache_delete_pattern(f"attendance:session:{session_id}:*")
         cache_delete_pattern("student:*:attendance*")
         cache_delete_pattern("teacher:*:attendance-sessions")
-        cache_delete("admin:attendance:all")
+        cache_delete("admin:attendance:all", "admin:dashboard:summary")
         return {"deleted_records": count, "session_id": session_id}
     finally: conn.close()
+
+@app.get("/admin/dashboard")
+@app.get("/admin/stats")
+def get_admin_dashboard(_=Depends(require_roles("admin"))):
+    """Ultra-fast aggregated metrics for the campus administration dashboard.
+    Cached in Redis for high throughput and sub-millisecond response time.
+    """
+    cache_key = "admin:dashboard:summary"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM students) AS total_students,
+                    (SELECT COUNT(*) FROM users WHERE role = 'teacher') AS faculty_count,
+                    (SELECT COUNT(*) FROM users) AS total_users,
+                    (SELECT COUNT(*) FROM attendance_sessions) AS total_sessions,
+                    (SELECT COUNT(*) FROM attendance_logs) AS total_attendance_logs,
+                    (SELECT COUNT(*) FROM attendance_logs WHERE COALESCE(final_attendance_status, initial_attendance_status) = 'PRESENT') AS present_count
+            """)
+            counts = cur.fetchone() or {}
+            total_students = counts.get("total_students") or 0
+            faculty_count = counts.get("faculty_count") or 0
+            total_sessions = counts.get("total_sessions") or 0
+            total_logs = counts.get("total_attendance_logs") or 0
+            present_count = counts.get("present_count") or 0
+            attendance_rate = round((present_count / total_logs) * 100) if total_logs > 0 else 0
+
+            cur.execute("""
+                SELECT sess.session_id, sess.title, sess.course, sess.event_date,
+                       sess.starts_at, sess.ends_at, sess.status,
+                       u.display_name AS teacher_name,
+                       (SELECT COUNT(*) FROM attendance_logs a WHERE a.session_id = sess.session_id AND COALESCE(a.final_attendance_status, a.initial_attendance_status) = 'PRESENT') AS present_count
+                FROM attendance_sessions sess
+                LEFT JOIN users u ON u.id = sess.teacher_id
+                ORDER BY sess.event_date DESC, sess.starts_at DESC
+                LIMIT 5
+            """)
+            recent_sessions = [dict(r) for r in cur.fetchall()]
+            for s in recent_sessions:
+                if s.get("event_date"):
+                    s["event_date"] = str(s["event_date"])
+                if s.get("starts_at"):
+                    s["starts_at"] = str(s["starts_at"])
+                if s.get("ends_at"):
+                    s["ends_at"] = str(s["ends_at"])
+
+            res = {
+                "total_students": total_students,
+                "faculty_count": faculty_count,
+                "total_users": counts.get("total_users") or 0,
+                "total_sessions": total_sessions,
+                "attendance_rate": attendance_rate,
+                "present_count": present_count,
+                "total_attendance_logs": total_logs,
+                "recent_sessions": recent_sessions,
+            }
+            cache_set(cache_key, res, ttl=30)
+            return res
+    finally:
+        conn.close()
 
 @app.get("/admin/attendance")
 def all_attendance(_=Depends(require_roles("admin"))):

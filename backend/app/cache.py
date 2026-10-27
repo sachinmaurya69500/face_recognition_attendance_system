@@ -119,6 +119,52 @@ _pool: Optional[Any] = None
 _client: Optional[Any] = None
 _circuit_open_until = 0.0
 _client_lock = threading.Lock()
+_invalidation_thread_started = False
+_invalidation_lock = threading.Lock()
+
+
+def _publish_invalidation(msg: dict) -> None:
+    """Broadcast an eviction notification to peer worker processes via Redis PubSub."""
+    client = _get_client()
+    if client is not None:
+        try:
+            client.publish("cache:invalidate:channel", json.dumps(msg))
+        except Exception:
+            pass
+
+
+def _ensure_invalidation_listener() -> None:
+    """Start background daemon thread to listen for invalidations from other workers."""
+    global _invalidation_thread_started
+    if _invalidation_thread_started or not L1_CACHE_ENABLED or redis is None:
+        return
+    with _invalidation_lock:
+        if _invalidation_thread_started:
+            return
+        def _listen():
+            while True:
+                try:
+                    sub_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+                    pubsub = sub_client.pubsub()
+                    pubsub.subscribe("cache:invalidate:channel")
+                    for message in pubsub.listen():
+                        if message and message.get("type") == "message":
+                            try:
+                                data = json.loads(message["data"])
+                                action = data.get("action")
+                                if action == "delete":
+                                    _l1_cache.delete(*data.get("keys", []))
+                                elif action == "delete_pattern":
+                                    _l1_cache.delete_pattern(data.get("pattern", ""))
+                                elif action == "clear":
+                                    _l1_cache.clear()
+                            except Exception:
+                                pass
+                except Exception:
+                    time.sleep(1.0)
+        t = threading.Thread(target=_listen, daemon=True, name="redis-l1-sync")
+        t.start()
+        _invalidation_thread_started = True
 
 # Cache telemetry metrics
 _stats = {
@@ -210,6 +256,7 @@ def _deserialize(raw: Optional[bytes]) -> Any:
 
 def cache_get(key: str, use_l1: bool = True) -> Optional[Any]:
     """Retrieve value from cache with L1 -> L2 fallback hierarchy."""
+    _ensure_invalidation_listener()
     # 1. Check L1 Memory Cache (microsecond RAM lookup)
     if L1_CACHE_ENABLED and use_l1:
         val = _l1_cache.get(key)
@@ -266,7 +313,7 @@ def cache_set(key: str, value: Any, ttl: int = 60, use_l1: bool = True) -> bool:
 
 
 def cache_delete(*keys: str) -> None:
-    """Evict one or more keys from both L1 and L2 caches."""
+    """Evict one or more keys from both L1 and L2 caches across all workers."""
     if not keys:
         return
 
@@ -274,12 +321,13 @@ def cache_delete(*keys: str) -> None:
     if L1_CACHE_ENABLED:
         _l1_cache.delete(*keys)
 
-    # Invalidate L2 Redis
+    # Invalidate L2 Redis and broadcast eviction
     client = _get_client()
     if client is not None:
         try:
             client.delete(*keys)
             _record_stat("deletes", len(keys))
+            _publish_invalidation({"action": "delete", "keys": list(keys)})
         except Exception as exc:
             _handle_redis_error(exc)
             logger.debug("Redis cache_delete error on keys %s: %s", keys, exc)
@@ -308,6 +356,7 @@ def cache_delete_pattern(pattern: str) -> int:
                 client.delete(*batch)
                 count += len(batch)
             _record_stat("deletes", count)
+            _publish_invalidation({"action": "delete_pattern", "pattern": pattern})
         except Exception as exc:
             _handle_redis_error(exc)
             logger.debug("Redis cache_delete_pattern error on pattern %s: %s", pattern, exc)

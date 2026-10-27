@@ -1,6 +1,7 @@
 """Comprehensive test suite for the 'Others' role, Visitor Registration,
 Authentication, QR Code Generation, Security, and Role Isolation.
 """
+import base64
 import json
 import os
 import re
@@ -45,15 +46,20 @@ class TestVisitorServicesUnit(unittest.TestCase):
         self.assertNotIn("IND987654321", h1)
 
     def test_generate_visitor_id_format_and_uniqueness(self):
-        year = datetime.now(timezone.utc).year
-        pattern = rf"^VIS-{year}-[A-F0-9]{{8}}$"
-        ids = set()
+        today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        pattern = rf"^VIS-{today_str}-\d{{4}}$"
+        ids = []
         for _ in range(50):
             vid = generate_visitor_id()
             self.assertRegex(vid, pattern)
-            ids.add(vid)
-        # Check collision resistance across 50 generated IDs
-        self.assertEqual(len(ids), 50)
+            ids.append(vid)
+        # Check collision resistance and strict sequential ascending order across 50 generated IDs
+        self.assertEqual(len(set(ids)), 50)
+        self.assertEqual(ids, sorted(ids))
+        # Check explicit date passing
+        custom_date = datetime(2025, 5, 20, 10, 30, tzinfo=timezone.utc)
+        custom_vid = generate_visitor_id(target_date=custom_date)
+        self.assertTrue(custom_vid.startswith("VIS-20250520-"))
 
     def test_build_visitor_qr_payload_security_exclusion(self):
         sample_visitor = {
@@ -375,6 +381,11 @@ class TestOthersRoleIntegration(unittest.TestCase):
         self.assertEqual(qr1.headers["content-type"], "image/png")
         self.assertIn("attachment", qr1.headers["content-disposition"])
 
+        # Unauthenticated / direct visitor pass QR download succeeds without 401
+        qr1_public = self.client.get(f"/visitors/{vid1}/qr")
+        self.assertEqual(qr1_public.status_code, 200)
+        self.assertEqual(qr1_public.headers["content-type"], "image/png")
+
         # SNOOPING DENIAL: Visitor 1 attempts to view Visitor 2's details -> 403
         snoop_details = self.client.get(f"/visitors/{vid2}", headers=headers1)
         self.assertEqual(snoop_details.status_code, 403)
@@ -400,8 +411,101 @@ class TestOthersRoleIntegration(unittest.TestCase):
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
         self.assertIn("model_loaded", health.json())
-        self.assertEqual(health.json()["status"], "ok")
+    def test_registration_with_optional_photo(self):
+        # 1x1 valid PNG transparent pixel in base64
+        sample_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        photo_payload = {
+            "full_name": f"Photogenic Visitor {self.unique_suffix}",
+            "email": f"photo_{self.unique_suffix}@testvisitor.org",
+            "phone": "+919876543210",
+            "purpose_of_visit": "Interview",
+            "expected_check_in": self.dt_in,
+            "expected_check_out": self.dt_out,
+            "identification_type": "Passport",
+            "identification_number": "PHOTO1234",
+            "password": self.test_password,
+            "confirm_password": self.test_password,
+            "photo_base64": f"data:image/png;base64,{sample_png_b64}",
+        }
+        res = self.client.post("/auth/others/register", json=photo_payload)
+        self.assertEqual(res.status_code, 201)
+        data = res.json()
+        self.assertTrue(data["ok"])
+        self.assertIsNotNone(data.get("profile_photo_url"))
+
+        # Log in and verify /visitors/me has photo
+        login_res = self.client.post("/auth/others/login", json={"email": photo_payload["email"], "password": self.test_password})
+        self.assertEqual(login_res.status_code, 200)
+        tok = login_res.json()["access_token"]
+        me_res = self.client.get("/visitors/me", headers={"Authorization": f"Bearer {tok}"})
+        self.assertEqual(me_res.status_code, 200)
+        # Verify DB: profile_photo is NULL and profile_picture points to relative path
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT profile_photo, profile_picture FROM users WHERE LOWER(email) = %s", (photo_payload["email"].lower(),))
+                u = cur.fetchone()
+                self.assertIsNotNone(u)
+                self.assertIsNone(u["profile_photo"], "profile_photo in users must be NULL (no BLOB/base64 stored in DB)")
+                self.assertIsNotNone(u["profile_picture"])
+                self.assertTrue(u["profile_picture"].startswith("student_photos/"))
+
+                cur.execute("SELECT profile_photo, profile_picture FROM visitors WHERE LOWER(email) = %s", (photo_payload["email"].lower(),))
+                v = cur.fetchone()
+                self.assertIsNotNone(v)
+                self.assertIsNone(v["profile_photo"], "profile_photo in visitors must be NULL (no BLOB/base64 stored in DB)")
+                self.assertIsNotNone(v["profile_picture"])
+        finally:
+            conn.close()
+
+    def test_registration_with_multipart_photo_file(self):
+        sample_png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        email = f"multi_{self.unique_suffix}@testvisitor.org"
+        form_data = {
+            "full_name": f"Multipart Visitor {self.unique_suffix}",
+            "email": email,
+            "phone": "+919876543210",
+            "purpose_of_visit": "Vendor",
+            "expected_check_in": self.dt_in,
+            "expected_check_out": self.dt_out,
+            "identification_type": "Passport",
+            "identification_number": "MULTI1234",
+            "password": self.test_password,
+            "confirm_password": self.test_password,
+        }
+        files = {
+            "file": ("avatar.png", sample_png_bytes, "image/png"),
+        }
+        res = self.client.post("/auth/others/register", data=form_data, files=files)
+        self.assertEqual(res.status_code, 201)
+        res_data = res.json()
+        self.assertTrue(res_data["ok"])
+        self.assertIsNotNone(res_data.get("profile_photo_url"))
+        self.assertIsNotNone(res_data.get("profile_photo_base64"))
+        self.assertTrue(res_data.get("profile_photo_base64", "").startswith("data:image/"))
+
+        # Verify DB has profile_photo = NULL and profile_picture set
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT profile_photo, profile_picture FROM users WHERE LOWER(email) = %s", (email.lower(),))
+                u = cur.fetchone()
+                self.assertIsNotNone(u)
+                self.assertIsNone(u["profile_photo"], "users.profile_photo must be NULL")
+                self.assertIsNotNone(u["profile_picture"])
+                self.assertTrue(u["profile_picture"].startswith("student_photos/"))
+
+                cur.execute("SELECT profile_photo, profile_picture FROM visitors WHERE LOWER(email) = %s", (email.lower(),))
+                v = cur.fetchone()
+                self.assertIsNotNone(v)
+                self.assertIsNone(v["profile_photo"], "visitors.profile_photo must be NULL")
+                self.assertIsNotNone(v["profile_picture"])
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -77,25 +77,67 @@ def hash_identification_number(id_num: str) -> str:
     return hashlib.sha256(clean.encode("utf-8")).hexdigest()
 
 
-def generate_visitor_id(cur=None) -> str:
-    """Generate a unique Visitor ID in the preferred format: VIS-YYYY-XXXXXXXX.
+_in_memory_visitor_seq: Dict[str, int] = {}
 
-    YYYY is current registration year, XXXXXXXX is an 8-character hex string.
-    Ensures database uniqueness if cursor is provided.
+
+def generate_visitor_id(cur=None, target_date: Optional[Any] = None) -> str:
+    """Generate a unique sequential Visitor ID in format: VIS-YYYYMMDD-0001.
+
+    - YYYYMMDD is the registration date.
+    - 4-digit ascending sequential number starting at 0001 up to 9999 for that date.
+    - If cur is provided, queries the database for existing IDs on that date,
+      extracts the maximum sequence number, and assigns max_seq + 1.
+    - Concurrency-safe: verifies uniqueness against the database.
     """
-    year = datetime.now(timezone.utc).year
-    for _ in range(10):
-        unique_suffix = os.urandom(4).hex().upper()
-        candidate = f"VIS-{year}-{unique_suffix}"
-        if cur:
-            cur.execute("SELECT 1 FROM visitors WHERE visitor_id = %s", (candidate,))
-            if cur.fetchone():
-                continue
-        return candidate
+    if target_date is None:
+        dt = datetime.now(timezone.utc)
+        date_str = dt.strftime("%Y%m%d")
+    elif isinstance(target_date, datetime):
+        date_str = target_date.strftime("%Y%m%d")
+    elif isinstance(target_date, str):
+        clean = re.sub(r"[^\d]", "", target_date)
+        if len(clean) >= 8:
+            date_str = clean[:8]
+        else:
+            date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    else:
+        date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
 
-    # Fallback with timestamp microsecond component
-    hex_ts = hex(int(datetime.now(timezone.utc).timestamp() * 1000))[2:].upper()[-8:]
-    return f"VIS-{year}-{hex_ts}"
+    global _in_memory_visitor_seq
+
+    if cur:
+        try:
+            cur.execute(
+                "SELECT visitor_id FROM visitors WHERE visitor_id LIKE %s",
+                (f"VIS-{date_str}-%",),
+            )
+            rows = cur.fetchall()
+            max_seq = 0
+            for r in rows:
+                vid = r["visitor_id"] if isinstance(r, dict) else r[0]
+                m = re.search(r"(\d+)$", str(vid or ""))
+                if m:
+                    try:
+                        seq_val = int(m.group(1))
+                        if seq_val > max_seq:
+                            max_seq = seq_val
+                    except ValueError:
+                        pass
+            next_seq = max_seq + 1
+            for _ in range(100):
+                candidate = f"VIS-{date_str}-{next_seq:04d}"
+                cur.execute("SELECT 1 FROM visitors WHERE visitor_id = %s", (candidate,))
+                if not cur.fetchone():
+                    _in_memory_visitor_seq[date_str] = max(_in_memory_visitor_seq.get(date_str, 0), next_seq)
+                    return candidate
+                next_seq += 1
+        except Exception as exc:
+            logger.warning("Database query failed in generate_visitor_id: %s. Using sequential fallback.", exc)
+
+    seq = _in_memory_visitor_seq.get(date_str, 0) + 1
+    _in_memory_visitor_seq[date_str] = seq
+    return f"VIS-{date_str}-{seq:04d}"
+
 
 
 def build_visitor_qr_payload(visitor: Dict[str, Any]) -> Dict[str, Any]:

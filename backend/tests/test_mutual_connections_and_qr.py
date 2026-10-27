@@ -44,7 +44,7 @@ class TestMutualConnectionsAndQR(unittest.TestCase):
                 cur.execute("""
                     INSERT INTO users (username, password_hash, role, student_id, display_name, email)
                     VALUES ('qr_student', %s, 'student', 'STU-QR-001', 'Ada Lovelace', 'ada@univ.edu')
-                    ON CONFLICT (username) DO UPDATE SET display_name = 'Ada Lovelace'
+                    ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, display_name = 'Ada Lovelace'
                     RETURNING id
                 """, (password_hash("pass123"),))
                 cls.student_id = cur.fetchone()["id"]

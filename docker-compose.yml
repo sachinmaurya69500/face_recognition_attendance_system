@@ -4,6 +4,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: attendance_pgvector_db
     restart: always
+    command: ["postgres", "-c", "max_connections=250", "-c", "shared_buffers=512MB", "-c", "work_mem=16MB", "-c", "maintenance_work_mem=128MB"]
     env_file:
       - ./backend/.env
     volumes:
@@ -36,6 +37,8 @@ services:
       REQUIRE_GPU: "1"
       INFERENCE_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
       REDIS_URL: redis://redis:6379/0
+      GUNICORN_WORKERS: "4"
+      GUNICORN_THREADS: "2"
     volumes:
       - ./backend/app:/workspace/app
       - ./backend/tests:/workspace/tests

@@ -15,6 +15,7 @@ import {
   Easing,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -37,11 +38,20 @@ import * as FileSystem from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
-import DateTimePicker from "@react-native-community/datetimepicker";
 import Constants from "expo-constants";
 import DeferredScreen from "./components/DeferredScreen";
 import UploadDonut from "./components/UploadDonut";
-import { formatDisplayDate, fromApiDate, parseDisplayDate, toApiDate } from "./utils/dateFormat";
+import {
+  formatDisplayDate,
+  fromApiDate,
+  parseDisplayDate,
+  toApiDate,
+} from "./utils/dateFormat";
+import {
+  AppDatePicker,
+  AppTimePicker,
+  AppDateTimePickerField,
+} from "./components/AppDateTimePicker";
 import { getTabIcon as getNavigationTabIcon } from "./utils/navigation";
 import type { Role } from "./utils/types";
 
@@ -162,6 +172,7 @@ const ThemeContext = createContext<{
 export const useAppTheme = () => useContext(ThemeContext);
 
 const DEFAULT_TUNNEL_URL = "http://localhost:8080";
+export const CANONICAL_REMOTE_URL = "https://cair-ms-7e06.tail49e3b1.ts.net";
 
 export function resolveApiBaseUrl(): string {
   const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || "").replace(/\/+$/, "");
@@ -205,39 +216,219 @@ export function resolveApiBaseUrl(): string {
     return "http://10.0.2.2:8000";
   }
 
-  return envUrl || "http://localhost:8000";
+  return envUrl || CANONICAL_REMOTE_URL;
 }
 
 let API = resolveApiBaseUrl();
 const http = axios.create({ baseURL: API, timeout: 25000 });
 
+export function getApiBaseUrl(): string {
+  return http.defaults.baseURL || API;
+}
+
+export function getCandidateEndpoints(): string[] {
+  const list: string[] = [];
+  const envUrl = (process.env.EXPO_PUBLIC_API_URL?.trim() || "").replace(/\/+$/, "");
+
+  // Detect Metro packager host for physical devices running on LAN Wi-Fi
+  const hostUri =
+    Constants.expoConfig?.hostUri ||
+    (Constants as any).manifest2?.extra?.expoGo?.debuggerHost ||
+    (Constants as any).manifest?.debuggerHost ||
+    "";
+  const metroHost = hostUri ? hostUri.split(":")[0] : "";
+  if (metroHost && metroHost !== "localhost" && metroHost !== "127.0.0.1") {
+    list.push(`http://${metroHost}:8080`);
+    list.push(`http://${metroHost}:8000`);
+  }
+
+  // Current host Wi-Fi LAN IP (super fast local connection)
+  const currentLanIp = "10.50.37.171";
+  list.push(`http://${currentLanIp}:8080`);
+  list.push(`http://${currentLanIp}:8000`);
+
+  // Android emulator & localhost
+  if (Platform.OS === "android") {
+    list.push("http://10.0.2.2:8080");
+    list.push("http://10.0.2.2:8000");
+  }
+
+  list.push("http://localhost:8080");
+  list.push("http://localhost:8000");
+
+  if (envUrl && !envUrl.includes("10.0.2.2") && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+    list.push(envUrl);
+  }
+  if (!list.includes(CANONICAL_REMOTE_URL)) {
+    list.push(CANONICAL_REMOTE_URL);
+  }
+
+  return Array.from(new Set(list.filter(Boolean)));
+}
+
+export async function testServerHealth(
+  url: string,
+  timeoutMs: number = 2000
+): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+  const cleanUrl = url.trim().replace(/\/+$/, "");
+  const start = Date.now();
+  try {
+    const res = await axios.get(`${cleanUrl}/health`, { timeout: timeoutMs });
+    if (res.status === 200 && res.data?.status === "ok") {
+      return { ok: true, latencyMs: Date.now() - start };
+    }
+    return { ok: false, error: `HTTP ${res.status}` };
+  } catch (err: any) {
+    const msg = err.code === "ECONNABORTED" ? "Timeout" : (err.message || "Unreachable");
+    return { ok: false, error: msg };
+  }
+}
+
+export async function autoDiscoverServer(): Promise<string> {
+  const current = http.defaults.baseURL || API;
+  const currentCheck = await testServerHealth(current, 1500);
+  if (currentCheck.ok) {
+    return current;
+  }
+
+  const candidates = getCandidateEndpoints();
+  for (const candidate of candidates) {
+    if (candidate === current) continue;
+    const res = await testServerHealth(candidate, 1800);
+    if (res.ok) {
+      updateApiBaseUrl(candidate);
+      return candidate;
+    }
+  }
+
+  return CANONICAL_REMOTE_URL;
+}
+
+http.interceptors.request.use((config) => {
+  // If request data is FormData, remove explicit Content-Type header so the runtime
+  // sets 'multipart/form-data; boundary=...' automatically with the unique boundary.
+  if (config.data && (config.data instanceof FormData || typeof (config.data as any).append === "function")) {
+    if (config.headers) {
+      delete (config.headers as any)["Content-Type"];
+      delete (config.headers as any)["content-type"];
+    }
+  }
+  return config;
+});
+
+http.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    // Let standard HTTP application errors pass through to caller components
+    if (error?.response) {
+      return Promise.reject(error);
+    }
+
+    const originalRequest = error.config;
+    if (!originalRequest || (originalRequest as any)._retryAttempted) {
+      return Promise.reject(error);
+    }
+    (originalRequest as any)._retryAttempted = true;
+
+    // Network connection failed or timed out. Probe candidate servers for seamless failover.
+    const candidates = getCandidateEndpoints();
+    for (const candidate of candidates) {
+      if (candidate === http.defaults.baseURL) continue;
+      try {
+        const check = await testServerHealth(candidate, 1500);
+        if (check.ok) {
+          updateApiBaseUrl(candidate);
+          originalRequest.baseURL = candidate;
+          if (http.defaults.headers.common.Authorization) {
+            originalRequest.headers = originalRequest.headers || {};
+            originalRequest.headers.Authorization = http.defaults.headers.common.Authorization;
+          }
+          return await http(originalRequest);
+        }
+      } catch {
+        // Continue probing next candidate
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+
 export function updateApiBaseUrl(newUrl: string) {
-  API = newUrl.trim();
+  API = newUrl.trim().replace(/\/+$/, "");
   http.defaults.baseURL = API;
   academicSectionsCache = null;
   AsyncStorage.setItem("custom_api_url", API).catch(() => {});
 }
 
-// Load custom API URL if previously saved
+// Load custom API URL if previously saved and sanitize stale/unreachable values
 AsyncStorage.getItem("custom_api_url")
-  .then((stored) => {
+  .then(async (stored) => {
     if (stored && stored.trim()) {
-      const val = stored.trim();
-      // Only restore if not a stale dead Wi-Fi IP, old tunnel or emulator placeholder
-      if (
-        !val.includes("10.153.209.171") &&
-        !val.includes("10.0.2.2") &&
-        !val.includes("anotherearth")
-      ) {
+      const val = stored.trim().replace(/\/+$/, "");
+      // If stored value is identical to canonical remote URL, it's always valid
+      if (val === CANONICAL_REMOTE_URL) {
+        API = val;
+        http.defaults.baseURL = API;
+        return;
+      }
+      // Proactively test if the stored custom IP is alive
+      const check = await testServerHealth(val, 2500);
+      if (check.ok) {
         API = val;
         http.defaults.baseURL = API;
       } else {
-        // Clear obsolete stored URLs so default tunnel URL takes effect
+        // Dead IP from an old Wi-Fi network: purge it and revert to canonical URL
         AsyncStorage.removeItem("custom_api_url").catch(() => {});
+        API = resolveApiBaseUrl();
+        http.defaults.baseURL = API;
       }
     }
   })
   .catch(() => {});
+
+/**
+ * Resilient POST helper with automatic multi-endpoint failover.
+ * If the current baseURL suffers a network timeout or connection failure,
+ * candidate endpoints are automatically tried. If any responds, the working
+ * URL is saved as the new baseURL.
+ */
+export async function tryPostWithFallback(
+  path: string,
+  data: any,
+  config?: any
+): Promise<any> {
+  try {
+    return await http.post(path, data, { ...config, timeout: config?.timeout || 12000 });
+  } catch (err: any) {
+    // If the server answered with an HTTP error response (e.g. 401 Unauthorized),
+    // re-throw immediately — server was reached.
+    if (err?.response) {
+      throw err;
+    }
+
+    // Network connection failed on current baseURL. Try candidate endpoints.
+    const candidates = getCandidateEndpoints();
+    for (const candidate of candidates) {
+      if (candidate === http.defaults.baseURL) continue;
+      try {
+        const res = await axios.post(`${candidate}${path}`, data, {
+          ...config,
+          timeout: 10000,
+        });
+        updateApiBaseUrl(candidate);
+        return res;
+      } catch (fallbackErr: any) {
+        if (fallbackErr?.response) {
+          updateApiBaseUrl(candidate);
+          throw fallbackErr;
+        }
+      }
+    }
+
+    throw err;
+  }
+}
 
 // The hierarchy is shared by several screens. Fetch it once per app session
 // instead of making a full network request each time a selector mounts.
@@ -360,14 +551,30 @@ export default function App() {
   return (
     <ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
       {user ? (
-        <AppShell
-          user={user}
-          onLogout={async () => {
-            delete http.defaults.headers.common.Authorization;
-            await AsyncStorage.removeItem("attendai_user");
-            setUser(null);
-          }}
-        />
+        user.role === "student" && user.must_reset_password ? (
+          <StudentPasswordResetScreen
+            user={user}
+            onPasswordReset={async (updatedUser) => {
+              const fullUser = { ...user, ...updatedUser, must_reset_password: false };
+              await AsyncStorage.setItem("attendai_user", JSON.stringify(fullUser));
+              setUser(fullUser);
+            }}
+            onLogout={async () => {
+              delete http.defaults.headers.common.Authorization;
+              await AsyncStorage.removeItem("attendai_user");
+              setUser(null);
+            }}
+          />
+        ) : (
+          <AppShell
+            user={user}
+            onLogout={async () => {
+              delete http.defaults.headers.common.Authorization;
+              await AsyncStorage.removeItem("attendai_user");
+              setUser(null);
+            }}
+          />
+        )
       ) : (
         <Login
           onLogin={async (u) => {
@@ -377,6 +584,740 @@ export default function App() {
         />
       )}
     </ThemeContext.Provider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MANDATORY FIRST-TIME SCHOLAR PASSWORD RESET SCREEN
+// ---------------------------------------------------------------------------
+function StudentPasswordResetScreen({
+  user,
+  onPasswordReset,
+  onLogout,
+}: {
+  user: any;
+  onPasswordReset: (updatedUser: any) => Promise<void> | void;
+  onLogout: () => Promise<void> | void;
+}) {
+  const { theme, isDark, toggleTheme } = useAppTheme();
+  const [currentPassword, setCurrentPassword] = useState("dsvv@123#");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const scholarName = user?.display_name || user?.name || user?.username || "Scholar";
+  const scholarId = user?.student_id || user?.username || "";
+
+  // Password requirement checks
+  const isMinLength = newPassword.length >= 6;
+  const isNotDefault = newPassword.length > 0 && newPassword !== "dsvv@123#";
+  const isMatching = newPassword.length > 0 && newPassword === confirmPassword;
+
+  const handleSubmit = async () => {
+    setError("");
+    if (!currentPassword) {
+      setError("Please enter your current temporary password.");
+      return;
+    }
+    if (!newPassword) {
+      setError("Please enter a new personalized password.");
+      return;
+    }
+    if (newPassword.length < 6) {
+      setError("New password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword === "dsvv@123#") {
+      setError("New password cannot be the default password (dsvv@123#). Please create a personalized password.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setError("New password must be different from your current password.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("New password and confirm password do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await http.post("/auth/reset-password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+        confirm_password: confirmPassword,
+        username: scholarId,
+      });
+
+      Alert.alert(
+        "Password Established",
+        "Your personalized security password has been saved. Welcome to Dev Sanskriti Vishwavidyalaya Scholar Portal!",
+        [
+          {
+            text: "Enter Portal",
+            onPress: () => {
+              onPasswordReset(res.data?.user || { must_reset_password: false });
+            },
+          },
+        ],
+      );
+    } catch (e: any) {
+      const msg =
+        e?.response?.data?.detail ||
+        "Could not update password. Please check your credentials and try again.";
+      setError(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.bg }]}>
+      <StatusBar style={theme.statusBarStyle} />
+      {/* Top Navigation Row */}
+      <View style={resetStyles.topNavRow}>
+        <View style={resetStyles.brandMini}>
+          <Image
+            source={require("./assets/pratyaksha-logo.jpg")}
+            style={resetStyles.brandMiniLogo}
+            resizeMode="contain"
+          />
+          <Text style={[resetStyles.brandMiniText, { color: theme.text }]}>PRATYAKSH</Text>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Pressable
+            style={[resetStyles.iconCircleBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+            onPress={toggleTheme}
+          >
+            <MaterialCommunityIcons
+              name={isDark ? "weather-sunny" : "weather-night"}
+              size={18}
+              color={theme.cyan}
+            />
+          </Pressable>
+          <Pressable
+            style={[resetStyles.iconCircleBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+            onPress={onLogout}
+          >
+            <MaterialCommunityIcons name="logout" size={18} color={theme.rose} />
+          </Pressable>
+        </View>
+      </View>
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={resetStyles.scrollContainer}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Header Card */}
+          <View style={resetStyles.headerCard}>
+            <View style={[resetStyles.securityBadge, { backgroundColor: theme.amberGlow, borderColor: theme.amber }]}>
+              <MaterialCommunityIcons name="shield-key-outline" size={14} color={theme.amber} />
+              <Text style={[resetStyles.securityBadgeText, { color: theme.amber }]}>
+                FIRST-TIME SECURITY SETUP
+              </Text>
+            </View>
+
+            <Text style={[resetStyles.titleText, { color: theme.text }]}>
+              Create Personal Password
+            </Text>
+            <Text style={[resetStyles.subText, { color: theme.muted }]}>
+              Welcome, <Text style={{ color: theme.cyan, fontWeight: "700" }}>{scholarName}</Text>! For your account security, Dev Sanskriti Vishwavidyalaya requires all scholars to replace the temporary default password (<Text style={{ color: theme.cyan, fontWeight: "700" }}>dsvv@123#</Text>) with a personal secure password before accessing academic records.
+            </Text>
+          </View>
+
+          {/* Scholar Meta Card */}
+          <View style={[resetStyles.scholarCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright }]}>
+            <View style={resetStyles.scholarInfoRow}>
+              <View style={[resetStyles.avatarCircle, { backgroundColor: theme.cyanGlow }]}>
+                <MaterialCommunityIcons name="school-outline" size={22} color={theme.cyan} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[resetStyles.scholarName, { color: theme.text }]} numberOfLines={1}>
+                  {scholarName}
+                </Text>
+                <Text style={[resetStyles.scholarSub, { color: theme.muted }]} numberOfLines={1}>
+                  Scholar ID: {scholarId} • Student Portal
+                </Text>
+              </View>
+              <View style={[resetStyles.defaultPill, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}>
+                <Text style={[resetStyles.defaultPillText, { color: theme.cyan }]}>dsvv@123#</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Form Card */}
+          <View style={[resetStyles.formCard, { backgroundColor: theme.cardGlass, borderColor: theme.borderBright }]}>
+            {/* Current / Default Password */}
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                Current Password (Default: dsvv@123#)
+              </Text>
+              <View style={[styles.inputContainerBox, { backgroundColor: theme.bgElevated, borderColor: currentPassword.length > 0 ? theme.borderAccent : theme.border }]}>
+                <MaterialCommunityIcons name="lock-clock" size={18} color={theme.cyan} style={styles.inputPrefixIcon} />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={currentPassword}
+                  onChangeText={setCurrentPassword}
+                  secureTextEntry={!showCurrent}
+                  placeholder="Enter current password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowCurrent((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons name={showCurrent ? "eye-off-outline" : "eye-outline"} size={18} color={theme.muted} />
+                </Pressable>
+              </View>
+            </View>
+
+            {/* New Password */}
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                New Password (Min. 6 Characters)
+              </Text>
+              <View style={[styles.inputContainerBox, { backgroundColor: theme.bgElevated, borderColor: newPassword.length > 0 ? theme.borderAccent : theme.border }]}>
+                <MaterialCommunityIcons name="shield-lock-outline" size={18} color={theme.cyan} style={styles.inputPrefixIcon} />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  secureTextEntry={!showNew}
+                  placeholder="Enter new password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowNew((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons name={showNew ? "eye-off-outline" : "eye-outline"} size={18} color={theme.muted} />
+                </Pressable>
+              </View>
+            </View>
+
+            {/* Confirm New Password */}
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                Confirm New Password
+              </Text>
+              <View style={[styles.inputContainerBox, { backgroundColor: theme.bgElevated, borderColor: confirmPassword.length > 0 ? theme.borderAccent : theme.border }]}>
+                <MaterialCommunityIcons name="lock-check-outline" size={18} color={confirmPassword && confirmPassword === newPassword ? theme.emerald : theme.cyan} style={styles.inputPrefixIcon} />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry={!showConfirm}
+                  placeholder="Re-enter new password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowConfirm((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons name={showConfirm ? "eye-off-outline" : "eye-outline"} size={18} color={theme.muted} />
+                </Pressable>
+              </View>
+            </View>
+
+            {/* Requirements Checklist */}
+            <View style={[resetStyles.checklistCard, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}>
+              <Text style={[resetStyles.checklistTitle, { color: theme.textSecondary }]}>PASSWORD REQUIREMENTS</Text>
+              
+              <View style={resetStyles.checklistItem}>
+                <MaterialCommunityIcons
+                  name={isMinLength ? "check-circle" : "checkbox-blank-circle-outline"}
+                  size={16}
+                  color={isMinLength ? theme.emerald : theme.muted}
+                />
+                <Text style={[resetStyles.checklistText, { color: isMinLength ? theme.text : theme.muted }]}>
+                  At least 6 characters long
+                </Text>
+              </View>
+
+              <View style={resetStyles.checklistItem}>
+                <MaterialCommunityIcons
+                  name={isNotDefault ? "check-circle" : "checkbox-blank-circle-outline"}
+                  size={16}
+                  color={isNotDefault ? theme.emerald : theme.muted}
+                />
+                <Text style={[resetStyles.checklistText, { color: isNotDefault ? theme.text : theme.muted }]}>
+                  Different from default password (dsvv@123#)
+                </Text>
+              </View>
+
+              <View style={resetStyles.checklistItem}>
+                <MaterialCommunityIcons
+                  name={isMatching ? "check-circle" : "checkbox-blank-circle-outline"}
+                  size={16}
+                  color={isMatching ? theme.emerald : theme.muted}
+                />
+                <Text style={[resetStyles.checklistText, { color: isMatching ? theme.text : theme.muted }]}>
+                  Passwords match
+                </Text>
+              </View>
+            </View>
+
+            {/* Error Banner */}
+            {!!error && (
+              <View style={[styles.errorBannerBox, { backgroundColor: theme.roseGlow, borderColor: theme.rose, marginTop: 14 }]}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={17} color={theme.rose} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.errorBannerText, { color: theme.rose }]}>{error}</Text>
+                </View>
+              </View>
+            )}
+
+            {/* Primary Submit Button */}
+            <Pressable
+              style={[
+                styles.primaryNeonButton,
+                { backgroundColor: theme.cyan, marginTop: 18 },
+                busy && { opacity: 0.65 },
+              ]}
+              onPress={handleSubmit}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+              ) : (
+                <View style={styles.submitRow}>
+                  <MaterialCommunityIcons
+                    name="lock-reset"
+                    size={20}
+                    color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                  />
+                  <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                    SAVE PASSWORD & ENTER PORTAL
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+
+            {/* Sign Out Link */}
+            <Pressable
+              style={[resetStyles.secondaryOutlineBtn, { borderColor: theme.border, marginTop: 12 }]}
+              onPress={onLogout}
+              disabled={busy}
+            >
+              <MaterialCommunityIcons name="arrow-left" size={16} color={theme.muted} />
+              <Text style={[resetStyles.secondaryOutlineBtnText, { color: theme.muted }]}>
+                Back to Sign In
+              </Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const resetStyles = StyleSheet.create({
+  topNavRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  brandMini: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  brandMiniLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+  },
+  brandMiniText: {
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+  iconCircleBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scrollContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 40,
+  },
+  headerCard: {
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  securityBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
+  securityBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  titleText: {
+    fontSize: 24,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    marginBottom: 8,
+  },
+  subText: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  scholarCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 16,
+  },
+  scholarInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  avatarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scholarName: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  scholarSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  defaultPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  defaultPillText: {
+    fontSize: 11,
+    fontWeight: "700",
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  formCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 18,
+  },
+  checklistCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  checklistTitle: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  checklistItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginVertical: 3,
+  },
+  checklistText: {
+    fontSize: 12,
+  },
+  secondaryOutlineBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  secondaryOutlineBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+});
+
+// ---------------------------------------------------------------------------
+// SERVER CONFIGURATION & DIAGNOSTICS MODAL
+// ---------------------------------------------------------------------------
+function ServerConfigModal({
+  visible,
+  onClose,
+  onServerChanged,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onServerChanged?: () => void;
+}) {
+  const { theme, isDark } = useAppTheme();
+  const [urlInput, setUrlInput] = useState(getApiBaseUrl());
+  const [testing, setTesting] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string>("");
+  const [statusType, setStatusType] = useState<"ok" | "error" | "info">("info");
+
+  useEffect(() => {
+    if (visible) {
+      setUrlInput(getApiBaseUrl());
+      testUrl(getApiBaseUrl());
+    }
+  }, [visible]);
+
+  const testUrl = async (targetUrl: string) => {
+    setTesting(true);
+    setStatusMessage("Pinging server /health...");
+    setStatusType("info");
+    const res = await testServerHealth(targetUrl, 4000);
+    setTesting(false);
+    if (res.ok) {
+      setStatusMessage(`🟢 Online (${res.latencyMs}ms) - API healthy`);
+      setStatusType("ok");
+    } else {
+      setStatusMessage(`🔴 Unreachable (${res.error || "Connection timed out"})`);
+      setStatusType("error");
+    }
+  };
+
+  const handleApply = (targetUrl: string) => {
+    const clean = targetUrl.trim().replace(/\/+$/, "");
+    if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
+      Alert.alert("Invalid URL", "Server URL must start with http:// or https://");
+      return;
+    }
+    updateApiBaseUrl(clean);
+    onServerChanged?.();
+    onClose();
+  };
+
+  const handleAutoDetect = async () => {
+    setTesting(true);
+    setStatusMessage("Probing available network endpoints...");
+    setStatusType("info");
+    const best = await autoDiscoverServer();
+    setTesting(false);
+    setUrlInput(best);
+    testUrl(best);
+    onServerChanged?.();
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.65)",
+          justifyContent: "center",
+          alignItems: "center",
+          padding: 20,
+        }}
+      >
+        <View
+          style={{
+            width: "100%",
+            maxWidth: 420,
+            backgroundColor: theme.card,
+            borderRadius: 16,
+            padding: 22,
+            borderWidth: 1,
+            borderColor: theme.borderBright,
+            shadowColor: "#000",
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.25,
+            shadowRadius: 12,
+            elevation: 8,
+          }}
+        >
+          {/* Header */}
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <MaterialCommunityIcons name="server-network" size={22} color={theme.cyan} />
+              <Text style={{ fontSize: 17, fontWeight: "700", color: theme.text }}>Server Connection</Text>
+            </View>
+            <Pressable onPress={onClose} style={{ padding: 4 }}>
+              <MaterialCommunityIcons name="close" size={20} color={theme.muted} />
+            </Pressable>
+          </View>
+
+          {/* Status Message */}
+          <View
+            style={{
+              padding: 10,
+              borderRadius: 8,
+              backgroundColor:
+                statusType === "ok"
+                  ? isDark ? "rgba(16,185,129,0.12)" : "rgba(16,185,129,0.08)"
+                  : statusType === "error"
+                  ? isDark ? "rgba(239,68,68,0.12)" : "rgba(239,68,68,0.08)"
+                  : isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)",
+              marginBottom: 16,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: "600",
+                color:
+                  statusType === "ok"
+                    ? theme.emerald
+                    : statusType === "error"
+                    ? theme.rose
+                    : theme.textSecondary,
+              }}
+            >
+              {statusMessage || "Configure backend server endpoint"}
+            </Text>
+          </View>
+
+          {/* Quick Presets */}
+          <Text style={{ fontSize: 12, fontWeight: "600", color: theme.muted, marginBottom: 8, textTransform: "uppercase" }}>
+            Network Presets
+          </Text>
+          <View style={{ gap: 8, marginBottom: 16 }}>
+            {/* Cloud Gateway */}
+            <Pressable
+              onPress={() => {
+                setUrlInput(CANONICAL_REMOTE_URL);
+                testUrl(CANONICAL_REMOTE_URL);
+              }}
+              style={{
+                padding: 10,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: urlInput === CANONICAL_REMOTE_URL ? theme.cyan : theme.border,
+                backgroundColor: urlInput === CANONICAL_REMOTE_URL ? (isDark ? "rgba(37,99,235,0.12)" : "rgba(37,99,235,0.06)") : theme.bgElevated,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text }}>🌐 Cloud Gateway (Recommended)</Text>
+                <Text style={{ fontSize: 11, color: theme.muted }}>Works anywhere on cellular 4G/5G or Wi-Fi</Text>
+              </View>
+              {urlInput === CANONICAL_REMOTE_URL && <MaterialCommunityIcons name="check-circle" size={18} color={theme.cyan} />}
+            </Pressable>
+
+            {/* Local Wi-Fi */}
+            <Pressable
+              onPress={() => {
+                const lanUrl = "http://10.50.37.171:8080";
+                setUrlInput(lanUrl);
+                testUrl(lanUrl);
+              }}
+              style={{
+                padding: 10,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: urlInput.includes("10.50.37.171") ? theme.cyan : theme.border,
+                backgroundColor: urlInput.includes("10.50.37.171") ? (isDark ? "rgba(37,99,235,0.12)" : "rgba(37,99,235,0.06)") : theme.bgElevated,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: "700", color: theme.text }}>📶 Campus Wi-Fi LAN (Direct)</Text>
+                <Text style={{ fontSize: 11, color: theme.muted }}>http://10.50.37.171:8080</Text>
+              </View>
+              {urlInput.includes("10.50.37.171") && <MaterialCommunityIcons name="check-circle" size={18} color={theme.cyan} />}
+            </Pressable>
+          </View>
+
+          {/* Custom Server URL Input */}
+          <Text style={{ fontSize: 12, fontWeight: "600", color: theme.muted, marginBottom: 6, textTransform: "uppercase" }}>
+            Custom Server Endpoint
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
+            <TextInput
+              value={urlInput}
+              onChangeText={setUrlInput}
+              placeholder="https://..."
+              placeholderTextColor={theme.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={{
+                flex: 1,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: theme.border,
+                backgroundColor: theme.bgElevated,
+                color: theme.text,
+                fontSize: 13,
+              }}
+            />
+            <Pressable
+              disabled={testing}
+              onPress={() => testUrl(urlInput)}
+              style={{
+                paddingHorizontal: 12,
+                justifyContent: "center",
+                borderRadius: 8,
+                backgroundColor: theme.bgElevated,
+                borderWidth: 1,
+                borderColor: theme.borderBright,
+              }}
+            >
+              {testing ? <ActivityIndicator size="small" color={theme.cyan} /> : <Text style={{ fontSize: 12, fontWeight: "600", color: theme.cyan }}>Test</Text>}
+            </Pressable>
+          </View>
+
+          {/* Action Buttons */}
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              disabled={testing}
+              onPress={handleAutoDetect}
+              style={{
+                flex: 1,
+                paddingVertical: 10,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: theme.borderBright,
+                backgroundColor: theme.bgElevated,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: "600", color: theme.textSecondary }}>Auto-Detect</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => handleApply(urlInput)}
+              style={{
+                flex: 1,
+                paddingVertical: 10,
+                borderRadius: 8,
+                backgroundColor: theme.cyan,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: "700", color: "#FFFFFF" }}>Save & Connect</Text>
+            </Pressable>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -393,25 +1334,26 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
   const [error, setError] = useState("");
   const [showRegistration, setShowRegistration] = useState(false);
   const [registeredVisitor, setRegisteredVisitor] = useState<any>(null);
-  const [currentApi, setCurrentApi] = useState(API);
+
   const [showServerModal, setShowServerModal] = useState(false);
-  const [testStatus, setTestStatus] = useState<
-    "checking" | "online" | "offline"
-  >("checking");
-  const [customInput, setCustomInput] = useState(API);
-  const [testingCustom, setTestingCustom] = useState(false);
+  const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [serverPing, setServerPing] = useState<number | null>(null);
+
+  const checkConnection = useCallback(async () => {
+    setServerStatus("checking");
+    const res = await testServerHealth(getApiBaseUrl(), 3500);
+    if (res.ok) {
+      setServerStatus("online");
+      setServerPing(res.latencyMs || 0);
+    } else {
+      setServerStatus("offline");
+      setServerPing(null);
+    }
+  }, []);
 
   useEffect(() => {
-    setCurrentApi(http.defaults.baseURL || API);
-    setCustomInput(http.defaults.baseURL || API);
-    http
-      .get("/health", { timeout: 4000 })
-      .then((res) => {
-        if (res.data?.status === "ok") setTestStatus("online");
-        else setTestStatus("offline");
-      })
-      .catch(() => setTestStatus("offline"));
-  }, []);
+    checkConnection();
+  }, [checkConnection]);
 
   const handleRoleSelect = (selectedRole: Role) => {
     setRole(selectedRole);
@@ -432,7 +1374,7 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
     setBusy(true);
     setError("");
     try {
-      const res = await http.post("/auth/login", {
+      const res = await tryPostWithFallback("/auth/login", {
         username: username.trim(),
         password,
         role,
@@ -446,8 +1388,9 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
       onLogin(userData);
     } catch (e: any) {
       if (!e?.response) {
+        checkConnection();
         setError(
-          `Unable to connect to server at ${http.defaults.baseURL || API}. Please verify your connection or configure the server URL.`
+          `Unable to connect to server (${getApiBaseUrl()}). Please check your connection or tap the Server icon above to switch servers.`
         );
       } else {
         const status = e.response.status;
@@ -503,67 +1446,75 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Top Controls: Server Status & Theme Toggle */}
+        {/* Top Controls: Server Settings & Theme Toggle */}
         <View style={styles.loginTopControls}>
           <Pressable
             onPress={() => setShowServerModal(true)}
             accessibilityRole="button"
-            accessibilityLabel="Configure server connection"
+            accessibilityLabel="Configure Server Endpoint"
             style={[
               styles.themePillBtn,
               {
                 backgroundColor:
-                  testStatus === "online"
-                    ? theme.emeraldGlow
-                    : testStatus === "checking"
-                      ? theme.cyanGlow
-                      : theme.roseGlow,
+                  serverStatus === "online"
+                    ? isDark ? "rgba(16,185,129,0.12)" : "rgba(16,185,129,0.08)"
+                    : serverStatus === "offline"
+                    ? isDark ? "rgba(239,68,68,0.12)" : "rgba(239,68,68,0.08)"
+                    : isDark ? "rgba(255,255,255,0.06)" : "rgba(37,99,235,0.06)",
                 borderColor:
-                  testStatus === "online"
+                  serverStatus === "online"
                     ? theme.emerald
-                    : testStatus === "checking"
-                      ? theme.cyan
-                      : theme.rose,
+                    : serverStatus === "offline"
+                    ? theme.rose
+                    : theme.border,
               },
             ]}
           >
-            <MaterialCommunityIcons
-              name={
-                testStatus === "online"
-                  ? "server-network"
-                  : testStatus === "checking"
-                    ? "sync"
-                    : "server-network-off"
-              }
-              size={15}
-              color={
-                testStatus === "online"
-                  ? theme.emerald
-                  : testStatus === "checking"
-                    ? theme.cyan
-                    : theme.rose
-              }
+            <View
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: 4,
+                backgroundColor:
+                  serverStatus === "online"
+                    ? theme.emerald
+                    : serverStatus === "offline"
+                    ? theme.rose
+                    : theme.amber,
+              }}
             />
             <Text
               style={[
                 styles.themePillText,
                 {
                   color:
-                    testStatus === "online"
+                    serverStatus === "online"
                       ? theme.emerald
-                      : testStatus === "checking"
-                        ? theme.cyan
-                        : theme.rose,
-                  fontWeight: "600",
+                      : serverStatus === "offline"
+                      ? theme.rose
+                      : theme.textSecondary,
+                  maxWidth: 150,
                 },
               ]}
+              numberOfLines={1}
             >
-              {testStatus === "online"
-                ? "Server: Online"
-                : testStatus === "checking"
-                  ? "Checking..."
-                  : "Server: Offline"}
+              {serverStatus === "online"
+                ? `${serverPing ?? ""}ms • ${getApiBaseUrl().replace(/^https?:\/\//, "").split("/")[0]}`
+                : serverStatus === "offline"
+                ? "Offline • Tap to fix"
+                : "Checking..."}
             </Text>
+            <MaterialCommunityIcons
+              name="server-network"
+              size={13}
+              color={
+                serverStatus === "online"
+                  ? theme.emerald
+                  : serverStatus === "offline"
+                  ? theme.rose
+                  : theme.textSecondary
+              }
+            />
           </Pressable>
 
           <Pressable
@@ -592,6 +1543,12 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
             </Text>
           </Pressable>
         </View>
+
+        <ServerConfigModal
+          visible={showServerModal}
+          onClose={() => setShowServerModal(false)}
+          onServerChanged={checkConnection}
+        />
 
         {/* ── Brand Hero Section ── */}
         <View style={styles.loginBrandHeader}>
@@ -792,6 +1749,32 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 />
               </Pressable>
             </View>
+            {role === "student" && (
+              <View
+                style={[
+                  styles.studentPasswordHintBox,
+                  { backgroundColor: theme.cyanGlow, borderColor: theme.cyan },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="shield-key-outline"
+                  size={15}
+                  color={theme.cyan}
+                />
+                <Text
+                  style={[
+                    styles.studentPasswordHintText,
+                    { color: theme.textSecondary },
+                  ]}
+                >
+                  Default Scholar Password:{" "}
+                  <Text style={{ color: theme.cyan, fontWeight: "700" }}>
+                    dsvv@123#
+                  </Text>{" "}
+                  (First login prompts mandatory password reset)
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Error Banner */}
@@ -811,23 +1794,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
                 <Text style={[styles.errorBannerText, { color: theme.rose }]}>
                   {error}
                 </Text>
-                {error.toLowerCase().includes("unable to connect") && (
-                  <Pressable
-                    onPress={() => setShowServerModal(true)}
-                    style={{
-                      marginTop: 6,
-                      alignSelf: "flex-start",
-                      backgroundColor: theme.rose,
-                      paddingHorizontal: 10,
-                      paddingVertical: 5,
-                      borderRadius: 6,
-                    }}
-                  >
-                    <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700" }}>
-                      CONFIGURE SERVER URL ⚙
-                    </Text>
-                  </Pressable>
-                )}
               </View>
             </View>
           )}
@@ -905,249 +1871,6 @@ function Login({ onLogin }: { onLogin: (u: any) => void }) {
           Pratyaksh Academic Portal • Enterprise Biometric Attendance
         </Text>
       </ScrollView>
-
-      {/* Backend Server Configuration Modal */}
-      <Modal
-        visible={showServerModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowServerModal(false)}
-      >
-        <Pressable
-          style={styles.modalBackdropOverlay}
-          onPress={() => setShowServerModal(false)}
-        >
-          <Pressable
-            style={[
-              styles.modalSheetCard,
-              {
-                backgroundColor: theme.cardGlass,
-                borderColor: theme.borderBright,
-              },
-            ]}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={styles.modalSheetHeader}>
-              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
-                Server Connection (Docker)
-              </Text>
-              <Pressable onPress={() => setShowServerModal(false)}>
-                <MaterialCommunityIcons
-                  name="close"
-                  size={22}
-                  color={theme.text}
-                />
-              </Pressable>
-            </View>
-
-            <Text
-              style={[
-                styles.fieldLabelText,
-                { color: theme.muted, marginTop: 10 },
-              ]}
-            >
-              API ADDRESS (HOST OR LAN IP)
-            </Text>
-            <View
-              style={[
-                styles.inputContainerBox,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.borderAccent,
-                },
-              ]}
-            >
-              <TextInput
-                style={[styles.textInputBox, { color: theme.text }]}
-                value={customInput}
-                onChangeText={setCustomInput}
-                placeholder="https://cair-ms-7e06.tail49e3b1.ts.net"
-                placeholderTextColor={theme.muted}
-                autoCapitalize="none"
-              />
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-              <Pressable
-                style={[
-                  styles.smallActionBtn,
-                  {
-                    flex: 1,
-                    backgroundColor: theme.bgElevated,
-                    borderColor: theme.cyan,
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={async () => {
-                  setTestingCustom(true);
-                  try {
-                    const cleaned = customInput.trim().replace(/\/+$/, "");
-                    const res = await axios.get(`${cleaned}/health`, {
-                      timeout: 5000,
-                    });
-                    if (res.data?.status === "ok") {
-                      Alert.alert(
-                        "Connection Success ✓",
-                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`,
-                      );
-                    }
-                  } catch (err: any) {
-                    Alert.alert(
-                      "Connection Failed ✗",
-                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`,
-                    );
-                  } finally {
-                    setTestingCustom(false);
-                  }
-                }}
-                disabled={testingCustom}
-              >
-                {testingCustom ? (
-                  <ActivityIndicator size="small" color={theme.cyan} />
-                ) : (
-                  <>
-                    <MaterialCommunityIcons
-                      name="lan-connect"
-                      size={16}
-                      color={theme.cyan}
-                    />
-                    <Text
-                      style={[styles.smallActionBtnText, { color: theme.cyan }]}
-                    >
-                      TEST PING
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.smallActionBtn,
-                  {
-                    flex: 1,
-                    backgroundColor: theme.cyan,
-                    borderColor: theme.cyan,
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={() => {
-                  const cleaned = customInput.trim().replace(/\/+$/, "");
-                  updateApiBaseUrl(cleaned);
-                  setCurrentApi(cleaned);
-                  setShowServerModal(false);
-                  axios
-                    .get(`${cleaned}/health`, { timeout: 4000 })
-                    .then(() => setTestStatus("online"))
-                    .catch(() => setTestStatus("offline"));
-                  Alert.alert(
-                    "Server Configured",
-                    `API URL updated to:\n${cleaned}`,
-                  );
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="content-save-outline"
-                  size={16}
-                  color="#000"
-                />
-                <Text
-                  style={[
-                    styles.smallActionBtnText,
-                    { color: "#000", fontWeight: "700" },
-                  ]}
-                >
-                  SAVE & USE
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text
-              style={[
-                styles.fieldLabelText,
-                { color: theme.muted, marginTop: 18 },
-              ]}
-            >
-              QUICK PRESETS
-            </Text>
-
-            <View style={{ gap: 8, marginTop: 6 }}>
-              {[
-                {
-                  label: "Tailscale Funnel (Remote)",
-                  url: "https://cair-ms-7e06.tail49e3b1.ts.net",
-                },
-                {
-                  label: "Host Wi-Fi Direct (Port 8000)",
-                  url: "http://192.168.0.108:8000",
-                },
-                {
-                  label: "Host Wi-Fi Nginx (Port 8080)",
-                  url: "http://192.168.0.108:8080",
-                },
-                {
-                  label: "Localhost Direct (Port 8000)",
-                  url: "http://localhost:8000",
-                },
-                {
-                  label: "Localhost Nginx (Port 8080)",
-                  url: "http://localhost:8080",
-                },
-                {
-                  label: "Android Emulator (Port 8000)",
-                  url: "http://10.0.2.2:8000",
-                },
-              ].map((preset) => (
-                <Pressable
-                  key={preset.url}
-                  style={[
-                    styles.rosterItemCard,
-                    {
-                      paddingVertical: 10,
-                      backgroundColor: theme.bgElevated,
-                      borderColor:
-                        currentApi === preset.url ? theme.cyan : theme.border,
-                    },
-                  ]}
-                  onPress={() => {
-                    setCustomInput(preset.url);
-                    updateApiBaseUrl(preset.url);
-                    setCurrentApi(preset.url);
-                    setShowServerModal(false);
-                    axios
-                      .get(`${preset.url}/health`, { timeout: 4000 })
-                      .then(() => setTestStatus("online"))
-                      .catch(() => setTestStatus("offline"));
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        color: theme.text,
-                        fontSize: 13,
-                        fontWeight: "600",
-                      }}
-                    >
-                      {preset.label}
-                    </Text>
-                    <Text
-                      style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}
-                    >
-                      {preset.url}
-                    </Text>
-                  </View>
-                  {currentApi === preset.url && (
-                    <MaterialCommunityIcons
-                      name="check-circle"
-                      size={18}
-                      color={theme.cyan}
-                    />
-                  )}
-                </Pressable>
-              ))}
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -1189,8 +1912,29 @@ function OthersRegistrationView({
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const pickGalleryPhoto = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+      if (!res.canceled && res.assets?.[0]?.uri) {
+        setPhotoUri(res.assets[0].uri);
+      }
+    } catch {
+      Alert.alert("Photo Selection", "Could not load selected photo from gallery.");
+    }
+  };
+
+  const removePhoto = () => {
+    setPhotoUri(null);
+  };
 
   const PURPOSES = [
     "Interview",
@@ -1268,27 +2012,43 @@ function OthersRegistrationView({
     setBusy(true);
     setError("");
     try {
-      const payload = {
-        full_name: fullName.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone.trim(),
-        purpose_of_visit: purposeOfVisit,
-        purpose_other:
-          purposeOfVisit === "Other" ? purposeOther.trim() : null,
-        expected_check_in: inIso,
-        expected_check_out: outIso,
-        identification_type: identificationType,
-        identification_number: identificationNumber.trim(),
-        password,
-        confirm_password: confirmPassword,
-      };
+      const formData = new FormData();
+      formData.append("full_name", fullName.trim());
+      formData.append("email", email.trim().toLowerCase());
+      formData.append("phone", phone.trim());
+      formData.append("purpose_of_visit", purposeOfVisit);
+      if (purposeOfVisit === "Other" && purposeOther.trim()) {
+        formData.append("purpose_other", purposeOther.trim());
+      }
+      formData.append("expected_check_in", inIso);
+      formData.append("expected_check_out", outIso);
+      formData.append("identification_type", identificationType);
+      formData.append("identification_number", identificationNumber.trim());
+      formData.append("password", password);
+      formData.append("confirm_password", confirmPassword);
 
-      const res = await http.post("/auth/others/register", payload);
-      onSuccess(res.data);
+      if (photoUri) {
+        const filename = photoUri.split("/").pop() || "visitor_profile.jpg";
+        const match = /\.(\w+)$/.exec(filename);
+        const ext = match ? match[1].toLowerCase() : "jpg";
+        const mimeType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+        formData.append("file", {
+          uri: photoUri,
+          name: filename.includes(".") ? filename : `${filename}.jpg`,
+          type: mimeType,
+        } as any);
+      }
+
+      const res = await tryPostWithFallback("/auth/others/register", formData);
+      onSuccess({
+        ...res.data,
+        localPhotoUri: photoUri,
+        profile_photo_base64: res.data?.profile_photo_base64 || photoUri,
+      });
     } catch (e: any) {
       if (!e?.response) {
         setError(
-          `Unable to connect to server at ${http.defaults.baseURL || API}. Please check your connection or configure the server URL.`
+          "Unable to connect to the server. Please check your network connection and try again."
         );
       } else {
         const detail = e.response.data?.detail;
@@ -1544,6 +2304,120 @@ function OthersRegistrationView({
             </View>
           </View>
 
+          {/* Optional Profile Picture Picker */}
+          <View style={styles.formGroup}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 6,
+              }}
+            >
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary, marginBottom: 0 }]}>
+                Profile Picture (Optional)
+              </Text>
+              <Text style={{ color: theme.muted, fontSize: 11, fontStyle: "italic" }}>
+                Gallery Photo
+              </Text>
+            </View>
+
+            {photoUri ? (
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 14,
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.border,
+                  borderWidth: 1,
+                  borderRadius: 12,
+                  padding: 12,
+                }}
+              >
+                <Image
+                  source={{ uri: photoUri }}
+                  style={{
+                    width: 64,
+                    height: 64,
+                    borderRadius: 32,
+                    borderWidth: 2,
+                    borderColor: theme.cyan,
+                  }}
+                  resizeMode="cover"
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}>
+                    Photo Selected
+                  </Text>
+                  <Text style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}>
+                    Will be displayed on your pass & when someone scans your QR
+                  </Text>
+                  <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+                    <Pressable
+                      onPress={pickGalleryPhoto}
+                      style={{
+                        paddingHorizontal: 10,
+                        paddingVertical: 4,
+                        borderRadius: 6,
+                        backgroundColor: theme.bg,
+                        borderWidth: 1,
+                        borderColor: theme.border,
+                      }}
+                    >
+                      <Text style={{ color: theme.cyan, fontSize: 11, fontWeight: "600" }}>
+                        Change
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={removePhoto}
+                      style={{
+                        paddingHorizontal: 10,
+                        paddingVertical: 4,
+                        borderRadius: 6,
+                        backgroundColor: theme.bg,
+                        borderWidth: 1,
+                        borderColor: theme.border,
+                      }}
+                    >
+                      <Text style={{ color: theme.rose, fontSize: 11, fontWeight: "600" }}>
+                        Remove
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <Pressable
+                onPress={pickGalleryPhoto}
+                style={[
+                  styles.inputContainerBox,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.border,
+                    borderStyle: "dashed",
+                    paddingVertical: 14,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                  },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="image-plus"
+                  size={24}
+                  color={theme.cyan}
+                />
+                <Text style={{ color: theme.cyan, fontSize: 13, fontWeight: "600" }}>
+                  Select Photo from Gallery
+                </Text>
+                <Text style={{ color: theme.muted, fontSize: 11 }}>
+                  Optional • Shown when someone scans your QR code
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
           {/* Section: Visit Logistics */}
           <Text
             style={[
@@ -1627,62 +2501,21 @@ function OthersRegistrationView({
             </View>
           )}
 
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <View style={[styles.formGroup, { flex: 1 }]}>
-              <Text
-                style={[styles.fieldLabelText, { color: theme.textSecondary }]}
-              >
-                Expected Check-In *
-              </Text>
-              <View
-                style={[
-                  styles.inputContainerBox,
-                  {
-                    backgroundColor: theme.bgElevated,
-                    borderColor: theme.border,
-                  },
-                ]}
-              >
-                <TextInput
-                  style={[
-                    styles.textInputBox,
-                    { color: theme.text, fontSize: 12 },
-                  ]}
-                  value={expectedCheckIn}
-                  onChangeText={setExpectedCheckIn}
-                  placeholder="YYYY-MM-DDTHH:mm"
-                  placeholderTextColor={theme.muted}
-                />
-              </View>
-            </View>
+          <View style={{ marginBottom: 12 }}>
+            <AppDateTimePickerField
+              label="Expected Check-In (Calendar Date & Clock Time) *"
+              value={expectedCheckIn}
+              onChange={(d, iso) => setExpectedCheckIn(iso)}
+              theme={theme}
+              containerStyle={{ marginBottom: 12 }}
+            />
 
-            <View style={[styles.formGroup, { flex: 1 }]}>
-              <Text
-                style={[styles.fieldLabelText, { color: theme.textSecondary }]}
-              >
-                Expected Check-Out *
-              </Text>
-              <View
-                style={[
-                  styles.inputContainerBox,
-                  {
-                    backgroundColor: theme.bgElevated,
-                    borderColor: theme.border,
-                  },
-                ]}
-              >
-                <TextInput
-                  style={[
-                    styles.textInputBox,
-                    { color: theme.text, fontSize: 12 },
-                  ]}
-                  value={expectedCheckOut}
-                  onChangeText={setExpectedCheckOut}
-                  placeholder="YYYY-MM-DDTHH:mm"
-                  placeholderTextColor={theme.muted}
-                />
-              </View>
-            </View>
+            <AppDateTimePickerField
+              label="Expected Check-Out (Calendar Date & Clock Time) *"
+              value={expectedCheckOut}
+              onChange={(d, iso) => setExpectedCheckOut(iso)}
+              theme={theme}
+            />
           </View>
 
           {/* Section: Identification */}
@@ -1945,12 +2778,28 @@ function OthersRegistrationSuccessView({
       }
     } else {
       try {
-        const fileUri = `${FileSystem.documentDirectory}visitor_pass_${visitor.visitor_id}.png`;
-        const res = await FileSystem.downloadAsync(downloadUrl, fileUri);
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(res.uri);
+        const dir = FileSystem.documentDirectory || FileSystem.cacheDirectory || "";
+        const fileUri = `${dir}visitor_pass_${visitor.visitor_id}.png`;
+        if (visitor.qr_data_uri && visitor.qr_data_uri.includes("base64,")) {
+          const base64Data = visitor.qr_data_uri.split("base64,")[1];
+          await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
         } else {
-          Alert.alert("Pass Downloaded", `Saved pass to:\n${res.uri}`);
+          const authorization = http.defaults.headers.common.Authorization;
+          const headers: Record<string, string> = {};
+          if (typeof authorization === "string" && authorization.trim()) {
+            headers.Authorization = authorization;
+          }
+          await FileSystem.downloadAsync(downloadUrl, fileUri, { headers });
+        }
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: "image/png",
+            dialogTitle: "Visitor Pass QR",
+          });
+        } else {
+          Alert.alert("Pass Downloaded", `Saved pass to:\n${fileUri}`);
         }
       } catch {
         Linking.openURL(downloadUrl).catch(() => {
@@ -2058,6 +2907,32 @@ function OthersRegistrationSuccessView({
               {visitor.visitor_id}
             </Text>
           </View>
+
+          {/* Visitor Photo if uploaded */}
+          {!!(visitor.localPhotoUri || visitor.profile_photo_url || visitor.profile_photo_base64) && (
+            <View style={{ alignItems: "center", marginBottom: 16 }}>
+              <Image
+                source={{
+                  uri:
+                    visitor.localPhotoUri ||
+                    visitor.profile_photo_base64 ||
+                    (visitor.profile_photo_url
+                      ? visitor.profile_photo_url.startsWith("http")
+                        ? visitor.profile_photo_url
+                        : `${http.defaults.baseURL || API}${visitor.profile_photo_url}`
+                      : ""),
+                }}
+                style={{
+                  width: 80,
+                  height: 80,
+                  borderRadius: 40,
+                  borderWidth: 2,
+                  borderColor: theme.cyan,
+                }}
+                resizeMode="cover"
+              />
+            </View>
+          )}
 
           {/* Generated QR Code Card */}
           <View
@@ -2208,6 +3083,52 @@ function OthersDashboardView({
     fetchProfile();
   }, [fetchProfile]);
 
+  const choosePhoto = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const asset = res.assets[0];
+      const form = new FormData();
+      form.append("file", {
+        uri: asset.uri,
+        name: "visitor_profile.jpg",
+        type: asset.mimeType || "image/jpeg",
+      } as any);
+      const uploadRes = await http.post("/auth/profile/photo", form);
+      const newPhoto = uploadRes.data?.profile_photo_base64 || asset.uri;
+      setProfile((prev: any) => ({
+        ...prev,
+        profile_photo_url: uploadRes.data?.profile_picture || prev?.profile_photo_url,
+        profile_picture: uploadRes.data?.profile_picture || prev?.profile_picture,
+        profile_photo_base64: newPhoto,
+      }));
+      Alert.alert("Photo Updated", "Your profile photo has been updated successfully.");
+    } catch {
+      Alert.alert("Upload Failed", "Could not update profile photo. Please try again.");
+    }
+  };
+
+  const visitorPhotoUri = useMemo(() => {
+    if (profile?.profile_photo_base64) {
+      return profile.profile_photo_base64;
+    }
+    const photoPath = profile?.profile_photo_url || profile?.profile_picture;
+    if (photoPath) {
+      return photoPath.startsWith("http")
+        ? photoPath
+        : `${http.defaults.baseURL || API}${photoPath.startsWith("/") ? "" : "/"}${photoPath}${photoPath.includes("?") ? "&" : "?"}${user?.token ? `token=${user.token}` : ""}`;
+    }
+    if (user?.profile_photo_base64) {
+      return user.profile_photo_base64;
+    }
+    return null;
+  }, [profile, user]);
+
   const handleDownload = async () => {
     if (!profile) return;
     const downloadUrl = `${http.defaults.baseURL || API}/visitors/${profile.visitor_id}/qr`;
@@ -2224,12 +3145,28 @@ function OthersDashboardView({
       }
     } else {
       try {
-        const fileUri = `${FileSystem.documentDirectory}visitor_pass_${profile.visitor_id}.png`;
-        const res = await FileSystem.downloadAsync(downloadUrl, fileUri);
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(res.uri);
+        const dir = FileSystem.documentDirectory || FileSystem.cacheDirectory || "";
+        const fileUri = `${dir}visitor_pass_${profile.visitor_id}.png`;
+        if (profile.qr_data_uri && profile.qr_data_uri.includes("base64,")) {
+          const base64Data = profile.qr_data_uri.split("base64,")[1];
+          await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
         } else {
-          Alert.alert("Pass Downloaded", `Saved pass to:\n${res.uri}`);
+          const authorization = http.defaults.headers.common.Authorization;
+          const headers: Record<string, string> = {};
+          if (typeof authorization === "string" && authorization.trim()) {
+            headers.Authorization = authorization;
+          }
+          await FileSystem.downloadAsync(downloadUrl, fileUri, { headers });
+        }
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: "image/png",
+            dialogTitle: "Visitor Pass QR",
+          });
+        } else {
+          Alert.alert("Pass Downloaded", `Saved pass to:\n${fileUri}`);
         }
       } catch {
         Linking.openURL(downloadUrl).catch(() => {
@@ -2403,11 +3340,74 @@ function OthersDashboardView({
             fontSize: 18,
             fontWeight: "800",
             letterSpacing: 1,
-            marginBottom: 16,
+            marginBottom: 12,
           }}
         >
           {profile.visitor_id}
         </Text>
+
+        {/* Profile Picture (just below VIS identifier) */}
+        <View style={{ alignItems: "center", marginBottom: 16 }}>
+          <View
+            style={{
+              width: 104,
+              height: 104,
+              borderRadius: 52,
+              borderWidth: 2.5,
+              borderColor: theme.cyan,
+              backgroundColor: theme.bgElevated,
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: isDark ? 0.35 : 0.1,
+              shadowRadius: 8,
+              elevation: 4,
+            }}
+          >
+            {visitorPhotoUri ? (
+              <Image
+                source={{ uri: visitorPhotoUri }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={{ alignItems: "center", justifyContent: "center" }}>
+                <MaterialCommunityIcons
+                  name="account"
+                  size={56}
+                  color={theme.muted}
+                />
+              </View>
+            )}
+          </View>
+
+          <Pressable
+            onPress={choosePhoto}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              marginTop: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 5,
+              borderRadius: 14,
+              backgroundColor: theme.bgElevated,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+          >
+            <MaterialCommunityIcons
+              name="camera-flip-outline"
+              size={13}
+              color={theme.cyan}
+            />
+            <Text style={{ color: theme.cyan, fontSize: 11, fontWeight: "600" }}>
+              {visitorPhotoUri ? "Change Photo" : "Add Profile Photo"}
+            </Text>
+          </Pressable>
+        </View>
 
         {/* QR Code Presentation Box */}
         <View
@@ -2642,21 +3642,14 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
       return ["Dashboard", "Attendance", "History", "QR", "Profile"];
     }
     if (role === "others") {
-      return ["Dashboard", "QR", "Profile"];
+      return ["Profile", "QR"];
     }
     return ["Dashboard", "Attendance", "Classes", "QR", "Profile"];
   }, [role]);
 
-  const [activeTab, setActiveTab] = useState("Dashboard");
+  const [activeTab, setActiveTab] = useState(role === "others" ? "Profile" : "Dashboard");
   const [unreadCount, setUnreadCount] = useState(0);
   const [showTopMenu, setShowTopMenu] = useState(false);
-  const [showServerModal, setShowServerModal] = useState(false);
-  const [currentApi, setCurrentApi] = useState(API);
-  const [customInput, setCustomInput] = useState(API);
-  const [testingCustom, setTestingCustom] = useState(false);
-  const [testStatus, setTestStatus] = useState<
-    "checking" | "online" | "offline"
-  >("online");
   const screenOpacity = useRef(new Animated.Value(1)).current;
   const screenLift = useRef(new Animated.Value(0)).current;
 
@@ -3045,23 +4038,6 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
             <Pressable
               style={styles.topMenuItem}
               onPress={() => {
-                setShowTopMenu(false);
-                setShowServerModal(true);
-              }}
-            >
-              <MaterialCommunityIcons
-                name="server-network"
-                size={18}
-                color={theme.amber}
-              />
-              <Text style={[styles.topMenuItemText, { color: theme.text }]}>
-                Server Connection
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.topMenuItem}
-              onPress={() => {
                 toggleTheme();
                 setShowTopMenu(false);
               }}
@@ -3098,248 +4074,6 @@ function AppShell({ user, onLogout }: { user: any; onLogout: () => void }) {
         </Pressable>
       </Modal>
 
-      {/* Backend Server Configuration Modal */}
-      <Modal
-        visible={showServerModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowServerModal(false)}
-      >
-        <Pressable
-          style={styles.modalBackdropOverlay}
-          onPress={() => setShowServerModal(false)}
-        >
-          <Pressable
-            style={[
-              styles.modalSheetCard,
-              {
-                backgroundColor: theme.cardGlass,
-                borderColor: theme.borderBright,
-              },
-            ]}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={styles.modalSheetHeader}>
-              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
-                Server Connection (Docker)
-              </Text>
-              <Pressable onPress={() => setShowServerModal(false)}>
-                <MaterialCommunityIcons
-                  name="close"
-                  size={22}
-                  color={theme.text}
-                />
-              </Pressable>
-            </View>
-
-            <Text
-              style={[
-                styles.fieldLabelText,
-                { color: theme.muted, marginTop: 10 },
-              ]}
-            >
-              API ADDRESS (HOST OR LAN IP)
-            </Text>
-            <View
-              style={[
-                styles.inputContainerBox,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.borderAccent,
-                },
-              ]}
-            >
-              <TextInput
-                style={[styles.textInputBox, { color: theme.text }]}
-                value={customInput}
-                onChangeText={setCustomInput}
-                placeholder="http://localhost:8000"
-                placeholderTextColor={theme.muted}
-                autoCapitalize="none"
-              />
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-              <Pressable
-                style={[
-                  styles.smallActionBtn,
-                  {
-                    flex: 1,
-                    backgroundColor: theme.bgElevated,
-                    borderColor: theme.cyan,
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={async () => {
-                  setTestingCustom(true);
-                  try {
-                    const cleaned = customInput.trim().replace(/\/+$/, "");
-                    const res = await axios.get(`${cleaned}/health`, {
-                      timeout: 5000,
-                    });
-                    if (res.data?.status === "ok") {
-                      Alert.alert(
-                        "Connection Success ✓",
-                        `Successfully connected to Docker backend!\n\nStatus: ${res.data.status}\nModel Loaded: ${res.data.model_loaded}\nDatabase: ${res.data.database}`,
-                      );
-                    }
-                  } catch (err: any) {
-                    Alert.alert(
-                      "Connection Failed ✗",
-                      `Could not reach ${customInput}.\n\nReason: ${err.message}\n\nVerify Docker container is running and port is exposed.`,
-                    );
-                  } finally {
-                    setTestingCustom(false);
-                  }
-                }}
-                disabled={testingCustom}
-              >
-                {testingCustom ? (
-                  <ActivityIndicator size="small" color={theme.cyan} />
-                ) : (
-                  <>
-                    <MaterialCommunityIcons
-                      name="lan-connect"
-                      size={16}
-                      color={theme.cyan}
-                    />
-                    <Text
-                      style={[styles.smallActionBtnText, { color: theme.cyan }]}
-                    >
-                      TEST PING
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.smallActionBtn,
-                  {
-                    flex: 1,
-                    backgroundColor: theme.cyan,
-                    borderColor: theme.cyan,
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={() => {
-                  const cleaned = customInput.trim().replace(/\/+$/, "");
-                  updateApiBaseUrl(cleaned);
-                  setCurrentApi(cleaned);
-                  setShowServerModal(false);
-                  axios
-                    .get(`${cleaned}/health`, { timeout: 4000 })
-                    .then(() => setTestStatus("online"))
-                    .catch(() => setTestStatus("offline"));
-                  Alert.alert(
-                    "Server Configured",
-                    `API URL updated to:\n${cleaned}`,
-                  );
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="content-save-outline"
-                  size={16}
-                  color="#000"
-                />
-                <Text
-                  style={[
-                    styles.smallActionBtnText,
-                    { color: "#000", fontWeight: "700" },
-                  ]}
-                >
-                  SAVE & USE
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text
-              style={[
-                styles.fieldLabelText,
-                { color: theme.muted, marginTop: 18 },
-              ]}
-            >
-              QUICK PRESETS
-            </Text>
-
-            <View style={{ gap: 8, marginTop: 6 }}>
-              {[
-                {
-                  label: "Localhost Direct (Port 8000)",
-                  url: "http://localhost:8000",
-                },
-                {
-                  label: "Localhost Nginx (Port 8080)",
-                  url: "http://localhost:8080",
-                },
-                {
-                  label: "Host Wi-Fi Direct (Port 8000)",
-                  url: "http://192.168.0.108:8000",
-                },
-                {
-                  label: "Host Wi-Fi Nginx (Port 8080)",
-                  url: "http://192.168.0.108:8080",
-                },
-                {
-                  label: "Android Emulator (Port 8000)",
-                  url: "http://10.0.2.2:8000",
-                },
-                {
-                  label: "Tailscale Funnel (Remote)",
-                  url: "https://cair-ms-7e06.tail49e3b1.ts.net",
-                },
-              ].map((preset) => (
-                <Pressable
-                  key={preset.url}
-                  style={[
-                    styles.rosterItemCard,
-                    {
-                      paddingVertical: 10,
-                      backgroundColor: theme.bgElevated,
-                      borderColor:
-                        currentApi === preset.url ? theme.cyan : theme.border,
-                    },
-                  ]}
-                  onPress={() => {
-                    setCustomInput(preset.url);
-                    updateApiBaseUrl(preset.url);
-                    setCurrentApi(preset.url);
-                    setShowServerModal(false);
-                    axios
-                      .get(`${preset.url}/health`, { timeout: 4000 })
-                      .then(() => setTestStatus("online"))
-                      .catch(() => setTestStatus("offline"));
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        color: theme.text,
-                        fontSize: 13,
-                        fontWeight: "600",
-                      }}
-                    >
-                      {preset.label}
-                    </Text>
-                    <Text
-                      style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}
-                    >
-                      {preset.url}
-                    </Text>
-                  </View>
-                  {currentApi === preset.url && (
-                    <MaterialCommunityIcons
-                      name="check-circle"
-                      size={18}
-                      color={theme.cyan}
-                    />
-                  )}
-                </Pressable>
-              ))}
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -4147,8 +4881,11 @@ function ConnectionsScreen({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
 
+  const [error, setError] = useState<string | null>(null);
+
   const fetchConnections = useCallback(
     async (q = "") => {
+      setError(null);
       try {
         const res = await http.get("/connections", {
           params: { q: q.trim() || undefined, limit: 50 },
@@ -4156,7 +4893,7 @@ function ConnectionsScreen({
         setConnections(res.data?.connections || []);
         setTotalCount(res.data?.total_connections || 0);
       } catch (err: any) {
-        Alert.alert("Connections Error", apiErrorMessage(err, "Failed to load connections."));
+        setError(apiErrorMessage(err, "Failed to load connections."));
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -4270,6 +5007,34 @@ function ConnectionsScreen({
           <ActivityIndicator size="large" color={theme.cyan} />
           <Text style={{ color: theme.muted, marginTop: 10 }}>Loading mutual connections...</Text>
         </View>
+      ) : error ? (
+        <View
+          style={[
+            styles.exportCardBox,
+            {
+              backgroundColor: theme.cardGlass,
+              borderColor: theme.rose,
+              alignItems: "center",
+              paddingVertical: 30,
+              paddingHorizontal: 20,
+            },
+          ]}
+        >
+          <MaterialCommunityIcons name="alert-circle-outline" size={42} color={theme.rose} />
+          <Text style={{ fontSize: 15, fontWeight: "700", color: theme.text, marginTop: 10 }}>
+            Could Not Load Connections
+          </Text>
+          <Text style={{ fontSize: 12, color: theme.muted, textAlign: "center", marginTop: 4, marginBottom: 16 }}>
+            {error}
+          </Text>
+          <Pressable
+            style={[styles.smallActionBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border, paddingHorizontal: 16, paddingVertical: 8 }]}
+            onPress={() => fetchConnections(searchQuery)}
+          >
+            <MaterialCommunityIcons name="refresh" size={16} color={theme.cyan} />
+            <Text style={{ color: theme.cyan, fontWeight: "700", fontSize: 12 }}>RETRY</Text>
+          </Pressable>
+        </View>
       ) : connections.length === 0 ? (
         <View
           style={[
@@ -4315,17 +5080,18 @@ function ConnectionsScreen({
         </View>
       ) : (
         <View style={{ gap: 10 }}>
-          {connections.map((c) => {
+          {connections.map((c, idx) => {
             const badge = getRoleBadgeColor(c.role);
+            const tokenParam = user?.token ? `token=${user.token}` : "";
             const photoUri = c.profile_photo_url
               ? (c.profile_photo_url.startsWith("http")
                 ? c.profile_photo_url
-                : `${http.defaults.baseURL || API}${c.profile_photo_url}?token=${user.token}`)
+                : `${http.defaults.baseURL || API}${c.profile_photo_url}${c.profile_photo_url.includes("?") ? "&" : "?"}${tokenParam}`)
               : null;
 
             return (
               <Pressable
-                key={c.connection_id}
+                key={c.connection_id || c.user_id || `conn-${idx}`}
                 style={[
                   styles.rosterItemCard,
                   {
@@ -4363,7 +5129,7 @@ function ConnectionsScreen({
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <Text style={{ fontSize: 15, fontWeight: "700", color: theme.text }}>
-                        {c.display_name}
+                        {c.display_name || "Campus Member"}
                       </Text>
                       <View
                         style={{
@@ -4376,13 +5142,13 @@ function ConnectionsScreen({
                         }}
                       >
                         <Text style={{ fontSize: 10, fontWeight: "700", color: badge.text }}>
-                          {c.role?.toUpperCase()}
+                          {c.role?.toUpperCase() || "MEMBER"}
                         </Text>
                       </View>
                     </View>
 
                     <Text style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>
-                      ID: {c.identifier}
+                      ID: {c.identifier || "—"}
                       {c.department ? ` • ${c.department}` : ""}
                     </Text>
 
@@ -4395,7 +5161,7 @@ function ConnectionsScreen({
                 </View>
 
                 <Pressable
-                  onPress={() => handleRemove(c.user_id, c.display_name)}
+                  onPress={() => handleRemove(c.user_id, c.display_name || "this connection")}
                   style={{ padding: 8 }}
                   accessibilityLabel="Remove connection"
                 >
@@ -4449,7 +5215,7 @@ function ConnectionsScreen({
                     source={{
                       uri: selectedUser.profile_photo_url.startsWith("http")
                         ? selectedUser.profile_photo_url
-                        : `${http.defaults.baseURL || API}${selectedUser.profile_photo_url}?token=${user.token}`,
+                        : `${http.defaults.baseURL || API}${selectedUser.profile_photo_url}${selectedUser.profile_photo_url.includes("?") ? "&" : "?"}${user?.token ? `token=${user.token}` : ""}`,
                     }}
                     style={{ width: 90, height: 90 }}
                     resizeMode="cover"
@@ -4635,9 +5401,21 @@ function ScreenRenderer({
 // ---------------------------------------------------------------------------
 function AdminDashboard({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
-  const [students, setStudents] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
-  const [attendance, setAttendance] = useState<any[]>([]);
+  const [metrics, setMetrics] = useState<{
+    total_students: number;
+    faculty_count: number;
+    attendance_rate: number;
+    total_sessions: number;
+    present_count: number;
+    recent_sessions: any[];
+  }>({
+    total_students: 0,
+    faculty_count: 0,
+    attendance_rate: 0,
+    total_sessions: 0,
+    present_count: 0,
+    recent_sessions: [],
+  });
   const [busy, setBusy] = useState(true);
   const [loadError, setLoadError] = useState("");
 
@@ -4665,32 +5443,72 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
   const loadDashboard = useCallback(async () => {
     setBusy(true);
     setLoadError("");
-    const results = await Promise.allSettled([
-      http.get("/students"),
-      http.get("/admin/users"),
-      http.get("/admin/attendance"),
-    ]);
-    const [studentResult, userResult, attendanceResult] = results;
 
-    if (studentResult.status === "fulfilled") {
-      setStudents(studentResult.value.data?.students || []);
-    }
-    if (userResult.status === "fulfilled") {
-      setUsers(userResult.value.data?.users || []);
-    }
-    if (attendanceResult.status === "fulfilled") {
-      setAttendance(attendanceResult.value.data?.attendance || []);
+    // 1. Primary ultra-fast path: Server-aggregated dashboard endpoint (<1ms)
+    try {
+      const res = await http.get("/admin/dashboard", { timeout: 8000 });
+      if (res.data && typeof res.data.total_students === "number") {
+        setMetrics({
+          total_students: res.data.total_students ?? 0,
+          faculty_count: res.data.faculty_count ?? 0,
+          attendance_rate: res.data.attendance_rate ?? 0,
+          total_sessions: res.data.total_sessions ?? 0,
+          present_count: res.data.present_count ?? 0,
+          recent_sessions: Array.isArray(res.data.recent_sessions) ? res.data.recent_sessions : [],
+        });
+        setBusy(false);
+        return;
+      }
+    } catch (e: any) {
+      // Proceed to fallback if /admin/dashboard fails
     }
 
-    const failed = results.filter((result) => result.status === "rejected");
-    if (failed.length) {
-      setLoadError(
-        failed.length === results.length
-          ? "Unable to load dashboard data. Check the API server connection and sign in again if your session has expired."
-          : "Some dashboard data could not be loaded. The available information is shown below.",
-      );
+    // 2. Resilient fallback path: Lightweight queries without heavy base64 image payloads
+    try {
+      const results = await Promise.allSettled([
+        http.get("/students", { params: { page: 1, page_size: 1, include_photos: false }, timeout: 8000 }),
+        http.get("/admin/users", { timeout: 8000 }),
+        http.get("/teacher/attendance-sessions", { timeout: 8000 }),
+      ]);
+      const [studentResult, userResult, sessionsResult] = results;
+
+      let studentsCount = 0;
+      let facultyCount = 0;
+      let sessionsCount = 0;
+
+      if (studentResult.status === "fulfilled") {
+        studentsCount =
+          studentResult.value.data?.pagination?.total_items ??
+          studentResult.value.data?.students?.length ??
+          0;
+      }
+      if (userResult.status === "fulfilled") {
+        const userList = userResult.value.data?.users || [];
+        facultyCount = userList.filter((u: any) => u.role === "teacher").length;
+      }
+      if (sessionsResult.status === "fulfilled") {
+        const sessList = sessionsResult.value.data?.sessions || [];
+        sessionsCount = sessList.length;
+      }
+
+      const allFailed = results.every((r) => r.status === "rejected");
+      if (allFailed) {
+        setLoadError(
+          "Unable to load dashboard data. Check the API server connection and sign in again if your session has expired."
+        );
+      } else {
+        setMetrics((prev) => ({
+          ...prev,
+          total_students: studentsCount || prev.total_students,
+          faculty_count: facultyCount || prev.faculty_count,
+          total_sessions: sessionsCount || prev.total_sessions,
+        }));
+      }
+    } catch {
+      setLoadError("Unable to load dashboard data. Please verify network connection.");
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }, []);
 
   useEffect(() => {
@@ -4707,15 +5525,6 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
       </View>
     );
   }
-
-  const faculty = users.filter((u) => u.role === "teacher");
-  const presentCount = attendance.filter(
-    (x) => String(x.status || "").toUpperCase() === "PRESENT",
-  ).length;
-  const attendanceRate = attendance.length
-    ? Math.round((presentCount / attendance.length) * 100)
-    : 0;
-  const uniqueSessions = new Set(attendance.map((x) => x.session_id)).size;
 
   const todayDate = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -4750,20 +5559,85 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
               ]}
             />
             <Text style={[styles.executiveStatusText, { color: theme.cyan }]}>
-              System Operational • Live Sync
+              System Active • Attendance Online
             </Text>
           </View>
-          <Text style={[styles.executiveDateText, { color: theme.muted }]}>
-            {todayDate}
-          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <MaterialCommunityIcons name="calendar-clock" size={13} color={theme.muted} />
+            <Text style={[styles.executiveDateText, { color: theme.muted }]}>
+              {todayDate}
+            </Text>
+          </View>
         </View>
 
-        <Text style={[styles.executiveHeroHeading, { color: theme.text }]}>
-          Academic Overview
+        <Text style={[styles.executiveHeroHeading, { color: theme.text, marginTop: 4 }]}>
+          Campus Administration
         </Text>
         <Text style={[styles.executiveHeroSub, { color: theme.textSecondary }]}>
-          Real-time biometric attendance across enrolled faculties
+          Overview of enrolled students, faculty members, and daily attendance records
         </Text>
+
+        {/* Operational Status Micro Pills */}
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 8,
+            marginTop: 14,
+            paddingTop: 12,
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 5,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              backgroundColor: theme.cyanGlow,
+            }}
+          >
+            <MaterialCommunityIcons name="face-recognition" size={13} color={theme.cyan} />
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.cyan }}>
+              Smart Attendance Active
+            </Text>
+          </View>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 5,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              backgroundColor: theme.emeraldGlow,
+            }}
+          >
+            <MaterialCommunityIcons name="shield-check-outline" size={13} color={theme.emerald} />
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.emerald }}>
+              Verified Audit Records
+            </Text>
+          </View>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 5,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 6,
+              backgroundColor: theme.purpleGlow,
+            }}
+          >
+            <MaterialCommunityIcons name="school-outline" size={13} color={theme.purple} />
+            <Text style={{ fontSize: 11, fontWeight: "600", color: theme.purple }}>
+              Academic Portal Active
+            </Text>
+          </View>
+        </View>
       </View>
 
       {!!loadError && (
@@ -4783,35 +5657,39 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
       <View style={styles.kpiGridMatrix}>
         <HoloMetricCard
           label="Total Students"
-          value={String(students.length)}
+          value={String(metrics.total_students)}
           delta="Enrolled scholars"
           icon="account-group"
           color={theme.cyan}
           bgColor={theme.cyanGlow}
+          onPress={() => go("Students")}
         />
         <HoloMetricCard
           label="Faculty Staff"
-          value={String(faculty.length)}
+          value={String(metrics.faculty_count)}
           delta="Active instructors"
           icon="account-tie"
           color={theme.amber}
           bgColor={theme.amberGlow}
+          onPress={() => go("Teachers")}
         />
         <HoloMetricCard
           label="Attendance Rate"
-          value={`${attendanceRate}%`}
-          delta={`${presentCount} verified logs`}
+          value={`${metrics.attendance_rate}%`}
+          delta={`${metrics.present_count} verified logs`}
           icon="check-decagram"
           color={theme.emerald}
           bgColor={theme.emeraldGlow}
+          onPress={() => go("Attendance")}
         />
         <HoloMetricCard
           label="Sessions Held"
-          value={String(uniqueSessions)}
+          value={String(metrics.total_sessions)}
           delta="Attendance events"
           icon="calendar-check"
           color={theme.purple}
           bgColor={theme.purpleGlow}
+          onPress={() => go("Attendance")}
         />
       </View>
 
@@ -4819,10 +5697,10 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
       <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
         Quick Actions
       </Text>
-      <View style={styles.rapidCommandsGrid}>
+      <View style={[styles.rapidCommandsGrid, { marginBottom: metrics.recent_sessions?.length ? 16 : 20 }]}>
         <RapidCommandButton
           title="Add Student"
-          desc="Register student"
+          desc="Register scholar"
           icon="account-plus-outline"
           color={theme.cyan}
           onPress={() => go("Add Student")}
@@ -4850,85 +5728,53 @@ function AdminDashboard({ go }: { go: (x: string) => void }) {
         />
       </View>
 
-      {/* Recent Attendance Stream */}
-      <View style={styles.sectionTitleRow}>
-        <Text style={[styles.sectionHeaderTitle, { color: theme.muted }]}>
-          Recent Attendance Logs
-        </Text>
-        <Pressable onPress={() => go("Attendance")}>
-          <Text style={[styles.viewAllActionText, { color: theme.cyan }]}>
-            View all
-          </Text>
-        </Pressable>
-      </View>
-
-      {attendance.length === 0 ? (
-        <HoloEmptyState
-          icon="calendar-clock-outline"
-          title="No attendance events yet"
-          desc="Attendance events will appear here automatically when classes take attendance."
-        />
-      ) : (
-        attendance.slice(0, 5).map((log, i) => (
+      {/* Recent Class Sessions Stream */}
+      {metrics.recent_sessions && metrics.recent_sessions.length > 0 && (
+        <View style={{ marginBottom: 24 }}>
           <View
-            key={log.id || i}
-            style={[
-              styles.streamEventCard,
-              { backgroundColor: theme.cardGlass, borderColor: theme.border },
-            ]}
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
           >
-            <View
-              style={[
-                styles.streamIconCircle,
-                {
-                  backgroundColor:
-                    String(log.status).toUpperCase() === "PRESENT"
-                      ? theme.emeraldGlow
-                      : theme.roseGlow,
-                },
-              ]}
-            >
-              <MaterialCommunityIcons
-                name={
-                  String(log.status).toUpperCase() === "PRESENT"
-                    ? "check-circle"
-                    : "close-circle"
-                }
-                size={20}
-                color={
-                  String(log.status).toUpperCase() === "PRESENT"
-                    ? theme.emerald
-                    : theme.rose
-                }
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[styles.streamItemTitle, { color: theme.text }]}
-                numberOfLines={1}
-              >
-                {log.name || log.student_id || "Student Attendance"}
+            <Text style={[styles.sectionHeaderTitle, { color: theme.muted, marginBottom: 0 }]}>
+              Recent Class Sessions
+            </Text>
+            <Pressable onPress={() => go("Attendance")}>
+              <Text style={{ fontSize: 12, fontWeight: "700", color: theme.cyan }}>
+                VIEW ALL
               </Text>
-              <Text style={[styles.streamItemSub, { color: theme.muted }]}>
-                {log.session_id ? `Session #${log.session_id} • ` : ""}
-                {log.timestamp
-                  ? new Date(log.timestamp).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : "Recorded today"}
-              </Text>
-            </View>
-            <HoloStatusPill
-              label={log.status || "Present"}
-              tone={
-                String(log.status).toUpperCase() === "PRESENT"
-                  ? "success"
-                  : "danger"
-              }
-            />
+            </Pressable>
           </View>
-        ))
+          {metrics.recent_sessions.map((sess: any, idx: number) => (
+            <Pressable
+              key={sess.session_id || idx}
+              style={[
+                styles.rosterItemCard,
+                { backgroundColor: theme.cardGlass, borderColor: theme.border, marginBottom: 8 },
+              ]}
+              onPress={() => go("Attendance")}
+            >
+              <View style={[styles.rosterAvatarBox, { backgroundColor: theme.cyanGlow }]}>
+                <MaterialCommunityIcons name="calendar-check" size={20} color={theme.cyan} />
+              </View>
+              <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                <Text style={[styles.rosterItemName, { color: theme.text }]} numberOfLines={1}>
+                  {sess.title || sess.course || "Class Session"}
+                </Text>
+                <Text style={[styles.rosterItemMeta, { color: theme.muted }]}>
+                  {sess.event_date} • {sess.teacher_name || "Faculty"} • {sess.present_count ?? 0} present
+                </Text>
+              </View>
+              <HoloStatusPill
+                label={sess.status || "ACTIVE"}
+                tone={sess.status === "COMPLETED" ? "neutral" : "success"}
+              />
+            </Pressable>
+          ))}
+        </View>
       )}
     </View>
   );
@@ -5915,6 +6761,7 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<any>(null);
   const [busy, setBusy] = useState(true);
+  const [deletingId, setDeletingId] = useState<any>(null);
 
   useEffect(() => {
     http
@@ -5928,29 +6775,60 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
       .finally(() => setBusy(false));
   }, []);
 
+  const executeDelete = async (teacher: any) => {
+    const targetKey = teacher.id ?? teacher.username;
+    setDeletingId(targetKey);
+    try {
+      await http.delete(`/admin/users/${targetKey}`);
+      setTeachers((v) =>
+        v.filter(
+          (t) =>
+            (teacher.id ? t.id !== teacher.id : true) &&
+            (teacher.username ? t.username !== teacher.username : true),
+        ),
+      );
+      if (
+        selected &&
+        (selected.id === teacher.id || selected.username === teacher.username)
+      ) {
+        setSelected(null);
+      }
+    } catch (e: any) {
+      const errMsg =
+        e?.response?.data?.detail || e?.message || "Could not delete faculty instructor.";
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.alert(`Deletion Error: ${errMsg}`);
+      } else {
+        Alert.alert("Error", errMsg);
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const deleteTeacher = (teacher: any) => {
+    const teacherName = teacher.display_name || teacher.username;
+    const confirmMsg = `Are you sure you want to remove faculty instructor "${teacherName}"? This cannot be undone.`;
+
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      if (window.confirm(confirmMsg)) {
+        executeDelete(teacher);
+      }
+      return;
+    }
+
     Alert.alert(
       "Confirm Removal",
-      `Are you sure you want to remove ${teacher.display_name || teacher.username}? This cannot be undone.`,
+      confirmMsg,
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Delete Instructor",
           style: "destructive",
-          onPress: async () => {
-            try {
-              await http.delete(`/admin/users/${teacher.id}`);
-              setTeachers((v) => v.filter((t) => t.id !== teacher.id));
-              setSelected(null);
-            } catch (e: any) {
-              Alert.alert(
-                "Error",
-                e?.response?.data?.detail || "Could not delete instructor.",
-              );
-            }
-          },
+          onPress: () => executeDelete(teacher),
         },
       ],
+      { cancelable: true },
     );
   };
 
@@ -6025,9 +6903,10 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
         visible.map((teacher, i) => (
           <Pressable
             key={teacher.id || i}
-            style={[
+            style={({ pressed }) => [
               styles.rosterItemCard,
               { backgroundColor: theme.cardGlass, borderColor: theme.border },
+              pressed && styles.dashboardCardPressed,
             ]}
             onPress={() => setSelected(teacher)}
           >
@@ -6054,6 +6933,36 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                 {teacher.email || "University Faculty"}
               </Text>
             </View>
+            <Pressable
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 10,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: theme.roseGlow,
+                borderWidth: 1,
+                borderColor: theme.rose,
+                marginRight: 6,
+              }}
+              disabled={deletingId === (teacher.id ?? teacher.username)}
+              onPress={(e) => {
+                e.stopPropagation();
+                deleteTeacher(teacher);
+              }}
+              hitSlop={8}
+              accessibilityLabel={`Delete ${teacher.display_name || teacher.username}`}
+            >
+              {deletingId === (teacher.id ?? teacher.username) ? (
+                <ActivityIndicator size="small" color={theme.rose} />
+              ) : (
+                <MaterialCommunityIcons
+                  name="trash-can-outline"
+                  size={19}
+                  color={theme.rose}
+                />
+              )}
+            </Pressable>
             <MaterialCommunityIcons
               name="chevron-right"
               size={20}
@@ -6147,20 +7056,28 @@ function AdminTeachersDirectory({ go }: { go: (x: string) => void }) {
                     {
                       backgroundColor: theme.roseGlow,
                       borderColor: theme.rose,
+                      opacity: deletingId ? 0.6 : 1,
                     },
                   ]}
+                  disabled={!!deletingId}
                   onPress={() => deleteTeacher(selected)}
                 >
-                  <MaterialCommunityIcons
-                    name="trash-can-outline"
-                    size={17}
-                    color={theme.rose}
-                  />
-                  <Text
-                    style={[styles.modalDangerBtnText, { color: theme.rose }]}
-                  >
-                    Delete
-                  </Text>
+                  {deletingId === (selected.id ?? selected.username) ? (
+                    <ActivityIndicator size="small" color={theme.rose} />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons
+                        name="trash-can-outline"
+                        size={17}
+                        color={theme.rose}
+                      />
+                      <Text
+                        style={[styles.modalDangerBtnText, { color: theme.rose }]}
+                      >
+                        Delete
+                      </Text>
+                    </>
+                  )}
                 </Pressable>
                 <Pressable
                   style={[
@@ -6993,7 +7910,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
     setBusy(true);
     setUploadProgress(0);
     try {
-      const sid = studentId.trim() || `STU-${Date.now().toString().slice(-6)}`;
+      const sid = studentId.trim() || `SCH-${Date.now().toString().slice(-6)}`;
       const data = new FormData();
       data.append("student_id", sid);
       data.append("name", name.trim());
@@ -7003,7 +7920,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       data.append("program", program.trim() || "Undergraduate Program");
       data.append("department", department.trim());
       data.append("semester", semester.trim());
-      data.append("roll_number", rollNumber.trim());
+      data.append("roll_number", "");
       if (sectionId) {
         data.append("section_id", String(sectionId));
       }
@@ -7023,7 +7940,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
       await AsyncStorage.removeItem("face_registration_photos");
       Alert.alert(
         "Student Enrolled",
-        `Student ${name.trim()} (${sid}) was successfully registered with biometric face profile!`,
+        `Scholar ${name.trim()} (${sid}) was successfully registered with biometric face profile!`,
         [{ text: "View Students", onPress: () => go("Students") }],
       );
     } catch (e: any) {
@@ -7075,10 +7992,10 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           STUDENT CREDENTIALS
         </Text>
 
-        {/* Student ID */}
+        {/* 1. Scholar ID */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            STUDENT IDENTIFIER
+            SCHOLAR ID *
           </Text>
           <View style={styles.twoColumnGridRow}>
             <TextInput
@@ -7093,6 +8010,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
               ]}
               value={studentId}
               onChangeText={setStudentId}
+              placeholder="e.g. 211210045 or SCH-849201"
               placeholderTextColor={theme.muted}
             />
             <Pressable
@@ -7104,7 +8022,7 @@ function AddStudent({ go }: { go: (x: string) => void }) {
                 },
               ]}
               onPress={() =>
-                setStudentId(`STU-${Date.now().toString().slice(-6)}`)
+                setStudentId(`SCH-${Date.now().toString().slice(-6)}`)
               }
             >
               <MaterialCommunityIcons
@@ -7119,20 +8037,10 @@ function AddStudent({ go }: { go: (x: string) => void }) {
           </View>
         </View>
 
-        <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>Roll Number</Text>
-          <TextInput
-            style={[styles.textInputHoloPlain, { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text }]}
-            value={rollNumber}
-            onChangeText={setRollNumber}
-            placeholderTextColor={theme.muted}
-          />
-        </View>
-
-        {/* Full Name */}
+        {/* 2. Full Name */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            FULL LEGAL NAME *
+            FULL NAME *
           </Text>
           <TextInput
             style={[
@@ -7145,14 +8053,15 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             ]}
             value={name}
             onChangeText={setName}
+            placeholder="Enter full name"
             placeholderTextColor={theme.muted}
           />
         </View>
 
-        {/* University Email */}
+        {/* 3. Email Id */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            UNIVERSITY EMAIL
+            EMAIL ID
           </Text>
           <TextInput
             style={[
@@ -7166,23 +8075,35 @@ function AddStudent({ go }: { go: (x: string) => void }) {
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
+            placeholder="student@university.edu"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
         </View>
 
-        {/* The mobile number is also used as the student's initial password. */}
+        {/* 4. Mobile Number */}
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>MOBILE NUMBER / INITIAL PASSWORD *</Text>
+          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+            MOBILE NUMBER *
+          </Text>
           <TextInput
-            style={[styles.textInputHoloPlain, { backgroundColor: theme.bgElevated, borderColor: theme.border, color: theme.text }]}
+            style={[
+              styles.textInputHoloPlain,
+              {
+                backgroundColor: theme.bgElevated,
+                borderColor: theme.border,
+                color: theme.text,
+              },
+            ]}
             value={phone}
             onChangeText={setPhone}
             keyboardType="phone-pad"
             placeholder="Enter mobile number"
             placeholderTextColor={theme.muted}
           />
-          <Text style={[styles.fieldHintText, { color: theme.muted }]}>The student will use this mobile number as their initial password.</Text>
+          <Text style={[styles.fieldHintText, { color: theme.muted }]}>
+            The student will use this mobile number as their initial login password.
+          </Text>
         </View>
 
         {/* Academic Placement */}
@@ -7196,198 +8117,261 @@ function AddStudent({ go }: { go: (x: string) => void }) {
         />
 
         {/* BIOMETRIC FACE PROFILE SECTION */}
-        <Text
-          style={[
-            styles.formGroupHeading,
-            { color: theme.muted, marginTop: 22 },
-          ]}
-        >
-          BIOMETRIC FACE PROFILE
-        </Text>
-
-        {capturedPhoto ? (
-          /* Face Photo Captured Card */
+        <View style={{ marginTop: 22 }}>
           <View
-            style={[
-              styles.photoVerifiedCard,
-              {
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 10,
+            }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <MaterialCommunityIcons
+                name="face-recognition"
+                size={20}
+                color={theme.cyan}
+              />
+              <Text
+                style={[
+                  styles.formGroupHeading,
+                  { color: theme.text, letterSpacing: 0.5, fontSize: 13 },
+                ]}
+              >
+                BIOMETRIC FACE PROFILE
+              </Text>
+            </View>
+            {photoValidation?.valid && (
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  backgroundColor: theme.emeraldGlow || "rgba(16,185,129,0.15)",
+                  borderColor: theme.emerald || "#10B981",
+                  borderWidth: 1,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderRadius: 12,
+                }}
+              >
+                <MaterialCommunityIcons
+                  name="check-circle"
+                  size={12}
+                  color={theme.emerald || "#10B981"}
+                />
+                <Text
+                  style={{
+                    color: theme.emerald || "#10B981",
+                    fontSize: 10,
+                    fontWeight: "700",
+                    marginLeft: 4,
+                  }}
+                >
+                  VERIFIED
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {capturedPhoto ? (
+            /* Face Photo Captured Card */
+            <View
+              style={{
                 backgroundColor: theme.bgElevated,
+                borderRadius: 16,
+                borderWidth: 1.5,
                 borderColor: isValidatingPhoto
                   ? theme.cyan
                   : photoValidation?.valid
+                  ? theme.emerald
+                  : theme.amber,
+                padding: 18,
+                alignItems: "center",
+              }}
+            >
+              <View
+                style={{
+                  position: "relative",
+                  width: 140,
+                  height: 140,
+                  borderRadius: 70,
+                  borderWidth: 3,
+                  borderColor: isValidatingPhoto
+                    ? theme.cyan
+                    : photoValidation?.valid
                     ? theme.emerald
                     : theme.amber,
-              },
-            ]}
-          >
-            <Image
-              source={{ uri: capturedPhoto }}
-              style={styles.photoVerifiedThumb}
-              resizeMode="cover"
-            />
-            <View style={{ flex: 1, paddingLeft: 14 }}>
-              {isValidatingPhoto ? (
-                <View style={styles.verifiedRow}>
-                  <ActivityIndicator size="small" color={theme.cyan} />
-                  <Text style={[styles.verifiedTitle, { color: theme.cyan, marginLeft: 6 }]}>
-                    Validating Face...
-                  </Text>
+                  overflow: "hidden",
+                  backgroundColor: "#000",
+                }}
+              >
+                <Image
+                  source={{ uri: capturedPhoto }}
+                  style={{ width: "100%", height: "100%" }}
+                  resizeMode="cover"
+                />
+              </View>
+
+              <View style={{ marginTop: 14, alignItems: "center", width: "100%" }}>
+                {isValidatingPhoto ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <ActivityIndicator size="small" color={theme.cyan} />
+                    <Text style={{ color: theme.cyan, fontSize: 13, fontWeight: "700" }}>
+                      Analyzing Face Biometrics...
+                    </Text>
+                  </View>
+                ) : photoValidation?.valid ? (
+                  <View style={{ alignItems: "center" }}>
+                    <Text style={{ color: theme.emerald, fontSize: 14, fontWeight: "700" }}>
+                      Face Enrolled & Verified
+                    </Text>
+                    <Text style={{ color: theme.muted, fontSize: 12, textAlign: "center", marginTop: 4 }}>
+                      Facial landmarks & 512-D embeddings generated successfully.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ alignItems: "center" }}>
+                    <Text style={{ color: theme.amber, fontSize: 14, fontWeight: "700" }}>
+                      Verification Issue
+                    </Text>
+                    <Text style={{ color: theme.amber, fontSize: 12, textAlign: "center", marginTop: 4 }}>
+                      {photoValidation?.user_guidance ||
+                        photoValidation?.issues?.[0] ||
+                        "Could not detect a clear, single face. Please retake the photo."}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 16, width: "100%" }}>
+                  <Pressable
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      height: 40,
+                      borderRadius: 10,
+                      backgroundColor: theme.bg,
+                      borderWidth: 1,
+                      borderColor: theme.cyan,
+                    }}
+                    onPress={() => setIsCameraOpen(true)}
+                  >
+                    <MaterialCommunityIcons name="camera" size={16} color={theme.cyan} />
+                    <Text style={{ color: theme.cyan, fontSize: 13, fontWeight: "700" }}>
+                      Retake Camera
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      height: 40,
+                      borderRadius: 10,
+                      backgroundColor: theme.bg,
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                    }}
+                    onPress={pickFromGallery}
+                  >
+                    <MaterialCommunityIcons name="image" size={16} color={theme.text} />
+                    <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}>
+                      From Gallery
+                    </Text>
+                  </Pressable>
                 </View>
-              ) : photoValidation?.valid ? (
-                <>
-                  <View style={styles.verifiedRow}>
-                    <MaterialCommunityIcons
-                      name="check-circle"
-                      size={18}
-                      color={theme.emerald}
-                    />
-                    <Text style={[styles.verifiedTitle, { color: theme.emerald, marginLeft: 6 }]}>
-                      Face Photo Verified
-                    </Text>
-                  </View>
-                  <Text style={[styles.verifiedSub, { color: theme.muted }]}>
-                    Face detected. Biometric embeddings ready for enrollment.
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <View style={styles.verifiedRow}>
-                    <MaterialCommunityIcons
-                      name="alert-circle"
-                      size={18}
-                      color={theme.amber}
-                    />
-                    <Text style={[styles.verifiedTitle, { color: theme.amber, marginLeft: 6 }]}>
-                      Face Not Verified
-                    </Text>
-                  </View>
-                  <Text style={[styles.verifiedSub, { color: theme.amber }]}>
-                    {photoValidation?.user_guidance ||
-                      photoValidation?.issues?.[0] ||
-                      "Could not detect a clear face in this photo. Please retake."}
-                  </Text>
-                </>
-              )}
-              <View style={styles.retakeActionsRow}>
-                <Pressable
-                  style={[
-                    styles.smallActionBtn,
-                    { backgroundColor: theme.card, borderColor: theme.border },
-                  ]}
-                  onPress={() => setIsCameraOpen(true)}
-                >
-                  <MaterialCommunityIcons
-                    name="camera"
-                    size={14}
-                    color={theme.cyan}
-                  />
-                  <Text
-                    style={[styles.smallActionBtnText, { color: theme.cyan }]}
-                  >
-                    Retake
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    styles.smallActionBtn,
-                    { backgroundColor: theme.card, borderColor: theme.border },
-                  ]}
-                  onPress={pickFromGallery}
-                >
-                  <MaterialCommunityIcons
-                    name="image"
-                    size={14}
-                    color={theme.text}
-                  />
-                  <Text
-                    style={[styles.smallActionBtnText, { color: theme.text }]}
-                  >
-                    Gallery
-                  </Text>
-                </Pressable>
               </View>
             </View>
-          </View>
-        ) : (
-          /* Biometric Prompt Card */
-          <View
-            style={[
-              styles.biometricPromptCardEnhanced,
-              {
+          ) : (
+            /* Uncaptured State: High-tech viewfinder box */
+            <View
+              style={{
                 backgroundColor: theme.bgElevated,
-                borderColor: theme.cyanGlow,
-              },
-            ]}
-          >
-            <View style={styles.biometricPromptInfoRow}>
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: theme.borderBright,
+                padding: 20,
+                alignItems: "center",
+              }}
+            >
               <View
-                style={[
-                  styles.biometricIconBadge,
-                  { backgroundColor: theme.card },
-                ]}
+                style={{
+                  width: 80,
+                  height: 80,
+                  borderRadius: 40,
+                  borderWidth: 2,
+                  borderColor: theme.cyan,
+                  borderStyle: "dashed",
+                  backgroundColor: theme.cardGlass,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginBottom: 12,
+                }}
               >
                 <MaterialCommunityIcons
-                  name="face-recognition"
-                  size={28}
+                  name="camera-iris"
+                  size={42}
                   color={theme.cyan}
                 />
               </View>
-              <View style={{ flex: 1, paddingLeft: 12 }}>
-                <Text
-                  style={[styles.biometricCardTitle, { color: theme.text }]}
+              <Text style={{ color: theme.text, fontSize: 15, fontWeight: "700", textAlign: "center" }}>
+                Biometric Face Capture Required
+              </Text>
+              <Text style={{ color: theme.muted, fontSize: 12, textAlign: "center", marginTop: 4, maxWidth: 280, lineHeight: 18 }}>
+                Position student face clearly in front of the camera with good lighting to generate biometric embeddings.
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 18, width: "100%" }}>
+                <Pressable
+                  style={[
+                    styles.primaryNeonButton,
+                    {
+                      flex: 1.2,
+                      backgroundColor: theme.cyan,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      height: 44,
+                      borderRadius: 10,
+                    },
+                  ]}
+                  onPress={() => setIsCameraOpen(true)}
                 >
-                  Biometric Face Capture
-                </Text>
-                <Text style={[styles.biometricCardSub, { color: theme.muted }]}>
-                  Click photo with camera to generate student face embeddings
-                </Text>
+                  <MaterialCommunityIcons name="camera" size={18} color="#000" />
+                  <Text style={{ color: "#000", fontWeight: "700", fontSize: 13, letterSpacing: 0.3 }}>
+                    CAPTURE FACE
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={{
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    height: 44,
+                    borderRadius: 10,
+                    backgroundColor: theme.card,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                  }}
+                  onPress={pickFromGallery}
+                >
+                  <MaterialCommunityIcons name="image-plus" size={17} color={theme.text} />
+                  <Text style={{ color: theme.text, fontSize: 13, fontWeight: "600" }}>
+                    From Gallery
+                  </Text>
+                </Pressable>
               </View>
             </View>
-
-            <View style={styles.biometricButtonsRow}>
-              <Pressable
-                style={[
-                  styles.openCameraBtnPrimary,
-                  { backgroundColor: theme.cyan },
-                ]}
-                onPress={() => setIsCameraOpen(true)}
-              >
-                <MaterialCommunityIcons
-                  name="camera"
-                  size={19}
-                  color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
-                />
-                <Text
-                  style={[
-                    styles.openCameraBtnText,
-                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
-                  ]}
-                >
-                  TAKE FACE PHOTO
-                </Text>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.chooseGalleryBtn,
-                  { backgroundColor: theme.card, borderColor: theme.border },
-                ]}
-                onPress={pickFromGallery}
-              >
-                <MaterialCommunityIcons
-                  name="image-plus"
-                  size={18}
-                  color={theme.text}
-                />
-                <Text
-                  style={[styles.chooseGalleryBtnText, { color: theme.text }]}
-                >
-                  Gallery
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
+          )}
+        </View>
 
         {busy && uploadProgress > 0 && (
           <UploadDonut progress={uploadProgress} label="UPLOADING PHOTO" />
@@ -7534,7 +8518,7 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
         </Text>
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            FULL LEGAL NAME
+            FULL NAME
           </Text>
           <TextInput
             style={[
@@ -7547,13 +8531,14 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             ]}
             value={form.name}
             onChangeText={(v) => setForm((p) => ({ ...p, name: v }))}
+            placeholder="Enter full name"
             placeholderTextColor={theme.muted}
           />
         </View>
 
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            UNIVERSITY EMAIL
+            EMAIL ID
           </Text>
           <TextInput
             style={[
@@ -7567,6 +8552,7 @@ function AddTeacher({ go }: { go: (x: string) => void }) {
             value={form.email}
             onChangeText={(v) => setForm((p) => ({ ...p, email: v }))}
             keyboardType="email-address"
+            placeholder="Enter email address"
             placeholderTextColor={theme.muted}
             autoCapitalize="none"
           />
@@ -8209,6 +9195,14 @@ function FaceRegistration({ go }: { go: (x: string) => void }) {
 // ---------------------------------------------------------------------------
 // TEACHER: CLASS ATTENDANCE SESSION CREATOR
 // ---------------------------------------------------------------------------
+const ATTENDANCE_LOCATION_OPTIONS = [
+  "RAMANUJAN COMPUTER LAB (BIT LAB)",
+  "NARENDRA COMPUTING LAB (MCA LAB)",
+  "SHRIRAM COMPUTING LAB (BCA LAB)",
+  "MCA CLASSROOM",
+  "OTHERS",
+] as const;
+
 function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const { theme } = useAppTheme();
   const [busy, setBusy] = useState(false);
@@ -8222,12 +9216,17 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
   const [academicSections, setAcademicSections] = useState<any[]>([]);
   const [selectedPhotos, setSelectedPhotos] = useState<any[]>([]);
   const [batchRequestKey, setBatchRequestKey] = useState<string | null>(null);
-  const [showSessionDatePicker, setShowSessionDatePicker] = useState(false);
+
+  const [selectedLocation, setSelectedLocation] = useState<string>(
+    "RAMANUJAN COMPUTER LAB (BIT LAB)",
+  );
+  const [customPlaceName, setCustomPlaceName] = useState<string>("");
+  const [showLocationModal, setShowLocationModal] = useState<boolean>(false);
 
   const [form, setForm] = useState({
-    title: "Class Lecture",
+    title: "Session 1",
     course: "CS-301 Computer Networks",
-    room: "Lab 204",
+    room: "RAMANUJAN COMPUTER LAB (BIT LAB)",
     // Build the default from local date components so the session date does
     // not shift by a day for teachers in time zones ahead of UTC.
     event_date: toApiDate(formatDisplayDate(new Date())),
@@ -8249,6 +9248,25 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
         );
         if (activeSession) {
           setScope(activeSession);
+          if (activeSession.room) {
+            const trimmedRoom = String(activeSession.room).trim();
+            if (
+              (ATTENDANCE_LOCATION_OPTIONS as readonly string[]).includes(trimmedRoom) &&
+              trimmedRoom !== "OTHERS"
+            ) {
+              setSelectedLocation(trimmedRoom);
+            } else {
+              setSelectedLocation("OTHERS");
+              setCustomPlaceName(trimmedRoom === "OTHERS" ? "" : trimmedRoom);
+            }
+            setForm((p) => ({ ...p, room: trimmedRoom }));
+          }
+          if (activeSession.title) setForm((p) => ({ ...p, title: activeSession.title }));
+          if (activeSession.course) setForm((p) => ({ ...p, course: activeSession.course }));
+          if (activeSession.event_date) setForm((p) => ({ ...p, event_date: String(activeSession.event_date).slice(0, 10) }));
+          if (activeSession.starts_at) setForm((p) => ({ ...p, starts_at: String(activeSession.starts_at).slice(0, 5) }));
+          if (activeSession.ends_at) setForm((p) => ({ ...p, ends_at: String(activeSession.ends_at).slice(0, 5) }));
+
           const details = await http.get(`/teacher/attendance-sessions/${activeSessionId}`);
           setPhotoCount((details.data?.batches || []).reduce((total: number, batch: any) => total + Number(batch.total_files || 0), 0));
         }
@@ -8280,10 +9298,16 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     if (!primaryScope?.id || !form.title.trim() || !form.course.trim()) {
       Alert.alert(
         "Complete Details",
-        "Please select at least one academic section and specify course and title.",
+        "Please select at least one academic section and specify session/class name and subject.",
       );
       return;
     }
+
+    const finalRoom =
+      selectedLocation === "OTHERS"
+        ? (customPlaceName.trim() || "OTHERS")
+        : selectedLocation;
+
     setBusy(true);
     setUploadProgress(0);
     try {
@@ -8294,6 +9318,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 
       const res = await http.post("/teacher/attendance-sessions", {
         ...form,
+        room: finalRoom,
         school: isMulti
           ? (distinctSchools.length === 1 ? distinctSchools[0] : "University Wide")
           : primaryScope.school,
@@ -8327,8 +9352,8 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
       Alert.alert(
         "Session Created",
         isMulti
-          ? `Attendance session created for ${multiSectionIds.length} programs/semesters across schools and departments. You may now upload multiple classroom photos at once.`
-          : "Attendance session created. You may now upload classroom group photos.",
+          ? `Attendance session created for ${multiSectionIds.length} programs/semesters across schools and departments. You may now capture or upload classroom photos.`
+          : "Attendance session created. You may now capture or upload classroom group photos.",
       );
     } catch (e: any) {
       Alert.alert(
@@ -8415,6 +9440,28 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
+  const takeWithCamera = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          "Camera Permission",
+          "Camera access is needed to capture classroom photos.",
+        );
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        quality: 0.9,
+      });
+      if (!res.canceled && res.assets?.length) {
+        setSelectedPhotos((current) => [...current, ...res.assets].slice(0, 10));
+        setBatchRequestKey(null);
+      }
+    } catch (e: any) {
+      Alert.alert("Camera Error", e?.message || "Could not launch camera.");
+    }
+  };
+
   const pickFromGallery = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
@@ -8428,30 +9475,52 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
     }
   };
 
+  const executeDeleteSession = async () => {
+    if (!scope?.session_id) return;
+    setBusy(true);
+    try {
+      await http.delete(`/teacher/attendance-sessions/${scope.session_id}`);
+      await AsyncStorage.removeItem("active_attendance_session_id");
+      setScope(null);
+      setPhotoCount(0);
+      setSelectedPhotos([]);
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.alert("The attendance session and its records were removed.");
+      } else {
+        Alert.alert("Session Deleted", "The attendance session and its records were removed.");
+      }
+    } catch (e: any) {
+      const errMsg = apiErrorMessage(e, "Could not delete the session.");
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.alert(`Delete Failed: ${errMsg}`);
+      } else {
+        Alert.alert("Delete Failed", errMsg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const deleteSession = () => {
     if (!scope?.session_id) return;
+    const confirmMsg =
+      "Are you sure you want to delete this attendance session? This will permanently remove the session and all attendance records created from it.";
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      if (window.confirm(confirmMsg)) {
+        executeDeleteSession();
+      }
+      return;
+    }
+
     Alert.alert(
       "Delete Attendance Session?",
-      "This will permanently remove the session and all attendance records created from it.",
+      confirmMsg,
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Delete Session",
           style: "destructive",
-          onPress: async () => {
-            setBusy(true);
-            try {
-              await http.delete(`/teacher/attendance-sessions/${scope.session_id}`);
-              await AsyncStorage.removeItem("active_attendance_session_id");
-              setScope(null);
-              setPhotoCount(0);
-              Alert.alert("Session Deleted", "The attendance session and its records were removed.");
-            } catch (e: any) {
-              Alert.alert("Delete Failed", apiErrorMessage(e, "Could not delete the session."));
-            } finally {
-              setBusy(false);
-            }
-          },
+          onPress: executeDeleteSession,
         },
       ],
     );
@@ -8465,7 +9534,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             Take Attendance
           </Text>
           <Text style={[styles.screenSubTitle, { color: theme.muted }]}>
-            Upload classroom group photos to mark attendance
+            Capture or upload classroom photos to mark biometric attendance
           </Text>
         </View>
       </View>
@@ -8482,7 +9551,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
 
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            LECTURE TITLE
+            SESSION/CLASS NAME
           </Text>
           <TextInput
             style={[
@@ -8495,14 +9564,14 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             ]}
             value={form.title}
             onChangeText={(v) => setForm((p) => ({ ...p, title: v }))}
-            placeholder="e.g. Distributed Systems Lab"
+            placeholder="e.g. Session 1 - Data Structures Lab"
             placeholderTextColor={theme.muted}
           />
         </View>
 
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            COURSE CODE & TITLE
+            SUBJECT
           </Text>
           <TextInput
             style={[
@@ -8515,7 +9584,7 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             ]}
             value={form.course}
             onChangeText={(v) => setForm((p) => ({ ...p, course: v }))}
-            placeholder="e.g. CS-402 Distributed Systems"
+            placeholder="e.g. CS-301 Computer Networks"
             placeholderTextColor={theme.muted}
           />
         </View>
@@ -8541,112 +9610,181 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           </>
         )}
 
+        {/* Location / Room Dropdown */}
         <View style={styles.formGroup}>
           <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
             LOCATION / ROOM
           </Text>
-          <TextInput
+          <Pressable
             style={[
-              styles.textInputHoloPlain,
+              styles.selectTriggerHolo,
               {
                 backgroundColor: theme.bgElevated,
-                borderColor: theme.border,
-                color: theme.text,
+                borderColor: showLocationModal ? theme.cyan : theme.border,
               },
             ]}
-            value={form.room}
-            onChangeText={(v) => setForm((p) => ({ ...p, room: v }))}
-            placeholder="Room 101"
-            placeholderTextColor={theme.muted}
-          />
+            onPress={() => setShowLocationModal(true)}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", flex: 1, marginRight: 8 }}>
+              <MaterialCommunityIcons
+                name="map-marker-outline"
+                size={18}
+                color={theme.cyan}
+                style={{ marginRight: 8 }}
+              />
+              <Text
+                style={[
+                  styles.selectTriggerHoloText,
+                  { color: theme.text },
+                ]}
+                numberOfLines={1}
+              >
+                {selectedLocation === "OTHERS" && customPlaceName.trim()
+                  ? `OTHERS: ${customPlaceName.trim()}`
+                  : selectedLocation}
+              </Text>
+            </View>
+            <MaterialCommunityIcons
+              name="chevron-down"
+              size={20}
+              color={theme.cyan}
+            />
+          </Pressable>
+
+          {showLocationModal && (
+            <Modal
+              transparent
+              visible
+              animationType="fade"
+              onRequestClose={() => setShowLocationModal(false)}
+            >
+              <Pressable
+                style={styles.modalBackdropOverlay}
+                onPress={() => setShowLocationModal(false)}
+              >
+                <Pressable
+                  style={[
+                    styles.dropdownModalHolo,
+                    {
+                      backgroundColor: theme.card,
+                      borderColor: theme.borderBright,
+                    },
+                  ]}
+                  onPress={(e) => e.stopPropagation()}
+                >
+                  <Text style={[styles.dropdownModalTitle, { color: theme.text }]}>
+                    Select Location / Room
+                  </Text>
+                  <ScrollView style={{ maxHeight: 280 }} keyboardShouldPersistTaps="handled">
+                    {ATTENDANCE_LOCATION_OPTIONS.map((loc, idx) => {
+                      const isSelected = selectedLocation === loc;
+                      return (
+                        <Pressable
+                          key={loc}
+                          style={[
+                            styles.dropdownOptionHolo,
+                            {
+                              borderBottomColor: theme.border,
+                              backgroundColor: isSelected ? theme.cyanGlow : "transparent",
+                            },
+                          ]}
+                          onPress={() => {
+                            setSelectedLocation(loc);
+                            if (loc === "OTHERS") {
+                              setForm((p) => ({ ...p, room: customPlaceName.trim() || "OTHERS" }));
+                            } else {
+                              setForm((p) => ({ ...p, room: loc }));
+                            }
+                            setShowLocationModal(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.dropdownOptionTextHolo,
+                              {
+                                color: isSelected ? theme.cyan : theme.text,
+                                fontWeight: isSelected ? "700" : "500",
+                              },
+                            ]}
+                          >
+                            {`${idx + 1}. ${loc}`}
+                          </Text>
+                          {isSelected && (
+                            <MaterialCommunityIcons
+                              name="check"
+                              size={18}
+                              color={theme.cyan}
+                            />
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </Pressable>
+              </Pressable>
+            </Modal>
+          )}
+
+          {/* If OTHERS is chosen, reveal Enter Place Name field */}
+          {selectedLocation === "OTHERS" && (
+            <View style={{ marginTop: 10 }}>
+              <Text style={[styles.fieldLabelText, { color: theme.cyan }]}>
+                ENTER PLACE NAME
+              </Text>
+              <TextInput
+                style={[
+                  styles.textInputHoloPlain,
+                  {
+                    backgroundColor: theme.bgElevated,
+                    borderColor: theme.borderAccent,
+                    color: theme.text,
+                  },
+                ]}
+                value={customPlaceName}
+                onChangeText={(v) => {
+                  setCustomPlaceName(v);
+                  setForm((p) => ({ ...p, room: v.trim() || "OTHERS" }));
+                }}
+                placeholder="Enter Place Name"
+                placeholderTextColor={theme.muted}
+                autoFocus
+              />
+            </View>
+          )}
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-            SESSION DATE
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Choose attendance session date"
-            onPress={() => setShowSessionDatePicker(true)}
-            style={[
-              styles.datePickerCardHolo,
-              {
-                backgroundColor: theme.bgElevated,
-                borderColor: theme.border,
-                marginBottom: 0,
-              },
-            ]}
-          >
-            <MaterialCommunityIcons name="calendar" size={20} color={theme.cyan} />
-            <Text style={[styles.datePickerCardText, { color: theme.text }]}>
-              {parseDisplayDate(fromApiDate(form.event_date)).toLocaleDateString(undefined, {
-                weekday: "short",
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </Text>
-            <MaterialCommunityIcons name="chevron-down" size={19} color={theme.muted} />
-          </Pressable>
+          <AppDatePicker
+            label="SESSION DATE (CALENDAR)"
+            value={form.event_date}
+            onChange={(d, iso) => {
+              setForm((current) => ({
+                ...current,
+                event_date: iso,
+              }));
+            }}
+            theme={theme}
+          />
           <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 6 }]}>
             This selected date will appear on the attendance PDF report.
           </Text>
-          {showSessionDatePicker && (
-            <DateTimePicker
-              value={parseDisplayDate(fromApiDate(form.event_date))}
-              mode="date"
-              display="calendar"
-              onChange={(_, date) => {
-                setShowSessionDatePicker(false);
-                if (date) {
-                  setForm((current) => ({
-                    ...current,
-                    event_date: toApiDate(formatDisplayDate(date)),
-                  }));
-                }
-              }}
-            />
-          )}
         </View>
 
         <View style={styles.twoColumnGridRow}>
           <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              STARTS
-            </Text>
-            <TextInput
-              style={[
-                styles.textInputHoloPlain,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.border,
-                  color: theme.text,
-                },
-              ]}
+            <AppTimePicker
+              label="STARTS (CLOCK)"
               value={form.starts_at}
-              onChangeText={(v) => setForm((p) => ({ ...p, starts_at: v }))}
-              placeholder="09:00"
-              placeholderTextColor={theme.muted}
+              onChange={(_, t24) => setForm((p) => ({ ...p, starts_at: t24 }))}
+              theme={theme}
             />
           </View>
           <View style={{ flex: 1, marginLeft: 8 }}>
-            <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
-              ENDS
-            </Text>
-            <TextInput
-              style={[
-                styles.textInputHoloPlain,
-                {
-                  backgroundColor: theme.bgElevated,
-                  borderColor: theme.border,
-                  color: theme.text,
-                },
-              ]}
+            <AppTimePicker
+              label="ENDS (CLOCK)"
               value={form.ends_at}
-              onChangeText={(v) => setForm((p) => ({ ...p, ends_at: v }))}
-              placeholder="10:00"
-              placeholderTextColor={theme.muted}
+              onChange={(_, t24) => setForm((p) => ({ ...p, ends_at: t24 }))}
+              theme={theme}
             />
           </View>
         </View>
@@ -8730,13 +9868,59 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           </Pressable>
         ) : (
           <>
-          <View style={styles.dualPhotoActionsCol}>
+          {/* Dual Action: Camera & Gallery */}
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
             <Pressable
               style={[
                 styles.galleryHeroBtn,
                 {
+                  flex: 1,
                   backgroundColor: theme.cyan,
                   borderColor: theme.cyan,
+                  paddingVertical: 14,
+                },
+                busy && { opacity: 0.7 },
+              ]}
+              onPress={takeWithCamera}
+              disabled={busy}
+            >
+              <MaterialCommunityIcons
+                name="camera"
+                size={22}
+                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+              />
+              <Text
+                style={[
+                  styles.galleryHeroBtnTitle,
+                  { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF", fontSize: 13 },
+                ]}
+              >
+                TAKE PHOTO
+              </Text>
+              <Text
+                style={[
+                  styles.galleryHeroBtnSub,
+                  {
+                    color:
+                      theme.mode === "dark"
+                        ? "rgba(8,12,20,0.75)"
+                        : "rgba(255,255,255,0.85)",
+                    fontSize: 10,
+                  },
+                ]}
+              >
+                Camera Capture
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={[
+                styles.galleryHeroBtn,
+                {
+                  flex: 1,
+                  backgroundColor: theme.bgElevated,
+                  borderColor: theme.borderAccent,
+                  paddingVertical: 14,
                 },
                 busy && { opacity: 0.7 },
               ]}
@@ -8745,29 +9929,42 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
             >
               <MaterialCommunityIcons
                 name="image-multiple"
-                size={24}
-                color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"}
+                size={22}
+                color={theme.cyan}
               />
-              <Text style={[styles.galleryHeroBtnTitle, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
-                {photoCount > 0 ? "ADD PHOTO" : "UPLOAD GROUP PHOTOS"}
+              <Text
+                style={[
+                  styles.galleryHeroBtnTitle,
+                  { color: theme.text, fontSize: 13 },
+                ]}
+              >
+                FROM GALLERY
               </Text>
-              <Text style={[styles.galleryHeroBtnSub, { color: theme.mode === "dark" ? "rgba(8,12,20,0.75)" : "rgba(255,255,255,0.85)" }]}>
-                {photoCount > 0
-                  ? "Add more photos to update attendance"
-                  : "Select up to 10 photos from gallery"}
+              <Text
+                style={[
+                  styles.galleryHeroBtnSub,
+                  { color: theme.muted, fontSize: 10 },
+                ]}
+              >
+                Select up to 10
               </Text>
             </Pressable>
           </View>
-          <Text style={[styles.multiPhotoHint, { color: theme.muted }]}>
+
+          <Text style={[styles.multiPhotoHint, { color: theme.muted, marginTop: 10 }]}>
             {photoCount > 0 ? `${photoCount} group photo${photoCount === 1 ? "" : "s"} processed. ` : ""}
-            You can upload up to 10 group photos for this session. Recognized students are merged automatically.
+            You can capture or upload up to 10 group photos for this session. Recognized students are merged automatically.
           </Text>
           {photoCount > 0 && (
-            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>{attendanceMode === "MULTI" ? "This upload uses every selected program and semester in the session." : "Batch context is saved with each upload; choose a new program and semester above before the next batch."}</Text>
+            <Text style={[styles.multiPhotoHint, { color: theme.textSecondary, marginTop: 4 }]}>
+              {attendanceMode === "MULTI"
+                ? "This upload uses every selected program and semester in the session."
+                : "Batch context is saved with each upload; choose a new program and semester above before the next batch."}
+            </Text>
           )}
           {photoCount > 0 && (
             <Pressable
-              style={[styles.viewResultsBtn, { borderColor: theme.border, backgroundColor: theme.cardSubtle }]}
+              style={[styles.viewResultsBtn, { borderColor: theme.border, backgroundColor: theme.cardSubtle, marginTop: 10 }]}
               onPress={() => go("Recognition Results")}
             >
               <MaterialCommunityIcons name="clipboard-text-outline" size={18} color={theme.text} />
@@ -8779,18 +9976,24 @@ function TeacherTakeAttendance({ go }: { go: (x: string) => void }) {
           )}
           {selectedPhotos.length > 0 && (
             <View style={{ marginTop: 14 }}>
-              <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"} Selected</Text>
+              <Text style={[styles.fieldLabelText, { color: theme.muted }]}>
+                {selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"} Selected
+              </Text>
               {selectedPhotos.map((asset, index) => (
                 <View key={`${asset.uri}-${index}`} style={{ flexDirection: "row", alignItems: "center", marginTop: 8 }}>
                   <Image source={{ uri: asset.uri }} style={{ width: 38, height: 38, borderRadius: 6 }} />
-                  <Text numberOfLines={1} style={{ flex: 1, marginLeft: 9, color: theme.text }}>{asset.fileName || `Photo ${index + 1}`}</Text>
+                  <Text numberOfLines={1} style={{ flex: 1, marginLeft: 9, color: theme.text }}>
+                    {asset.fileName || `Photo ${index + 1}`}
+                  </Text>
                   <Pressable onPress={() => setSelectedPhotos((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={busy}>
                     <MaterialCommunityIcons name="close-circle-outline" size={22} color={theme.rose} />
                   </Pressable>
                 </View>
               ))}
-              <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 14 }, busy && { opacity: .6 }]} onPress={processPhotos} disabled={busy}>
-                <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Process {selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"}</Text>
+              <Pressable style={[styles.primaryNeonButton, { backgroundColor: theme.cyan, marginTop: 14 }, busy && { opacity: 0.6 }]} onPress={processPhotos} disabled={busy}>
+                <Text style={[styles.primaryNeonButtonText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>
+                  Process {selectedPhotos.length} {selectedPhotos.length === 1 ? "Photo" : "Photos"}
+                </Text>
               </Pressable>
             </View>
           )}
@@ -9841,41 +11044,13 @@ function AdminAttendanceView() {
         </View>
       </View>
 
-      {/* Date Trigger Card */}
-      <Pressable
-        style={[
-          styles.datePickerCardHolo,
-          { backgroundColor: theme.cardGlass, borderColor: theme.border },
-        ]}
-        onPress={() => setShowPicker(true)}
-      >
-        <MaterialCommunityIcons name="calendar" size={20} color={theme.cyan} />
-        <Text style={[styles.datePickerCardText, { color: theme.text }]}>
-          {date.toLocaleDateString(undefined, {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-          })}
-        </Text>
-        <MaterialCommunityIcons
-          name="chevron-down"
-          size={19}
-          color={theme.muted}
-        />
-      </Pressable>
-
-      {showPicker && (
-        <DateTimePicker
-          value={date}
-          mode="date"
-          display="calendar"
-          onChange={(_, d) => {
-            setShowPicker(false);
-            if (d) setDate(d);
-          }}
-        />
-      )}
+      {/* Date Trigger Card with Calendar */}
+      <AppDatePicker
+        value={date}
+        onChange={(newDate) => setDate(newDate)}
+        theme={theme}
+        containerStyle={{ marginBottom: 12 }}
+      />
 
       {/* Daily Stats */}
       <View
@@ -10692,42 +11867,12 @@ function AttendanceHistoryView({ role }: { role: Role }) {
         </View>
       </View>
 
-      <Pressable
-        style={[
-          styles.datePickerCardHolo,
-          { backgroundColor: theme.cardGlass, borderColor: theme.border },
-        ]}
-        onPress={() => setShowPicker(true)}
-      >
-        <MaterialCommunityIcons
-          name="calendar-month"
-          size={20}
-          color={theme.cyan}
-        />
-        <Text style={[styles.datePickerCardText, { color: theme.text }]}>
-          {month.toLocaleDateString(undefined, {
-            month: "long",
-            year: "numeric",
-          })}
-        </Text>
-        <MaterialCommunityIcons
-          name="chevron-down"
-          size={19}
-          color={theme.muted}
-        />
-      </Pressable>
-
-      {showPicker && (
-        <DateTimePicker
-          value={month}
-          mode="date"
-          display="calendar"
-          onChange={(_, d) => {
-            setShowPicker(false);
-            if (d) setMonth(d);
-          }}
-        />
-      )}
+      <AppDatePicker
+        value={month}
+        onChange={(newMonth) => setMonth(newMonth)}
+        theme={theme}
+        containerStyle={{ marginBottom: 14 }}
+      />
 
       {busy ? (
         <ActivityIndicator
@@ -11663,6 +12808,252 @@ function TeacherProfile({
   );
 }
 
+function ChangePasswordModal({
+  visible,
+  onClose,
+  username,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  username: string;
+}) {
+  const { theme } = useAppTheme();
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const resetFields = () => {
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setError("");
+    setShowCurrent(false);
+    setShowNew(false);
+    setShowConfirm(false);
+  };
+
+  const handleClose = () => {
+    resetFields();
+    onClose();
+  };
+
+  const handleSubmit = async () => {
+    setError("");
+    if (!currentPassword) {
+      setError("Please enter your current password.");
+      return;
+    }
+    if (!newPassword || newPassword.length < 6) {
+      setError("New password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword === "dsvv@123#") {
+      setError("New password cannot be the default institutional password (dsvv@123#).");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("New password and confirm password do not match.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await http.post("/auth/reset-password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+        confirm_password: confirmPassword,
+        username,
+      });
+
+      Alert.alert(
+        "Password Updated",
+        "Your account password has been changed successfully.",
+        [{ text: "OK", onPress: handleClose }]
+      );
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.detail ||
+          "Could not change password. Please verify current password and try again."
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
+      <Pressable style={styles.modalBackdropOverlay} onPress={handleClose}>
+        <Pressable
+          style={[
+            styles.modalSheetCard,
+            { backgroundColor: theme.cardGlass, borderColor: theme.borderBright, maxWidth: 460 },
+          ]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <View style={styles.modalSheetHeader}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <MaterialCommunityIcons name="lock-reset" size={22} color={theme.cyan} />
+              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>Change Password</Text>
+            </View>
+            <Pressable onPress={handleClose} hitSlop={8}>
+              <MaterialCommunityIcons name="close" size={22} color={theme.muted} />
+            </Pressable>
+          </View>
+
+          <View style={{ marginTop: 14 }}>
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                Current Password
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="lock-clock"
+                  size={18}
+                  color={theme.muted}
+                  style={styles.inputPrefixIcon}
+                />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={currentPassword}
+                  onChangeText={setCurrentPassword}
+                  secureTextEntry={!showCurrent}
+                  placeholder="Enter current password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowCurrent((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons
+                    name={showCurrent ? "eye-off-outline" : "eye-outline"}
+                    size={18}
+                    color={theme.muted}
+                  />
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                New Password (Min. 6 Characters)
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="shield-lock-outline"
+                  size={18}
+                  color={theme.muted}
+                  style={styles.inputPrefixIcon}
+                />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  secureTextEntry={!showNew}
+                  placeholder="Enter new password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowNew((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons
+                    name={showNew ? "eye-off-outline" : "eye-outline"}
+                    size={18}
+                    color={theme.muted}
+                  />
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={[styles.fieldLabelText, { color: theme.textSecondary }]}>
+                Confirm New Password
+              </Text>
+              <View
+                style={[
+                  styles.inputContainerBox,
+                  { backgroundColor: theme.bgElevated, borderColor: theme.border },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="lock-check-outline"
+                  size={18}
+                  color={confirmPassword && confirmPassword === newPassword ? theme.emerald : theme.muted}
+                  style={styles.inputPrefixIcon}
+                />
+                <TextInput
+                  style={[styles.textInputBox, { color: theme.text }]}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry={!showConfirm}
+                  placeholder="Re-enter new password"
+                  placeholderTextColor={theme.muted}
+                  autoCapitalize="none"
+                />
+                <Pressable onPress={() => setShowConfirm((v) => !v)} style={styles.eyeBtn}>
+                  <MaterialCommunityIcons
+                    name={showConfirm ? "eye-off-outline" : "eye-outline"}
+                    size={18}
+                    color={theme.muted}
+                  />
+                </Pressable>
+              </View>
+            </View>
+
+            {!!error && (
+              <View
+                style={[
+                  styles.errorBannerBox,
+                  { backgroundColor: theme.roseGlow, borderColor: theme.rose, marginTop: 8 },
+                ]}
+              >
+                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.rose} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.errorBannerText, { color: theme.rose }]}>{error}</Text>
+                </View>
+              </View>
+            )}
+
+            <Pressable
+              style={[
+                styles.primaryNeonButton,
+                { backgroundColor: theme.cyan, marginTop: 16 },
+                busy && { opacity: 0.65 },
+              ]}
+              onPress={handleSubmit}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} />
+              ) : (
+                <Text
+                  style={[
+                    styles.primaryNeonButtonText,
+                    { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" },
+                  ]}
+                >
+                  SAVE NEW PASSWORD
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 function StudentProfile({
   user,
   onLogout,
@@ -11675,6 +13066,7 @@ function StudentProfile({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
 
   useEffect(() => {
     http
@@ -11769,12 +13161,22 @@ function StudentProfile({
         />
       </View>
 
-      <Pressable
-        style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginBottom: 12 }]}
-        onPress={() => setEditing(true)}
-      >
-        <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Edit Details</Text>
-      </Pressable>
+      {/* Action Buttons Row: Edit Details + Change Password */}
+      <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+        <Pressable
+          style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, flex: 1, marginBottom: 0 }]}
+          onPress={() => setEditing(true)}
+        >
+          <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Edit Details</Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.modalDismissBtn, { backgroundColor: theme.bgElevated, borderColor: theme.border, borderWidth: 1, flex: 1, marginBottom: 0 }]}
+          onPress={() => setChangingPassword(true)}
+        >
+          <Text style={[styles.modalDismissBtnText, { color: theme.text }]}>Change Password</Text>
+        </Pressable>
+      </View>
 
       {/* Face Biometrics Registration / Update Button */}
       <Pressable
@@ -11831,6 +13233,12 @@ function StudentProfile({
           setProfile((current: any) => ({ ...current, ...updated }));
           setEditing(false);
         }}
+      />
+
+      <ChangePasswordModal
+        visible={changingPassword}
+        onClose={() => setChangingPassword(false)}
+        username={profile.student_id || profile.username || user?.username || ""}
       />
 
       <Pressable
@@ -12021,12 +13429,20 @@ function ExportSessionModal({
         <View style={[styles.modalSheetCard, { flex: 1, backgroundColor: theme.bg, borderColor: theme.border }]}>
           {/* Header */}
           <View style={styles.modalSheetHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.modalSheetTitle, { color: theme.text }]}>
+            <View style={{ flex: 1, marginRight: 10 }}>
+              <Text
+                style={[styles.modalSheetTitle, { color: theme.text }]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
                 Export Attendance Session
               </Text>
-              <Text style={{ color: theme.muted, fontSize: 12 }}>
-                {session?.title || session?.course} • ID: {session?.session_id}
+              <Text
+                style={{ color: theme.muted, fontSize: 12, marginTop: 2 }}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {sessionDetails?.title || session?.title || session?.course} • ID: {session?.session_id}
               </Text>
             </View>
             <Pressable onPress={onClose} hitSlop={8}>
@@ -12050,33 +13466,37 @@ function ExportSessionModal({
                   { backgroundColor: theme.cardGlass, borderColor: theme.border, marginBottom: 14 },
                 ]}
               >
-                <Text style={{ fontSize: 14, fontWeight: "700", color: theme.text, marginBottom: 4 }}>
+                <Text
+                  style={{ fontSize: 14, fontWeight: "700", color: theme.text, marginBottom: 4 }}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                >
                   {sessionDetails?.title || session?.title}
                 </Text>
-                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 10 }}>
+                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 10, lineHeight: 18 }}>
                   Date: {sessionDetails?.event_date || session?.event_date} • Time: {sessionDetails?.starts_at || session?.starts_at} - {sessionDetails?.ends_at || session?.ends_at} • Room: {sessionDetails?.room || session?.room || "—"}
                 </Text>
 
                 <View style={styles.tallyStatsRow}>
                   <View style={styles.tallyStatCol}>
-                    <Text style={[styles.tallyDigit, { color: theme.emerald }]}>
+                    <Text style={[styles.tallyDigit, { color: theme.emerald }]} numberOfLines={1}>
                       {overallSummary.present_students}
                     </Text>
-                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Present</Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]} numberOfLines={1}>Present</Text>
                   </View>
                   <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
                   <View style={styles.tallyStatCol}>
-                    <Text style={[styles.tallyDigit, { color: theme.rose }]}>
+                    <Text style={[styles.tallyDigit, { color: theme.rose }]} numberOfLines={1}>
                       {overallSummary.absent_students}
                     </Text>
-                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Absent</Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]} numberOfLines={1}>Absent</Text>
                   </View>
                   <View style={[styles.tallyDividerLine, { backgroundColor: theme.border }]} />
                   <View style={styles.tallyStatCol}>
-                    <Text style={[styles.tallyDigit, { color: theme.text }]}>
+                    <Text style={[styles.tallyDigit, { color: theme.text }]} numberOfLines={1}>
                       {overallSummary.total_students}
                     </Text>
-                    <Text style={[styles.tallyMeta, { color: theme.muted }]}>Total Enrolled</Text>
+                    <Text style={[styles.tallyMeta, { color: theme.muted }]} numberOfLines={1}>Total Enrolled</Text>
                   </View>
                 </View>
               </View>
@@ -12111,13 +13531,15 @@ function ExportSessionModal({
                       ]}
                       onPress={() => setActiveTab(tab.id)}
                     >
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: 2 }}>
                         <MaterialCommunityIcons
                           name={tab.icon as any}
-                          size={15}
+                          size={14}
                           color={isActive ? theme.cyan : theme.muted}
                         />
                         <Text
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
                           style={[
                             styles.exportTabBtnText,
                             { color: isActive ? theme.cyan : theme.muted },
@@ -12139,10 +13561,14 @@ function ExportSessionModal({
                   { backgroundColor: theme.cardGlass, borderColor: theme.border },
                 ]}
               >
-                <Text style={{ fontSize: 14, fontWeight: "700", color: theme.cyan, marginBottom: 4 }}>
+                <Text
+                  style={{ fontSize: 14, fontWeight: "700", color: theme.cyan, marginBottom: 4 }}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                >
                   {currentTabTitle}
                 </Text>
-                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 16, lineHeight: 17 }}>
+                <Text style={{ fontSize: 12, color: theme.muted, marginBottom: 16, lineHeight: 18 }}>
                   {currentTabDesc}
                 </Text>
 
@@ -12423,16 +13849,16 @@ function ExportSessionModal({
                     { backgroundColor: theme.bgElevated, borderColor: theme.border },
                   ]}
                 >
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1, flexShrink: 1, marginRight: 8 }}>
                     <MaterialCommunityIcons name="file-document-outline" size={16} color={theme.cyan} />
-                    <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                    <Text style={{ fontSize: 12, color: theme.textSecondary, flexShrink: 1 }} numberOfLines={2}>
                       Records included in this report:
                     </Text>
                   </View>
                   {summaryBusy ? (
                     <ActivityIndicator size="small" color={theme.cyan} />
                   ) : (
-                    <Text style={{ fontSize: 13, fontWeight: "700", color: theme.cyan }}>
+                    <Text style={{ fontSize: 13, fontWeight: "700", color: theme.cyan, flexShrink: 0 }}>
                       {includedCount !== null ? `${includedCount} student(s)` : "Calculating..."}
                     </Text>
                   )}
@@ -12452,20 +13878,24 @@ function ExportSessionModal({
                             ? theme.emerald
                             : theme.purple,
                       opacity: generating || includedCount === 0 ? 0.6 : 1,
+                      minHeight: 46,
+                      height: "auto",
+                      paddingVertical: 12,
+                      paddingHorizontal: 16,
                     },
                   ]}
                 >
                   {generating ? (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }}>
                       <ActivityIndicator color="#FFFFFF" />
-                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]}>
+                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]} numberOfLines={1}>
                         Generating PDF...
                       </Text>
                     </View>
                   ) : (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }}>
                       <MaterialCommunityIcons name="file-pdf-box" size={19} color="#FFFFFF" />
-                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]}>
+                      <Text style={[styles.primaryNeonButtonText, { color: "#FFFFFF" }]} numberOfLines={1}>
                         {currentButtonLabel}
                       </Text>
                     </View>
@@ -12500,6 +13930,7 @@ function SessionEditModal({
   const { theme } = useAppTheme();
   const [form, setForm] = useState<any>({});
   const [busy, setBusy] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -12514,14 +13945,14 @@ function SessionEditModal({
 
   const save = async () => {
     if (!form.title.trim() || !form.course.trim()) {
-      Alert.alert("Details required", "Lecture title and course are required.");
+      Alert.alert("Details required", "Session/class name and subject are required.");
       return;
     }
     setBusy(true);
     try {
       const response = await http.patch(`/teacher/attendance-sessions/${session.session_id}`, form);
       onSaved(response.data);
-      Alert.alert("Session updated", "Lecture details were saved.");
+      Alert.alert("Session updated", "Session details were saved.");
     } catch (e: any) {
       Alert.alert("Update failed", e?.response?.data?.detail || "Could not update the session.");
     } finally {
@@ -12530,9 +13961,9 @@ function SessionEditModal({
   };
 
   const fields = [
-    ["title", "Lecture Title"], ["course", "Course"], ["room", "Room"],
-    ["event_date", "Date (YYYY-MM-DD)"], ["starts_at", "Starts (HH:MM)"],
-    ["ends_at", "Ends (HH:MM)"], ["notes", "Notes"],
+    ["title", "Session/Class Name"], ["course", "Subject"], ["room", "Location / Room"],
+    ["event_date", "Session Date (Calendar)"], ["starts_at", "Starts At (Clock)"],
+    ["ends_at", "Ends At (Clock)"], ["notes", "Notes"],
   ];
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -12543,12 +13974,129 @@ function SessionEditModal({
             <Pressable onPress={onClose} disabled={busy}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
-            {fields.map(([key, label]) => (
-              <View key={key} style={{ marginBottom: 10 }}>
-                <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
-                <TextInput value={form[key] || ""} onChangeText={(value) => setForm((current: any) => ({ ...current, [key]: value }))} placeholder={label} placeholderTextColor={theme.muted} multiline={key === "notes"} style={[styles.textInputBox, { color: theme.text, backgroundColor: theme.bgElevated, borderColor: theme.border }]} />
-              </View>
-            ))}
+            {fields.map(([key, label]) => {
+              if (key === "room") {
+                const isPredefined = (ATTENDANCE_LOCATION_OPTIONS as readonly string[]).includes(form.room) && form.room !== "OTHERS";
+                const isOthers = form.room && !isPredefined;
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    <Text style={[styles.fieldLabelText, { color: theme.muted }]}>Location / Room</Text>
+                    <Pressable
+                      style={[styles.selectTriggerHolo, { backgroundColor: theme.bgElevated, borderColor: theme.border }]}
+                      onPress={() => setShowLocationModal(true)}
+                    >
+                      <Text style={[styles.selectTriggerHoloText, { color: theme.text }]}>
+                        {isOthers ? `OTHERS: ${form.room}` : form.room || "Select Location"}
+                      </Text>
+                      <MaterialCommunityIcons name="chevron-down" size={19} color={theme.cyan} />
+                    </Pressable>
+                    {showLocationModal && (
+                      <Modal transparent visible animationType="fade" onRequestClose={() => setShowLocationModal(false)}>
+                        <Pressable style={styles.modalBackdropOverlay} onPress={() => setShowLocationModal(false)}>
+                          <Pressable style={[styles.dropdownModalHolo, { backgroundColor: theme.card, borderColor: theme.borderBright }]} onPress={(e) => e.stopPropagation()}>
+                            <Text style={[styles.dropdownModalTitle, { color: theme.text }]}>Select Location / Room</Text>
+                            <ScrollView style={{ maxHeight: 280 }} keyboardShouldPersistTaps="handled">
+                              {ATTENDANCE_LOCATION_OPTIONS.map((loc, idx) => (
+                                <Pressable
+                                  key={loc}
+                                  style={[styles.dropdownOptionHolo, { borderBottomColor: theme.border }]}
+                                  onPress={() => {
+                                    if (loc === "OTHERS") {
+                                      setForm((p: any) => ({ ...p, room: "" }));
+                                    } else {
+                                      setForm((p: any) => ({ ...p, room: loc }));
+                                    }
+                                    setShowLocationModal(false);
+                                  }}
+                                >
+                                  <Text style={[styles.dropdownOptionTextHolo, { color: theme.text }]}>{`${idx + 1}. ${loc}`}</Text>
+                                </Pressable>
+                              ))}
+                            </ScrollView>
+                          </Pressable>
+                        </Pressable>
+                      </Modal>
+                    )}
+                    {(!isPredefined || form.room === "") && (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={[styles.fieldLabelText, { color: theme.cyan }]}>Enter Place Name</Text>
+                        <TextInput
+                          value={form.room || ""}
+                          onChangeText={(v) => setForm((p: any) => ({ ...p, room: v }))}
+                          placeholder="Enter Place Name"
+                          placeholderTextColor={theme.muted}
+                          style={[styles.textInputBox, { color: theme.text, backgroundColor: theme.bgElevated, borderColor: theme.borderAccent }]}
+                        />
+                      </View>
+                    )}
+                  </View>
+                );
+              }
+              if (key === "event_date") {
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    <AppDatePicker
+                      label="Session Date (Calendar)"
+                      value={form.event_date || ""}
+                      onChange={(d, iso) =>
+                        setForm((current: any) => ({ ...current, event_date: iso }))
+                      }
+                      theme={theme}
+                    />
+                  </View>
+                );
+              }
+              if (key === "starts_at") {
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    <AppTimePicker
+                      label="Starts At (Clock)"
+                      value={form.starts_at || ""}
+                      onChange={(_, t24) =>
+                        setForm((current: any) => ({ ...current, starts_at: t24 }))
+                      }
+                      theme={theme}
+                    />
+                  </View>
+                );
+              }
+              if (key === "ends_at") {
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    <AppTimePicker
+                      label="Ends At (Clock)"
+                      value={form.ends_at || ""}
+                      onChange={(_, t24) =>
+                        setForm((current: any) => ({ ...current, ends_at: t24 }))
+                      }
+                      theme={theme}
+                    />
+                  </View>
+                );
+              }
+              return (
+                <View key={key} style={{ marginBottom: 10 }}>
+                  <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
+                  <TextInput
+                    value={form[key] || ""}
+                    onChangeText={(value) =>
+                      setForm((current: any) => ({ ...current, [key]: value }))
+                    }
+                    placeholder={label}
+                    placeholderTextColor={theme.muted}
+                    multiline={key === "notes"}
+                    style={[
+                      styles.textInputBox,
+                      {
+                        color: theme.text,
+                        backgroundColor: theme.bgElevated,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                  />
+                </View>
+              );
+            })}
             <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8, opacity: busy ? 0.6 : 1 }]} onPress={save} disabled={busy}>
               {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Save Session</Text>}
             </Pressable>
@@ -12644,18 +14192,39 @@ function StudentEditModal({
             <Pressable onPress={onClose}><MaterialCommunityIcons name="close" size={22} color={theme.text} /></Pressable>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
-            {fields.map(([key, label]) => (
-              <View key={key} style={{ marginBottom: 10 }}>
-                <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
-                <TextInput
-                  value={form[key] || ""}
-                  onChangeText={(value) => update(key, value)}
-                  placeholder={label}
-                  placeholderTextColor={theme.muted}
-                  style={[styles.textInputBox, { color: theme.text, backgroundColor: theme.bgElevated, borderColor: theme.border }]}
-                />
-              </View>
-            ))}
+            {fields.map(([key, label]) => {
+              if (key === "date_of_birth") {
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    <AppDatePicker
+                      label="Date of Birth (Calendar)"
+                      value={form.date_of_birth || ""}
+                      onChange={(d, iso, ddMmYyyy) => update("date_of_birth", ddMmYyyy)}
+                      theme={theme}
+                    />
+                  </View>
+                );
+              }
+              return (
+                <View key={key} style={{ marginBottom: 10 }}>
+                  <Text style={[styles.fieldLabelText, { color: theme.muted }]}>{label}</Text>
+                  <TextInput
+                    value={form[key] || ""}
+                    onChangeText={(value) => update(key, value)}
+                    placeholder={label}
+                    placeholderTextColor={theme.muted}
+                    style={[
+                      styles.textInputBox,
+                      {
+                        color: theme.text,
+                        backgroundColor: theme.bgElevated,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                  />
+                </View>
+              );
+            })}
             <Pressable style={[styles.modalDismissBtn, { backgroundColor: theme.cyan, marginTop: 8 }]} onPress={save} disabled={busy}>
               {busy ? <ActivityIndicator color={theme.mode === "dark" ? "#080C14" : "#FFFFFF"} /> : <Text style={[styles.modalDismissBtnText, { color: theme.mode === "dark" ? "#080C14" : "#FFFFFF" }]}>Save Details</Text>}
             </Pressable>
@@ -12696,10 +14265,14 @@ function ProfileHeroCard({
       type: asset.mimeType || "image/jpeg",
     } as any);
     try {
-      await http.post("/auth/profile/photo", form, {
-        headers: { "Content-Type": "multipart/form-data" },
+      const uploadRes = await http.post("/auth/profile/photo", form);
+      const newPhoto = uploadRes.data?.profile_photo_base64 || asset.uri;
+      setProfile({
+        ...profile,
+        profile_photo_base64: newPhoto,
+        profile_picture: uploadRes.data?.profile_picture || profile?.profile_picture,
+        profile_photo_url: uploadRes.data?.profile_picture || profile?.profile_photo_url,
       });
-      setProfile({ ...profile, profile_photo_base64: asset.uri });
       Alert.alert("Success", "Profile photo updated successfully.");
     } catch {
       Alert.alert("Error", "Could not upload profile photo.");
@@ -12707,10 +14280,22 @@ function ProfileHeroCard({
   };
 
   const name =
-    profile.display_name ||
-    profile.name ||
-    profile.username ||
+    profile?.display_name ||
+    profile?.name ||
+    profile?.username ||
     "University Member";
+
+  const photoUri =
+    profile?.profile_photo_base64 ||
+    (profile?.profile_picture
+      ? (profile.profile_picture.startsWith("http")
+          ? profile.profile_picture
+          : `${http.defaults.baseURL || API}${profile.profile_picture.startsWith("/") ? "" : "/"}${profile.profile_picture}`)
+      : (profile?.profile_photo_url
+          ? (profile.profile_photo_url.startsWith("http")
+              ? profile.profile_photo_url
+              : `${http.defaults.baseURL || API}${profile.profile_photo_url.startsWith("/") ? "" : "/"}${profile.profile_photo_url}`)
+          : null));
 
   return (
     <View
@@ -12720,9 +14305,9 @@ function ProfileHeroCard({
       ]}
     >
       <Pressable onPress={choosePhoto} style={styles.profileAvatarWrapHolo}>
-        {profile.profile_photo_base64 ? (
+        {photoUri ? (
           <Image
-            source={{ uri: profile.profile_photo_base64 }}
+            source={{ uri: photoUri }}
             style={[styles.profileAvatarImgHolo, { borderColor: theme.cyan }]}
           />
         ) : (
@@ -12780,6 +14365,7 @@ function HoloMetricCard({
   icon,
   color,
   bgColor,
+  onPress,
 }: {
   label: string;
   value: string;
@@ -12787,8 +14373,40 @@ function HoloMetricCard({
   icon: string;
   color: string;
   bgColor: string;
+  onPress?: () => void;
 }) {
   const { theme } = useAppTheme();
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.kpiCardHolo,
+          { backgroundColor: theme.cardGlass, borderColor: theme.border },
+          pressed && styles.dashboardCardPressed,
+        ]}
+      >
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+            width: "100%",
+          }}
+        >
+          <View style={[styles.kpiIconBadgeHolo, { backgroundColor: bgColor }]}>
+            <MaterialCommunityIcons name={icon as any} size={20} color={color} />
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={16} color={theme.muted} />
+        </View>
+        <Text style={[styles.kpiValueHolo, { color: theme.text }]}>{value}</Text>
+        <Text style={[styles.kpiLabelHolo, { color: theme.textSecondary }]}>
+          {label}
+        </Text>
+        <Text style={[styles.kpiDeltaHolo, { color: theme.muted }]}>{delta}</Text>
+      </Pressable>
+    );
+  }
   return (
     <View
       style={[
@@ -13586,25 +15204,23 @@ function TeacherHierarchyCheckboxes({
     loadAcademicSections()
       .then((loaded) => {
         setSections(loaded);
-        if (departmentWide) {
-          const ids = loaded
-            .filter(
-              (s) =>
-                s.school === DEFAULT_ACADEMIC_SCOPE.school &&
-                s.faculty === DEFAULT_ACADEMIC_SCOPE.faculty &&
-                s.department === DEFAULT_ACADEMIC_SCOPE.department,
-            )
-            .map((s) => s.id);
-          const fixedScope = {
-            school: [DEFAULT_ACADEMIC_SCOPE.school],
-            faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
-            department: [DEFAULT_ACADEMIC_SCOPE.department],
-            program: [],
-            semester: [],
-          };
-          onScopeChange?.(fixedScope);
-          onChange(ids);
-        }
+        const initialScope = {
+          school: [DEFAULT_ACADEMIC_SCOPE.school],
+          faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
+          department: [DEFAULT_ACADEMIC_SCOPE.department],
+          program: [],
+          semester: [],
+        };
+        const ids = loaded
+          .filter(
+            (s) =>
+              s.school === DEFAULT_ACADEMIC_SCOPE.school &&
+              s.faculty === DEFAULT_ACADEMIC_SCOPE.faculty &&
+              s.department === DEFAULT_ACADEMIC_SCOPE.department,
+          )
+          .map((s) => s.id);
+        onScopeChange?.(initialScope);
+        onChange(ids);
       })
       .catch(() => setSections([]));
   }, []);
@@ -13625,24 +15241,82 @@ function TeacherHierarchyCheckboxes({
   };
 
   const toggle = (key: string, val: string) => {
+    let nextVals: string[];
+    if (key === "school" || key === "faculty" || key === "department") {
+      nextVals = [val];
+    } else {
+      nextVals = selection[key]?.includes(val)
+        ? selection[key].filter((v: string) => v !== val)
+        : [...(selection[key] || []), val];
+    }
+
     const next = {
       ...selection,
-      [key]: selection[key].includes(val)
-        ? selection[key].filter((v: string) => v !== val)
-        : [...selection[key], val],
+      [key]: nextVals,
     };
-    if (key === "school")
+
+    if (key === "school") {
+      const availableFaculties = Array.from(
+        new Set(
+          sections
+            .filter((s) => s.school === val)
+            .map((s) => s.faculty)
+            .filter(Boolean),
+        ),
+      ) as string[];
+      const firstFaculty = availableFaculties[0] ? [availableFaculties[0]] : [];
+      const availableDepts = Array.from(
+        new Set(
+          sections
+            .filter(
+              (s) =>
+                s.school === val &&
+                (!firstFaculty.length || s.faculty === firstFaculty[0]),
+            )
+            .map((s) => s.department)
+            .filter(Boolean),
+        ),
+      ) as string[];
+      const firstDept = availableDepts[0] ? [availableDepts[0]] : [];
+
       Object.assign(next, {
-        faculty: [],
-        department: [],
+        faculty: firstFaculty,
+        department: firstDept,
         program: [],
         semester: [],
       });
-    if (key === "faculty")
-      Object.assign(next, { department: [], program: [], semester: [] });
-    if (key === "department")
+    }
+
+    if (key === "faculty") {
+      const availableDepts = Array.from(
+        new Set(
+          sections
+            .filter(
+              (s) =>
+                (!next.school.length || next.school.includes(s.school)) &&
+                s.faculty === val,
+            )
+            .map((s) => s.department)
+            .filter(Boolean),
+        ),
+      ) as string[];
+      const firstDept = availableDepts[0] ? [availableDepts[0]] : [];
+
+      Object.assign(next, {
+        department: firstDept,
+        program: [],
+        semester: [],
+      });
+    }
+
+    if (key === "department") {
       Object.assign(next, { program: [], semester: [] });
-    if (key === "program") next.semester = [];
+    }
+
+    if (key === "program") {
+      next.semester = [];
+    }
+
     setSelection(next);
     onScopeChange?.(next);
     const ids = sections
@@ -13662,7 +15336,7 @@ function TeacherHierarchyCheckboxes({
       </Text>
       <View style={styles.phaseChipsRow}>
         {opts.map((opt) => {
-          const isSelected = selection[fieldKey].includes(opt);
+          const isSelected = selection[fieldKey]?.includes(opt);
           return (
             <Pressable
               key={opt}
@@ -13706,37 +15380,73 @@ function TeacherHierarchyCheckboxes({
 
   return (
     <View style={styles.hierarchyScopeWrap}>
-      <Text style={[styles.formGroupHeading, { color: theme.muted }]}>
-        DEPARTMENT PERMISSIONS
-      </Text>
-      <Text style={[styles.hierarchyScopeDesc, { color: theme.muted }]}>
-        {departmentWide
-          ? "All Computer Science department students will be included in this attendance session."
-          : "Select the academic programs this instructor can manage:"}
-      </Text>
-      <View style={[styles.lockedScopeNotice, { backgroundColor: theme.cardSubtle, borderColor: theme.border }]}>
-        <MaterialCommunityIcons name="lock-outline" size={16} color={theme.cyan} />
-        <Text style={[styles.lockedScopeNoticeText, { color: theme.textSecondary }]}>
-          {DEFAULT_ACADEMIC_SCOPE.school} • {DEFAULT_ACADEMIC_SCOPE.faculty} • {DEFAULT_ACADEMIC_SCOPE.department}
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 6,
+        }}
+      >
+        <Text
+          style={[
+            styles.formGroupHeading,
+            { color: theme.muted, marginBottom: 0 },
+          ]}
+        >
+          DEPARTMENT PERMISSIONS
         </Text>
+        <HoloStatusPill
+          label={`${selected.length} Section${selected.length === 1 ? "" : "s"} Authorized`}
+          tone={selected.length > 0 ? "success" : "neutral"}
+        />
       </View>
-      {!departmentWide && renderPhase(
-        "1. Select Program",
-        "program",
-        getOptions("program", {
-          school: [DEFAULT_ACADEMIC_SCOPE.school],
-          faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
-          department: [DEFAULT_ACADEMIC_SCOPE.department],
-        }),
+      <Text style={[styles.hierarchyScopeDesc, { color: theme.muted, marginBottom: 12 }]}>
+        Choose the School, Faculty, and Department to assign academic authority:
+      </Text>
+
+      {renderPhase(
+        "1. Select School",
+        "school",
+        getOptions("school"),
       )}
-      {!departmentWide && selection.program.length > 0 &&
+
+      {selection.school?.length > 0 &&
         renderPhase(
-          "2. Select Semester",
+          "2. Select Faculty",
+          "faculty",
+          getOptions("faculty", { school: selection.school }),
+        )}
+
+      {selection.faculty?.length > 0 &&
+        renderPhase(
+          "3. Select Department",
+          "department",
+          getOptions("department", {
+            school: selection.school,
+            faculty: selection.faculty,
+          }),
+        )}
+
+      {selection.department?.length > 0 &&
+        renderPhase(
+          "4. Select Program (Optional)",
+          "program",
+          getOptions("program", {
+            school: selection.school,
+            faculty: selection.faculty,
+            department: selection.department,
+          }),
+        )}
+
+      {selection.program?.length > 0 &&
+        renderPhase(
+          "5. Select Semester (Optional)",
           "semester",
           getOptions("semester", {
-            school: [DEFAULT_ACADEMIC_SCOPE.school],
-            faculty: [DEFAULT_ACADEMIC_SCOPE.faculty],
-            department: [DEFAULT_ACADEMIC_SCOPE.department],
+            school: selection.school,
+            faculty: selection.faculty,
+            department: selection.department,
             program: selection.program,
           }),
         )}
@@ -13818,7 +15528,8 @@ const styles = StyleSheet.create({
   loginTopControls: {
     width: "100%",
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 16,
   },
   themePillBtn: {
@@ -16229,27 +17940,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
   },
-  serverPillBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    marginTop: 14,
-    gap: 8,
-  },
-  serverStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  serverPillText: {
-    flex: 1,
-    fontSize: 11,
-    fontWeight: "500",
-  },
   paginationRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -16319,6 +18009,7 @@ const styles = StyleSheet.create({
   exportTabBtn: {
     flex: 1,
     paddingVertical: 9,
+    paddingHorizontal: 2,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 7,
@@ -16350,14 +18041,18 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   exportChoicePill: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
   },
   exportChoicePillText: {
     fontSize: 12,
     fontWeight: "600",
+    flexShrink: 1,
   },
   exportSummaryBanner: {
     flexDirection: "row",
@@ -16367,6 +18062,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     marginBottom: 16,
+    gap: 8,
   },
   topMenuDropdownCard: {
     position: "absolute",
@@ -16420,5 +18116,20 @@ const styles = StyleSheet.create({
   sectionSubtitleText: {
     fontSize: 12,
     marginTop: 2,
+  },
+  studentPasswordHintBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  studentPasswordHintText: {
+    fontSize: 11.5,
+    flex: 1,
+    lineHeight: 16,
   },
 });

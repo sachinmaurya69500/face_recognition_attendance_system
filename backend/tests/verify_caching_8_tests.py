@@ -178,6 +178,23 @@ class TestCachingVerification8(unittest.TestCase):
         self.assertGreater(stats["total_hits"], 0)
         print(f"\n[TEST 8] Cache Telemetry: {stats}")
 
+    def test_9_admin_dashboard_summary_and_caching(self):
+        """TEST 9: Dedicated /admin/dashboard aggregates metrics and serves from cache."""
+        cache.cache_delete("admin:dashboard:summary")
+        r = requests.get(f"{BASE_URL}/admin/dashboard", headers=self.headers)
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("total_students", data)
+        self.assertIn("faculty_count", data)
+        self.assertIn("total_sessions", data)
+        self.assertIn("attendance_rate", data)
+        self.assertIsInstance(data["total_students"], int)
+
+        # Second call hits cache
+        cached = cache.cache_get("admin:dashboard:summary")
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["total_students"], data["total_students"])
+
 
 if __name__ == "__main__":
     unittest.main()
