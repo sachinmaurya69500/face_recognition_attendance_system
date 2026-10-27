@@ -1,4 +1,5 @@
 # Local/generated files
+backend/storage
 mobile/node_modules/
 mobile/.expo/
 mobile-expo/.expo/
