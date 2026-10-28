@@ -11,6 +11,7 @@ mobile/android/app/.gradle/
 mobile/android/app/build/
 mobile/android/app/.cxx/
 backend/app/__pycache__/
+backend/storage
 **/__pycache__/
 *.py[cod]
 
